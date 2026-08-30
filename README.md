@@ -15,7 +15,7 @@ O enriquecimento factual é separado da IA. Quando `TMDB_API_KEY` está configur
 1. Copie `.env.example` para `.env`.
 2. Mantenha `ENVIRONMENT` diferente de `production` para executar localmente. O admin de desenvolvimento usa `admin@pipocaplay.com` / `admin123`; troque esses valores antes de qualquer uso real.
 3. Defina `AUTH_SECRET`, `ADMIN_EMAIL` e `ADMIN_PASSWORD` com valores privados e fortes. Não publique `.env`.
-4. Em desenvolvimento, `USER_STORE_FILE=data/users.json` cria a base local automaticamente. Em produção serverless, configure `KV_REST_API_URL` e `KV_REST_API_TOKEN` com uma base Redis REST persistente.
+4. Em desenvolvimento, `USER_STORE_FILE=data/users.json` cria a base local automaticamente. Em produção serverless, conecte uma loja **privada Vercel Blob** ao projeto e configure `BLOB_READ_WRITE_TOKEN`; o código usa o objeto `pipoca-play/users.json` como base persistente. Se preferir Upstash Redis REST, configure `KV_REST_API_URL` e `KV_REST_API_TOKEN` como alternativa. O filesystem da função serverless não deve ser usado para contas, pois não é persistente.
 5. Defina `OPENAI_API_KEY` e, se disponível, `TMDB_API_KEY`.
 6. Execute `python3 server.py` dentro desta pasta.
 7. Abra `http://127.0.0.1:8000`.
@@ -34,11 +34,13 @@ O arquivo `vercel.json` e as funções em `api/` deixam o repositório pronto pa
 | `ADMIN_EMAIL` | Sim | E-mail do administrador. |
 | `ADMIN_PASSWORD` | Sim | Senha privada do administrador. |
 | `USER_STORE_FILE` | Local | Caminho do JSON local de contas; não é persistente entre execuções serverless. |
-| `KV_REST_API_URL` | Produção | URL REST do Redis (Vercel KV/Upstash) para armazenar contas entre invocações. |
-| `KV_REST_API_TOKEN` | Produção | Token privado do Redis REST. |
+| `BLOB_READ_WRITE_TOKEN` | Produção | Token privado de leitura/gravação de uma loja Vercel Blob conectada ao projeto. É o armazenamento preferencial em produção. |
+| `USER_STORE_BLOB_PATH` | Não | Caminho do objeto privado que guarda a base JSON; padrão `pipoca-play/users.json`. |
+| `KV_REST_API_URL` | Alternativa | URL REST do Redis/Upstash para armazenar contas entre invocações. |
+| `KV_REST_API_TOKEN` | Alternativa | Token privado do Redis REST. |
 | `TMDB_API_KEY` | Não | Habilita enriquecimento de catálogo e disponibilidade no Brasil. |
 | `ENVIRONMENT=production` | Recomendada | Desativa credenciais padrão de desenvolvimento e ativa cookies seguros. |
 
-O cadastro de clientes é armazenado na base configurada e segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão e usar o motor de recomendação. O painel admin é protegido por sessão e bloqueia qualquer rota administrativa para usuários comuns. A solução inclui persistência local para desenvolvimento e integração Redis REST para o runtime serverless da Vercel; recuperação de senha, e-mail transacional e auditoria multi-admin permanecem como evoluções futuras.
+O cadastro de clientes é armazenado na base configurada e segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão e usar o motor de recomendação. O painel admin é protegido por sessão e bloqueia qualquer rota administrativa para usuários comuns. A solução inclui persistência local para desenvolvimento e integração com Vercel Blob privado ou Redis REST para o runtime serverless da Vercel. O SDK Python oficial `vercel` é instalado por `requirements.txt`. Antes do deploy, crie a loja em **Project Settings → Storage → Create Database → Blob**, selecione acesso privado, conecte-a ao projeto e disponibilize `BLOB_READ_WRITE_TOKEN` nos ambientes usados pela implantação. Recuperação de senha, e-mail transacional e auditoria multi-admin permanecem como evoluções futuras.
 
 Não coloque chaves no HTML, no Git ou em mensagens de erro. Se uma chave tiver sido exposta anteriormente, revogue-a no respectivo provedor antes de publicar.

@@ -16,6 +16,7 @@ import secrets
 import threading
 import urllib.error
 import urllib.request
+from urllib.parse import quote, urlencode
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN_LENGTH = 8
 PBKDF2_ITERATIONS = 260_000
 STORE_KEY = "pipoca-play:users"
+BLOB_PATH = os.environ.get("USER_STORE_BLOB_PATH", "pipoca-play/users.json").strip() or "pipoca-play/users.json"
 _LOCK = threading.RLock()
 
 
@@ -106,8 +108,158 @@ def _kv_credentials() -> tuple[str, str] | None:
     return (url.rstrip("/"), token) if url and token else None
 
 
+def _blob_token() -> str | None:
+    return (
+        os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
+        or os.environ.get("VERCEL_BLOB_READ_WRITE_TOKEN", "").strip()
+        or None
+    )
+
+
+def _blob_oidc_credentials() -> tuple[str, str] | None:
+    token = os.environ.get("VERCEL_OIDC_TOKEN", "").strip()
+    store_id = os.environ.get("BLOB_STORE_ID", "").strip()
+    if not token or not store_id:
+        return None
+    return token, store_id.removeprefix("store_")
+
+
+def _blob_is_configured() -> bool:
+    return bool(_blob_token() or _blob_oidc_credentials())
+
+
 def storage_mode() -> str:
-    return "redis-rest" if _kv_credentials() else "arquivo-local"
+    if _blob_is_configured():
+        return "vercel-blob"
+    if _kv_credentials():
+        return "redis-rest"
+    return "arquivo-local"
+
+
+def _blob_sdk():
+    try:
+        from vercel.blob import get, put
+        from vercel.blob.errors import BlobNotFoundError
+    except ImportError as error:
+        raise StorageError(
+            "O SDK do Vercel Blob não está instalado. Reinstale as dependências do projeto."
+        ) from error
+    return get, put, BlobNotFoundError
+
+
+def _blob_oidc_url() -> tuple[str, str]:
+    credentials = _blob_oidc_credentials()
+    if not credentials:
+        raise StorageError(
+            "Configure BLOB_STORE_ID e VERCEL_OIDC_TOKEN para usar a loja Blob privada."
+        )
+    token, store_id = credentials
+    object_url = f"https://{store_id}.private.blob.vercel-storage.com/{quote(BLOB_PATH, safe='/')}"
+    return token, object_url
+
+
+def _read_blob_oidc() -> list[dict]:
+    token, object_url = _blob_oidc_url()
+    request = urllib.request.Request(
+        object_url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            content = response.read()
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return []
+        raise StorageError("Não foi possível ler a base de contas no Vercel Blob.") from error
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise StorageError("Não foi possível acessar a base de contas no Vercel Blob.") from error
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeDecodeError) as error:
+        raise StorageError("A base de contas no Vercel Blob contém dados inválidos.") from error
+    if not isinstance(data, list):
+        raise StorageError("A base de contas no Vercel Blob está inválida.")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _write_blob_oidc(users: list[dict]) -> None:
+    credentials = _blob_oidc_credentials()
+    if not credentials:
+        raise StorageError(
+            "Configure BLOB_STORE_ID e VERCEL_OIDC_TOKEN para usar a loja Blob privada."
+        )
+    token, store_id = credentials
+    payload = json.dumps(users, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        f"https://vercel.com/api/blob/?{urlencode({'pathname': BLOB_PATH})}",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "x-vercel-blob-access": "private",
+            "x-vercel-blob-store-id": store_id,
+            "x-allow-overwrite": "1",
+            "x-cache-control-max-age": "0",
+            "x-api-blob-request-id": f"{store_id}:{secrets.token_hex(8)}",
+            "x-api-blob-request-attempt": "0",
+            "x-api-version": "12",
+        },
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            response.read()
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        raise StorageError("Não foi possível gravar a base de contas no Vercel Blob.") from error
+
+
+def _read_blob() -> list[dict]:
+    token = _blob_token()
+    if not token:
+        if _blob_oidc_credentials():
+            return _read_blob_oidc()
+        raise StorageError(
+            "Configure BLOB_READ_WRITE_TOKEN ou conecte BLOB_STORE_ID com VERCEL_OIDC_TOKEN."
+        )
+    get, _, BlobNotFoundError = _blob_sdk()
+    try:
+        result = get(BLOB_PATH, access="private", token=token, use_cache=False)
+    except BlobNotFoundError:
+        return []
+    except Exception as error:
+        raise StorageError("Não foi possível ler a base de contas no Vercel Blob.") from error
+    try:
+        data = json.loads(bytes(result).decode("utf-8"))
+    except (TypeError, ValueError, UnicodeDecodeError) as error:
+        raise StorageError("A base de contas no Vercel Blob contém dados inválidos.") from error
+    if not isinstance(data, list):
+        raise StorageError("A base de contas no Vercel Blob está inválida.")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _write_blob(users: list[dict]) -> None:
+    token = _blob_token()
+    if not token:
+        if _blob_oidc_credentials():
+            _write_blob_oidc(users)
+            return
+        raise StorageError(
+            "Configure BLOB_READ_WRITE_TOKEN ou conecte BLOB_STORE_ID com VERCEL_OIDC_TOKEN."
+        )
+    _, put, _ = _blob_sdk()
+    try:
+        put(
+            BLOB_PATH,
+            json.dumps(users, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            access="private",
+            content_type="application/json",
+            overwrite=True,
+            cache_control_max_age=0,
+            token=token,
+        )
+    except Exception as error:
+        raise StorageError("Não foi possível gravar a base de contas no Vercel Blob.") from error
 
 
 def _kv_command(command: str, *args: str):
@@ -162,6 +314,8 @@ def _write_local(users: list[dict]) -> None:
 
 def load_users() -> list[dict]:
     with _LOCK:
+        if _blob_is_configured():
+            return _read_blob()
         if _kv_credentials():
             raw = _kv_command("GET", STORE_KEY)
             if not raw:
@@ -179,6 +333,9 @@ def load_users() -> list[dict]:
 def save_users(users: list[dict]) -> None:
     serialized = json.dumps(users, ensure_ascii=False, separators=(",", ":"))
     with _LOCK:
+        if _blob_is_configured():
+            _write_blob(users)
+            return
         if _kv_credentials():
             _kv_command("SET", STORE_KEY, serialized)
             return

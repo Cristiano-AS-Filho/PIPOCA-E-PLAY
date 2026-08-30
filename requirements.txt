@@ -1,0 +1,2 @@
+# Dependências usadas pelas funções Python da Vercel.
+vercel>=0.5.0,<0.7
