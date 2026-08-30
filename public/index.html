@@ -701,12 +701,44 @@
   .status-warn{color:var(--marquee);}
   .account-chip{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--cream-dim);border:1px solid rgba(239,230,216,.16);padding:6px 8px;border-radius:4px;}
   .topnav .nav-separator{color:var(--cream-dim);opacity:.55;align-self:center;}
+  .auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--bg);padding:5px;border-radius:8px;margin:0 0 18px;}
+  .auth-tab{border:0;background:transparent;color:var(--cream-dim);padding:9px 8px;border-radius:6px;font:12px 'IBM Plex Mono',monospace;cursor:pointer;}
+  .auth-tab.active{background:var(--bg-elev-2);color:var(--marquee);}
+  .auth-success{background:rgba(60,140,122,.12);border:1px solid rgba(60,140,122,.42);border-radius:8px;color:var(--cream);font-size:13px;line-height:1.5;padding:13px 14px;margin-bottom:15px;}
+  .status-panel{background:var(--bg-elev);border:1px solid rgba(242,169,59,.28);border-radius:var(--radius);padding:22px 18px;margin-top:28px;}
+  .status-icon{font-family:'Bebas Neue',cursive;font-size:42px;color:var(--marquee);line-height:1;margin-bottom:12px;}
+  .status-panel h2{font-family:'Bebas Neue',cursive;font-size:34px;letter-spacing:.5px;margin:0 0 8px;}
+  .status-panel p{font-size:13.5px;line-height:1.55;color:var(--cream-dim);margin:0 0 15px;}
+  .status-email{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--cream);background:rgba(239,230,216,.06);border:1px solid rgba(239,230,216,.14);border-radius:6px;padding:10px 12px;margin-bottom:16px;word-break:break-word;}
+  .status-actions{display:flex;flex-direction:column;gap:9px;}
+  .admin-section{margin-top:24px;}
+  .admin-section-title{font-family:'Bebas Neue',cursive;font-size:25px;letter-spacing:.4px;margin:0 0 4px;}
+  .admin-section-copy{font-size:12px;color:var(--cream-dim);margin:0 0 13px;line-height:1.45;}
+  .user-list{display:grid;gap:9px;}
+  .user-card{background:var(--bg-elev);border:1px solid rgba(239,230,216,.12);border-radius:var(--radius);padding:14px;}
+  .user-card.pending{border-color:rgba(242,169,59,.48);}
+  .user-card-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:8px;}
+  .user-email{font-size:13px;font-weight:600;word-break:break-word;}
+  .user-date{font:10px 'IBM Plex Mono',monospace;color:var(--cream-dim);margin-top:5px;}
+  .user-status{font:10px 'IBM Plex Mono',monospace;padding:5px 7px;border-radius:4px;white-space:nowrap;text-transform:uppercase;letter-spacing:.5px;}
+  .user-status.pending{color:var(--ink);background:var(--marquee);}
+  .user-status.approved{color:#132c26;background:#6fceb5;}
+  .user-status.rejected{color:var(--cream);background:var(--velvet);}
+  .user-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px;}
+  .admin-action{border:1px solid rgba(239,230,216,.22);background:transparent;color:var(--cream);border-radius:6px;padding:8px 10px;font:11px 'IBM Plex Mono',monospace;cursor:pointer;}
+  .admin-action:hover{border-color:var(--marquee);color:var(--marquee);}
+  .admin-action.approve{border-color:rgba(111,206,181,.45);color:#8ee2cc;}
+  .admin-action.reject,.admin-action.delete{border-color:rgba(196,85,61,.42);color:#e58a76;}
+  .admin-empty{color:var(--cream-dim);font-size:13px;padding:15px;border:1px dashed rgba(239,230,216,.18);border-radius:8px;}
+  .admin-refresh{margin-top:11px;width:100%;}
   @media (min-width:560px){
     :root{--max:620px;}
     .landing-shell{padding-top:58px;}
     .landing-actions{flex-direction:row;}
     .landing-actions .cta{width:auto;flex:1;}
     .admin-grid{grid-template-columns:repeat(2,1fr);}
+    .status-actions{flex-direction:row;}
+    .status-actions .cta{flex:1;}
   }
 </style>
 </head>
@@ -780,6 +812,15 @@ const LOADING_MESSAGES = [
 let sessionUser = null;
 let authError = "";
 let adminStatus = null;
+let authMode = "login";
+let accessStatus = null;
+let pendingStatusTimer = null;
+let pendingAccess = null;
+try{
+  pendingAccess = JSON.parse(window.localStorage.getItem("pipoca_pending_access") || "null");
+}catch(e){
+  pendingAccess = null;
+}
 
 let state = {
   screen: "landing", // landing | login | wizard | summary | loading | results | history | admin | error
@@ -799,12 +840,46 @@ async function bootstrapAuth(){
     const data = await response.json();
     if(data.authenticated){
       sessionUser = data.user;
-      state.screen = "wizard";
+      state.screen = sessionUser.role === "admin" ? "admin" : "wizard";
+    }else if(pendingAccess && pendingAccess.email && pendingAccess.token){
+      state.screen = "access-status";
+      checkPendingAccess(true);
     }
   }catch(e){
     // A landing page continua disponível mesmo quando a API está temporariamente fora.
   }
   render();
+  if(sessionUser && sessionUser.role === "admin") await openAdmin();
+}
+
+function setPendingAccess(data){
+  pendingAccess = { email: data.email, token: data.token };
+  accessStatus = data.status || "pending";
+  try{ window.localStorage.setItem("pipoca_pending_access", JSON.stringify(pendingAccess)); }catch(e){}
+}
+
+function clearPendingAccess(){
+  pendingAccess = null;
+  accessStatus = null;
+  try{ window.localStorage.removeItem("pipoca_pending_access"); }catch(e){}
+  if(pendingStatusTimer){ clearTimeout(pendingStatusTimer); pendingStatusTimer = null; }
+}
+
+async function checkPendingAccess(shouldRender = true){
+  if(!pendingAccess || !pendingAccess.email || !pendingAccess.token) return;
+  try{
+    const query = "?email=" + encodeURIComponent(pendingAccess.email) + "&token=" + encodeURIComponent(pendingAccess.token);
+    const response = await fetch("/api/auth/status" + query, { credentials: "same-origin", cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if(response.ok && data.status){
+      accessStatus = data.status;
+      if(accessStatus !== "pending") pendingStatusTimer = null;
+      if(shouldRender && state.screen === "access-status") render();
+      if(accessStatus === "pending" && state.screen === "access-status") pendingStatusTimer = setTimeout(() => checkPendingAccess(true), 15000);
+      return;
+    }
+  }catch(e){}
+  if(accessStatus === "pending" && state.screen === "access-status") pendingStatusTimer = setTimeout(() => checkPendingAccess(true), 15000);
 }
 
 async function login(email, password){
@@ -818,6 +893,7 @@ async function login(email, password){
     });
     const data = await response.json().catch(() => ({}));
     if(!response.ok) throw new Error(data.error || "Não foi possível entrar agora.");
+    clearPendingAccess();
     sessionUser = data.user;
     state.screen = sessionUser.role === "admin" ? "admin" : "wizard";
     render();
@@ -828,10 +904,32 @@ async function login(email, password){
   }
 }
 
+async function register(email, password, confirmation){
+  authError = "";
+  try{
+    const response = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, confirmation })
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || "Não foi possível enviar o cadastro agora.");
+    setPendingAccess(data);
+    authMode = "login";
+    state.screen = "access-status";
+    render();
+    checkPendingAccess(false);
+  }catch(e){
+    authError = e.message || "Não foi possível enviar o cadastro agora.";
+    render();
+  }
+}
+
 async function logout(){
   try{ await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); }catch(e){}
   sessionUser = null;
   adminStatus = null;
+  clearPendingAccess();
   state.screen = "landing";
   state.stepIndex = 0;
   state.filters = {};
@@ -841,7 +939,7 @@ async function logout(){
 async function openAdmin(){
   if(!sessionUser || sessionUser.role !== "admin") return;
   try{
-    const response = await fetch("/api/admin/status", { credentials: "same-origin" });
+    const response = await fetch("/api/admin/status", { credentials: "same-origin", cache: "no-store" });
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || "Acesso negado.");
     adminStatus = data;
@@ -850,6 +948,26 @@ async function openAdmin(){
   }catch(e){
     authError = e.message || "Não foi possível abrir o painel.";
     state.screen = "wizard";
+    render();
+  }
+}
+
+async function adminAction(userId, action){
+  if(action === "delete" && !window.confirm("Excluir este usuário definitivamente?")) return;
+  authError = "";
+  try{
+    const response = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ user_id: userId, action })
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || "Não foi possível atualizar o cadastro.");
+    adminStatus = { ...adminStatus, summary: data.summary, users: data.users };
+    render();
+  }catch(e){
+    authError = e.message || "Não foi possível atualizar o cadastro.";
     render();
   }
 }
@@ -1121,6 +1239,7 @@ function render(){
 
   if(state.screen === "landing") app.appendChild(renderLanding());
   else if(state.screen === "login") app.appendChild(renderLogin());
+  else if(state.screen === "access-status") app.appendChild(renderAccessStatus());
   else if(state.screen === "admin") app.appendChild(renderAdmin());
   else if(state.screen === "wizard") app.appendChild(renderWizard());
   else if(state.screen === "summary") app.appendChild(renderSummary());
@@ -1245,61 +1364,80 @@ function renderLogin(){
   wrap.className = "auth-card";
   const kicker = document.createElement("div");
   kicker.className = "landing-kicker";
-  kicker.textContent = "Acesso à sua sessão";
+  kicker.textContent = authMode === "login" ? "Acesso à sua sessão" : "Primeiro passo para entrar";
   const title = document.createElement("h2");
-  title.textContent = "Entrar no Pipoca & Play";
+  title.textContent = authMode === "login" ? "Entrar no Pipoca & Play" : "Criar meu acesso";
   const copy = document.createElement("p");
-  copy.textContent = "Use seu acesso autorizado para continuar. O administrador define quais contas podem usar a plataforma.";
+  copy.textContent = authMode === "login"
+    ? "Use seu e-mail e sua senha para continuar. O administrador valida cada novo acesso antes da primeira entrada."
+    : "Cadastre seu e-mail e uma senha individual. Depois, o administrador analisa o pedido antes de liberar a plataforma.";
   wrap.appendChild(kicker);
   wrap.appendChild(title);
   wrap.appendChild(copy);
+
+  const tabs = document.createElement("div");
+  tabs.className = "auth-tabs";
+  [["login", "Já tenho acesso"], ["register", "Quero me cadastrar"]].forEach(([mode, label]) => {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "auth-tab" + (authMode === mode ? " active" : "");
+    tab.textContent = label;
+    tab.onclick = () => { authMode = mode; authError = ""; render(); };
+    tabs.appendChild(tab);
+  });
+  wrap.appendChild(tabs);
+
   if(authError){
     const error = document.createElement("div");
     error.className = "auth-error";
     error.textContent = authError;
     wrap.appendChild(error);
   }
+
+  const makeField = (labelText, type, name, placeholder, autocomplete) => {
+    const field = document.createElement("div");
+    field.className = "field";
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    const input = document.createElement("input");
+    input.type = type;
+    input.name = name;
+    input.autocomplete = autocomplete;
+    input.placeholder = placeholder;
+    input.required = true;
+    field.appendChild(label);
+    field.appendChild(input);
+    return { field, input };
+  };
+
   const form = document.createElement("form");
-  const emailField = document.createElement("div");
-  emailField.className = "field";
-  const emailLabel = document.createElement("label");
-  emailLabel.textContent = "E-mail";
-  const email = document.createElement("input");
-  email.type = "email";
-  email.name = "email";
-  email.autocomplete = "username";
-  email.placeholder = "voce@exemplo.com";
-  email.required = true;
-  emailField.appendChild(emailLabel);
-  emailField.appendChild(email);
-  const passwordField = document.createElement("div");
-  passwordField.className = "field";
-  const passwordLabel = document.createElement("label");
-  passwordLabel.textContent = "Senha";
-  const password = document.createElement("input");
-  password.type = "password";
-  password.name = "password";
-  password.autocomplete = "current-password";
-  password.placeholder = "Sua senha";
-  password.required = true;
-  passwordField.appendChild(passwordLabel);
-  passwordField.appendChild(password);
+  const email = makeField("E-mail", "email", "email", "voce@exemplo.com", "email");
+  const password = makeField("Senha", "password", "password", authMode === "login" ? "Sua senha" : "Mínimo de 8 caracteres", authMode === "login" ? "current-password" : "new-password");
+  form.appendChild(email.field);
+  form.appendChild(password.field);
+  let confirmation = null;
+  if(authMode === "register"){
+    confirmation = makeField("Confirmar senha", "password", "confirmation", "Repita sua senha", "new-password");
+    form.appendChild(confirmation.field);
+  }
   const submit = document.createElement("button");
   submit.className = "cta";
   submit.type = "submit";
-  submit.textContent = "Continuar";
-  form.appendChild(emailField);
-  form.appendChild(passwordField);
+  submit.textContent = authMode === "login" ? "Continuar" : "Enviar cadastro";
   form.appendChild(submit);
   form.onsubmit = event => {
     event.preventDefault();
     submit.disabled = true;
-    login(email.value, password.value);
+    if(authMode === "login") login(email.input.value, password.input.value);
+    else register(email.input.value, password.input.value, confirmation.input.value);
   };
   wrap.appendChild(form);
+
   const note = document.createElement("p");
   note.className = "auth-footnote";
-  note.textContent = "A sessão é protegida por cookie HttpOnly e expira automaticamente.";
+  note.textContent = authMode === "login"
+    ? "A sessão é protegida por cookie HttpOnly e expira automaticamente."
+    : "A senha é armazenada apenas como hash seguro e nunca fica visível para o administrador.";
   wrap.appendChild(note);
   const back = document.createElement("button");
   back.className = "back-link";
@@ -1307,6 +1445,111 @@ function renderLogin(){
   back.onclick = () => { authError = ""; state.screen = "landing"; render(); };
   wrap.appendChild(back);
   return wrap;
+}
+
+function renderAccessStatus(){
+  const wrap = document.createElement("section");
+  wrap.className = "status-panel";
+  const status = accessStatus || "pending";
+  const icon = document.createElement("div");
+  icon.className = "status-icon";
+  icon.textContent = status === "approved" ? "LIBERADO" : status === "rejected" ? "REVISAR" : "EM ANÁLISE";
+  const title = document.createElement("h2");
+  title.textContent = status === "approved" ? "Seu acesso foi validado" : status === "rejected" ? "Pedido não aprovado" : "Cadastro recebido";
+  const copy = document.createElement("p");
+  copy.textContent = status === "approved"
+    ? "O administrador autorizou seu cadastro. Agora você já pode entrar na plataforma com o e-mail e a senha cadastrados."
+    : status === "rejected"
+      ? "O administrador rejeitou este pedido. Se desejar, você pode enviar um novo cadastro para análise."
+      : "O seu acesso será liberado assim que o administrador validar. Por favor, aguarde a liberação. Esta tela será atualizada automaticamente.";
+  const email = document.createElement("div");
+  email.className = "status-email";
+  email.textContent = pendingAccess && pendingAccess.email ? pendingAccess.email : "";
+  wrap.appendChild(icon);
+  wrap.appendChild(title);
+  wrap.appendChild(copy);
+  wrap.appendChild(email);
+
+  const actions = document.createElement("div");
+  actions.className = "status-actions";
+  if(status === "pending"){
+    const refresh = document.createElement("button");
+    refresh.className = "cta small";
+    refresh.textContent = "Verificar agora";
+    refresh.onclick = () => checkPendingAccess(true);
+    actions.appendChild(refresh);
+  }else if(status === "approved"){
+    const enter = document.createElement("button");
+    enter.className = "cta small";
+    enter.textContent = "Entrar na plataforma";
+    enter.onclick = () => { clearPendingAccess(); authMode = "login"; state.screen = "login"; render(); };
+    actions.appendChild(enter);
+  }else{
+    const retry = document.createElement("button");
+    retry.className = "cta small";
+    retry.textContent = "Fazer novo cadastro";
+    retry.onclick = () => { clearPendingAccess(); authMode = "register"; authError = ""; state.screen = "login"; render(); };
+    actions.appendChild(retry);
+  }
+  const back = document.createElement("button");
+  back.className = "cta secondary small";
+  back.textContent = "Voltar para a apresentação";
+  back.onclick = () => { state.screen = "landing"; render(); };
+  actions.appendChild(back);
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+function formatUserDate(value){
+  if(!value) return "";
+  try{ return new Date(value).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }); }
+  catch(e){ return value; }
+}
+
+function renderUserCard(user){
+  const card = document.createElement("div");
+  card.className = "user-card" + (user.status === "pending" ? " pending" : "");
+  const top = document.createElement("div");
+  top.className = "user-card-top";
+  const identity = document.createElement("div");
+  const email = document.createElement("div");
+  email.className = "user-email";
+  email.textContent = user.email;
+  identity.appendChild(email);
+  const date = document.createElement("div");
+  date.className = "user-date";
+  date.textContent = "Pedido em " + formatUserDate(user.created_at);
+  identity.appendChild(date);
+  const badge = document.createElement("span");
+  badge.className = "user-status " + user.status;
+  badge.textContent = user.status === "pending" ? "Aguardando" : user.status === "approved" ? "Aprovado" : "Rejeitado";
+  top.appendChild(identity);
+  top.appendChild(badge);
+  card.appendChild(top);
+
+  const actions = document.createElement("div");
+  actions.className = "user-actions";
+  if(user.status !== "approved"){
+    const approve = document.createElement("button");
+    approve.className = "admin-action approve";
+    approve.textContent = "Aceitar acesso";
+    approve.onclick = () => adminAction(user.id, "approve");
+    actions.appendChild(approve);
+  }
+  if(user.status !== "rejected"){
+    const reject = document.createElement("button");
+    reject.className = "admin-action reject";
+    reject.textContent = "Rejeitar";
+    reject.onclick = () => adminAction(user.id, "reject");
+    actions.appendChild(reject);
+  }
+  const remove = document.createElement("button");
+  remove.className = "admin-action delete";
+  remove.textContent = "Excluir usuário";
+  remove.onclick = () => adminAction(user.id, "delete");
+  actions.appendChild(remove);
+  card.appendChild(actions);
+  return card;
 }
 
 function renderAdmin(){
@@ -1331,16 +1574,25 @@ function renderAdmin(){
   header.appendChild(heading);
   header.appendChild(badge);
   wrap.appendChild(header);
+
+  if(authError){
+    const error = document.createElement("div");
+    error.className = "auth-error";
+    error.textContent = authError;
+    wrap.appendChild(error);
+  }
+
   const grid = document.createElement("div");
   grid.className = "admin-grid";
   const config = adminStatus && adminStatus.config ? adminStatus.config : {};
+  const summary = adminStatus && adminStatus.summary ? adminStatus.summary : { pending: 0, approved: 0, rejected: 0, total: 0 };
   const entries = [
-    ["Sessão", "Protegida por cookie assinado", "status-ok"],
+    ["Aguardando liberação", String(summary.pending || 0) + " pedido(s)", summary.pending ? "status-warn" : "status-ok"],
+    ["Acessos liberados", String(summary.approved || 0) + " usuário(s)", "status-ok"],
+    ["Pedidos rejeitados", String(summary.rejected || 0) + " pedido(s)", summary.rejected ? "status-warn" : "status-ok"],
+    ["Persistência", config.storage_mode === "redis-rest" ? "Redis REST conectado" : "Arquivo local", config.persistent_storage_configured ? "status-ok" : "status-warn"],
     ["Credenciais admin", config.admin_credentials_configured ? "Configuradas" : "Não configuradas", config.admin_credentials_configured ? "status-ok" : "status-warn"],
-    ["Chave da sessão", config.auth_secret_configured ? "Configurada" : "Não configurada", config.auth_secret_configured ? "status-ok" : "status-warn"],
-    ["Usuários autorizados", String(config.allowed_user_count || 0) + " conta(s) além do admin", "status-ok"],
-    ["Motor de recomendação", "Acesso autenticado obrigatório", "status-ok"],
-    ["Catálogo em tempo real", "Opcional via TMDB_API_KEY", "status-warn"]
+    ["Chave da sessão", config.auth_secret_configured ? "Configurada" : "Não configurada", config.auth_secret_configured ? "status-ok" : "status-warn"]
   ];
   entries.forEach(([label, value, className]) => {
     const card = document.createElement("div");
@@ -1356,10 +1608,60 @@ function renderAdmin(){
     grid.appendChild(card);
   });
   wrap.appendChild(grid);
-  const note = document.createElement("p");
-  note.className = "disclaimer";
-  note.textContent = "Para liberar ou remover usuários, atualize USER_EMAILS no ambiente da aplicação. Em produção, mantenha AUTH_SECRET, ADMIN_PASSWORD e USER_PASSWORD fortes e privados.";
-  wrap.appendChild(note);
+
+  const users = adminStatus && Array.isArray(adminStatus.users) ? adminStatus.users : [];
+  const pending = users.filter(user => user.status === "pending");
+  const pendingSection = document.createElement("section");
+  pendingSection.className = "admin-section";
+  const pendingTitle = document.createElement("h3");
+  pendingTitle.className = "admin-section-title";
+  pendingTitle.textContent = "Pedidos aguardando liberação";
+  const pendingCopy = document.createElement("p");
+  pendingCopy.className = "admin-section-copy";
+  pendingCopy.textContent = "Analise os cadastros e escolha aceitar, rejeitar ou excluir o usuário.";
+  pendingSection.appendChild(pendingTitle);
+  pendingSection.appendChild(pendingCopy);
+  const pendingList = document.createElement("div");
+  pendingList.className = "user-list";
+  if(!pending.length){
+    const empty = document.createElement("div");
+    empty.className = "admin-empty";
+    empty.textContent = "Nenhum pedido novo aguardando análise.";
+    pendingList.appendChild(empty);
+  }else{
+    pending.forEach(user => pendingList.appendChild(renderUserCard(user)));
+  }
+  pendingSection.appendChild(pendingList);
+  wrap.appendChild(pendingSection);
+
+  const allSection = document.createElement("section");
+  allSection.className = "admin-section";
+  const allTitle = document.createElement("h3");
+  allTitle.className = "admin-section-title";
+  allTitle.textContent = "Todos os usuários";
+  const allCopy = document.createElement("p");
+  allCopy.className = "admin-section-copy";
+  allCopy.textContent = "Contas aprovadas e rejeitadas também podem ser alteradas ou excluídas.";
+  allSection.appendChild(allTitle);
+  allSection.appendChild(allCopy);
+  const allList = document.createElement("div");
+  allList.className = "user-list";
+  if(!users.length){
+    const empty = document.createElement("div");
+    empty.className = "admin-empty";
+    empty.textContent = "Ainda não há usuários cadastrados.";
+    allList.appendChild(empty);
+  }else{
+    users.forEach(user => allList.appendChild(renderUserCard(user)));
+  }
+  allSection.appendChild(allList);
+  wrap.appendChild(allSection);
+
+  const refresh = document.createElement("button");
+  refresh.className = "cta secondary small admin-refresh";
+  refresh.textContent = "Atualizar lista";
+  refresh.onclick = () => openAdmin();
+  wrap.appendChild(refresh);
   return wrap;
 }
 

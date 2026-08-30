@@ -1,6 +1,3 @@
-"""Endpoint serverless do painel administrativo."""
-
-import json
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -8,26 +5,30 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from auth import config_status, public_user, read_session  # noqa: E402
+from serverless_utils import send_json  # noqa: E402
+from user_store import StorageError, admin_summary, admin_users  # noqa: E402
 
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         user = read_session(self.headers.get("Cookie"))
         if not user or user.get("role") != "admin":
-            payload = {"error": "Acesso reservado ao administrador."}
-            status = HTTPStatus.FORBIDDEN
-        else:
-            payload = {"user": public_user(user), "config": config_status()}
-            status = HTTPStatus.OK
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+            send_json(self, HTTPStatus.FORBIDDEN, {"error": "Acesso reservado ao administrador."})
+            return
+        try:
+            send_json(
+                self,
+                HTTPStatus.OK,
+                {
+                    "user": public_user(user),
+                    "config": config_status(),
+                    "summary": admin_summary(),
+                    "users": admin_users(),
+                },
+                {"Cache-Control": "no-store"},
+            )
+        except StorageError as error:
+            send_json(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
 
     def do_POST(self):
-        self.send_response(405)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.end_headers()
+        send_json(self, HTTPStatus.METHOD_NOT_ALLOWED, {"error": "Use GET nesta rota."})

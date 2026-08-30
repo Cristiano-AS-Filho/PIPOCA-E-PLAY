@@ -1,8 +1,10 @@
-"""Autenticação leve e sem dependências para o Pipoca & Play.
+"""Autenticação do Pipoca & Play.
 
-As credenciais ficam em variáveis de ambiente. A sessão é um cookie assinado,
-sem armazenar senhas no navegador.
+O administrador continua configurado por variáveis de ambiente. As contas de
+clientes usam senhas individuais com PBKDF2 e só entram após aprovação.
 """
+
+from __future__ import annotations
 
 import base64
 import hashlib
@@ -11,6 +13,9 @@ import json
 import os
 import time
 from http import cookies
+
+from user_store import find_user, is_approved_user, verify_password
+
 
 SESSION_COOKIE = "pipoca_session"
 SESSION_TTL_SECONDS = 60 * 60 * 24
@@ -42,26 +47,19 @@ def admin_password():
     return ""
 
 
-def user_password():
-    configured = os.environ.get("USER_PASSWORD", "").strip()
-    if configured:
-        return configured
-    if not _is_production():
-        return "pipoca123"
-    return ""
-
-
-def allowed_user_emails():
-    raw = os.environ.get("USER_EMAILS", "")
-    return sorted({item.strip().lower() for item in raw.split(",") if item.strip()})
-
-
 def config_status():
+    from user_store import admin_summary, storage_mode
+
+    summary = admin_summary()
     return {
         "auth_secret_configured": bool(auth_secret()),
         "admin_credentials_configured": bool(admin_email() and admin_password()),
-        "user_access_configured": bool(allowed_user_emails() and user_password()),
-        "allowed_user_count": len(allowed_user_emails()),
+        "user_access_configured": True,
+        "allowed_user_count": summary["approved"],
+        "pending_user_count": summary["pending"],
+        "rejected_user_count": summary["rejected"],
+        "storage_mode": storage_mode(),
+        "persistent_storage_configured": storage_mode() == "redis-rest" or not _is_production(),
         "production_mode": _is_production(),
     }
 
@@ -78,8 +76,13 @@ def _sign(value: str) -> str:
     return _b64(hmac.new(auth_secret().encode("utf-8"), value.encode("utf-8"), hashlib.sha256).digest())
 
 
-def create_session(email: str, role: str) -> str:
-    payload = {"email": email, "role": role, "exp": int(time.time()) + SESSION_TTL_SECONDS}
+def create_session(email: str, role: str, user_id: str | None = None) -> str:
+    payload = {
+        "email": email,
+        "role": role,
+        "user_id": user_id,
+        "exp": int(time.time()) + SESSION_TTL_SECONDS,
+    }
     encoded = _b64(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
     return encoded + "." + _sign(encoded)
 
@@ -101,7 +104,13 @@ def read_session(cookie_header: str | None):
             return None
         if payload.get("role") not in {"admin", "user"} or not payload.get("email"):
             return None
-        return {"email": str(payload["email"]).lower(), "role": payload["role"]}
+        email = str(payload["email"]).lower()
+        if payload.get("role") == "user" and not is_approved_user(email):
+            return None
+        result = {"email": email, "role": payload["role"]}
+        if payload.get("user_id"):
+            result["user_id"] = str(payload["user_id"])
+        return result
     except (ValueError, TypeError, json.JSONDecodeError, base64.binascii.Error):
         return None
 
@@ -112,8 +121,9 @@ def authenticate(email: str, password: str):
         return None
     if hmac.compare_digest(normalized, admin_email()) and hmac.compare_digest(password, admin_password()):
         return {"email": normalized, "role": "admin"}
-    if normalized in allowed_user_emails() and hmac.compare_digest(password, user_password()):
-        return {"email": normalized, "role": "user"}
+    user = find_user(normalized)
+    if user and user.get("status") == "approved" and verify_password(password, str(user.get("password_hash", ""))):
+        return {"email": normalized, "role": "user", "user_id": str(user.get("id", ""))}
     return None
 
 
@@ -141,7 +151,7 @@ def clear_session_cookie(secure: bool = False) -> str:
     morsel["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
     if secure:
         morsel["secure"] = True
-    return morsel.OutputString()
+    return jar[SESSION_COOKIE].OutputString()
 
 
 def is_secure_request(headers) -> bool:
