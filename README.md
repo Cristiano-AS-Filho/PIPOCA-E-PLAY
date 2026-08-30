@@ -1,4 +1,3 @@
-Failed to connect to bus: Operation not permitted
 # Pipoca & Play
 
 Aplicação de recomendações de filmes baseada nas sete respostas do questionário.
