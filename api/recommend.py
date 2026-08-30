@@ -8,6 +8,7 @@ from pathlib import Path
 
 # A Vercel executa este arquivo a partir da raiz do projeto.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from auth import read_session  # noqa: E402
 from server import call_openai, clean_filters  # noqa: E402
 
 
@@ -22,6 +23,9 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if not read_session(self.headers.get("Cookie")):
+            self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "Faça login para receber recomendações."})
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > 8_192:

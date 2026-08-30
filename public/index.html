@@ -667,6 +667,47 @@
   }
 
   .footer-space{flex:1;}
+
+  /* ---------- landing / auth / admin ---------- */
+  .landing-shell{padding:34px 0 18px;}
+  .landing-kicker{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1.8px;color:var(--marquee);text-transform:uppercase;margin-bottom:12px;}
+  .landing-title{font-family:'Bebas Neue',cursive;font-size:54px;line-height:.92;letter-spacing:1px;margin:0 0 16px;color:var(--cream);}
+  .landing-title span{color:var(--marquee);}
+  .landing-copy{font-size:15px;line-height:1.65;color:var(--cream-dim);margin:0 0 24px;max-width:39ch;}
+  .landing-actions{display:flex;flex-direction:column;gap:10px;margin-bottom:30px;}
+  .landing-proof{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:18px;}
+  .proof-card{background:rgba(23,27,36,.82);border:1px solid rgba(239,230,216,.1);border-radius:var(--radius);padding:12px 10px;min-height:92px;}
+  .proof-card strong{display:block;font-family:'Bebas Neue',cursive;color:var(--marquee);font-size:22px;letter-spacing:.5px;margin-bottom:5px;}
+  .proof-card span{display:block;color:var(--cream-dim);font-size:11px;line-height:1.35;}
+  .auth-card{background:rgba(23,27,36,.92);border:1px solid rgba(242,169,59,.28);border-radius:var(--radius);padding:22px 18px;margin-top:28px;box-shadow:0 16px 38px rgba(0,0,0,.18);}
+  .auth-card h2{font-family:'Bebas Neue',cursive;font-size:32px;letter-spacing:.5px;margin:0 0 5px;}
+  .auth-card p{font-size:13px;line-height:1.5;color:var(--cream-dim);margin:0 0 20px;}
+  .field{display:flex;flex-direction:column;gap:7px;margin-bottom:13px;}
+  .field label{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1px;color:var(--marquee);text-transform:uppercase;}
+  .field input{width:100%;border:1px solid rgba(239,230,216,.18);background:var(--bg);color:var(--cream);border-radius:8px;padding:12px 13px;font:14px 'Inter',sans-serif;outline:none;}
+  .field input:focus{border-color:var(--marquee);box-shadow:0 0 0 3px rgba(242,169,59,.12);}
+  .auth-error{background:rgba(196,85,61,.12);border:1px solid rgba(196,85,61,.42);border-radius:8px;color:var(--cream);font-size:13px;line-height:1.45;padding:11px 12px;margin-bottom:14px;}
+  .auth-footnote{font-family:'IBM Plex Mono',monospace!important;font-size:10px!important;color:var(--cream-dim)!important;margin-top:16px!important;opacity:.72;}
+  .admin-shell{padding-top:28px;}
+  .admin-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:20px;}
+  .admin-header h2{font-family:'Bebas Neue',cursive;font-size:32px;letter-spacing:.5px;margin:0 0 4px;}
+  .admin-header p{color:var(--cream-dim);font-size:12px;margin:0;line-height:1.45;}
+  .admin-badge{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1px;color:var(--ink);background:var(--marquee);padding:6px 8px;border-radius:4px;white-space:nowrap;}
+  .admin-grid{display:grid;gap:10px;}
+  .admin-stat{background:var(--bg-elev);border:1px solid rgba(239,230,216,.1);border-radius:var(--radius);padding:15px;}
+  .admin-stat .label{font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;font-size:10px;color:var(--cream-dim);margin-bottom:7px;}
+  .admin-stat strong{font-size:15px;line-height:1.35;display:block;}
+  .status-ok{color:#6fceb5;}
+  .status-warn{color:var(--marquee);}
+  .account-chip{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--cream-dim);border:1px solid rgba(239,230,216,.16);padding:6px 8px;border-radius:4px;}
+  .topnav .nav-separator{color:var(--cream-dim);opacity:.55;align-self:center;}
+  @media (min-width:560px){
+    :root{--max:620px;}
+    .landing-shell{padding-top:58px;}
+    .landing-actions{flex-direction:row;}
+    .landing-actions .cta{width:auto;flex:1;}
+    .admin-grid{grid-template-columns:repeat(2,1fr);}
+  }
 </style>
 </head>
 <body>
@@ -736,8 +777,12 @@ const LOADING_MESSAGES = [
   "Buscando os pôsteres certinhos…"
 ];
 
+let sessionUser = null;
+let authError = "";
+let adminStatus = null;
+
 let state = {
-  screen: "wizard", // wizard | summary | loading | results | history | error
+  screen: "landing", // landing | login | wizard | summary | loading | results | history | admin | error
   stepIndex: 0,
   filters: {},
   interpretation: "",
@@ -747,6 +792,67 @@ let state = {
   historyList: null,
   viewingHistoryItem: null
 };
+
+async function bootstrapAuth(){
+  try{
+    const response = await fetch("/api/auth/me", { credentials: "same-origin" });
+    const data = await response.json();
+    if(data.authenticated){
+      sessionUser = data.user;
+      state.screen = "wizard";
+    }
+  }catch(e){
+    // A landing page continua disponível mesmo quando a API está temporariamente fora.
+  }
+  render();
+}
+
+async function login(email, password){
+  authError = "";
+  try{
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ email, password })
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || "Não foi possível entrar agora.");
+    sessionUser = data.user;
+    state.screen = sessionUser.role === "admin" ? "admin" : "wizard";
+    render();
+    if(sessionUser.role === "admin") await openAdmin();
+  }catch(e){
+    authError = e.message || "Não foi possível entrar agora.";
+    render();
+  }
+}
+
+async function logout(){
+  try{ await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); }catch(e){}
+  sessionUser = null;
+  adminStatus = null;
+  state.screen = "landing";
+  state.stepIndex = 0;
+  state.filters = {};
+  render();
+}
+
+async function openAdmin(){
+  if(!sessionUser || sessionUser.role !== "admin") return;
+  try{
+    const response = await fetch("/api/admin/status", { credentials: "same-origin" });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || "Acesso negado.");
+    adminStatus = data;
+    state.screen = "admin";
+    render();
+  }catch(e){
+    authError = e.message || "Não foi possível abrir o painel.";
+    state.screen = "wizard";
+    render();
+  }
+}
 
 /* =========================================================
    PIPOCA DE FUNDO — enche a tela conforme o progresso
@@ -940,21 +1046,37 @@ async function fetchPosterUrl(rec){
 }
 
 /* ---------- storage helpers ---------- */
+function browserStorage(){
+  if(window.storage && typeof window.storage.set === "function" && typeof window.storage.list === "function"){
+    return {
+      async set(key, value){ await window.storage.set(key, value, false); },
+      async list(prefix){ return await window.storage.list(prefix, false); },
+      async get(key){ return await window.storage.get(key, false); }
+    };
+  }
+  return {
+    async set(key, value){ window.localStorage.setItem(key, value); },
+    async list(prefix){ return { keys: Object.keys(window.localStorage).filter(key => key.startsWith(prefix)) }; },
+    async get(key){ return { value: window.localStorage.getItem(key) }; }
+  };
+}
+
 async function saveToHistory(record){
   try{
     const key = "search:" + record.created_at;
-    await window.storage.set(key, JSON.stringify(record), false);
+    await browserStorage().set(key, JSON.stringify(record));
   }catch(e){ /* best-effort, non-blocking */ }
 }
 
 async function loadHistory(){
   try{
-    const listing = await window.storage.list("search:", false);
+    const storage = browserStorage();
+    const listing = await storage.list("search:");
     const keys = (listing && listing.keys) ? listing.keys.slice().sort().reverse() : [];
     const items = [];
     for(const k of keys){
       try{
-        const r = await window.storage.get(k, false);
+        const r = await storage.get(k);
         if(r && r.value) items.push(JSON.parse(r.value));
       }catch(e){}
     }
@@ -997,7 +1119,10 @@ function render(){
   header.appendChild(renderMarquee());
   app.appendChild(header);
 
-  if(state.screen === "wizard") app.appendChild(renderWizard());
+  if(state.screen === "landing") app.appendChild(renderLanding());
+  else if(state.screen === "login") app.appendChild(renderLogin());
+  else if(state.screen === "admin") app.appendChild(renderAdmin());
+  else if(state.screen === "wizard") app.appendChild(renderWizard());
   else if(state.screen === "summary") app.appendChild(renderSummary());
   else if(state.screen === "loading") app.appendChild(renderLoading());
   else if(state.screen === "results") app.appendChild(renderResults());
@@ -1016,34 +1141,226 @@ function renderTopnav(){
   nav.className = "topnav";
 
   const left = document.createElement("span");
-  left.textContent = "SESSÃO DE HOJE";
+  left.textContent = sessionUser ? "SESSÃO DE HOJE" : "PIPOCA & PLAY";
 
   const right = document.createElement("div");
   right.style.display = "flex";
   right.style.gap = "8px";
+  right.style.alignItems = "center";
 
-  const histBtn = document.createElement("button");
-  histBtn.textContent = "Histórico";
-  histBtn.onclick = async () => {
-    state.screen = "history";
-    state.historyList = await loadHistory();
-    render();
-  };
+  if(!sessionUser){
+    const enterBtn = document.createElement("button");
+    enterBtn.textContent = "Entrar";
+    enterBtn.onclick = () => { state.screen = "login"; render(); };
+    right.appendChild(enterBtn);
+  }else{
+    const account = document.createElement("span");
+    account.className = "account-chip";
+    account.textContent = sessionUser.role === "admin" ? "ADMIN" : "USUÁRIO";
+    right.appendChild(account);
 
-  const newBtn = document.createElement("button");
-  newBtn.textContent = "Nova busca";
-  newBtn.onclick = () => {
-    state.screen = "wizard";
-    state.stepIndex = 0;
-    state.filters = {};
-    render();
-  };
+    if(sessionUser.role === "admin"){
+      const adminBtn = document.createElement("button");
+      adminBtn.textContent = "Painel";
+      adminBtn.onclick = () => openAdmin();
+      right.appendChild(adminBtn);
+    }else{
+      const histBtn = document.createElement("button");
+      histBtn.textContent = "Histórico";
+      histBtn.onclick = async () => {
+        state.screen = "history";
+        state.historyList = await loadHistory();
+        render();
+      };
+      right.appendChild(histBtn);
+    }
 
-  right.appendChild(histBtn);
-  right.appendChild(newBtn);
+    const newBtn = document.createElement("button");
+    newBtn.textContent = "Nova busca";
+    newBtn.onclick = () => {
+      state.screen = "wizard";
+      state.stepIndex = 0;
+      state.filters = {};
+      render();
+    };
+    right.appendChild(newBtn);
+
+    const logoutBtn = document.createElement("button");
+    logoutBtn.textContent = "Sair";
+    logoutBtn.onclick = () => logout();
+    right.appendChild(logoutBtn);
+  }
   nav.appendChild(left);
   nav.appendChild(right);
   return nav;
+}
+
+function renderLanding(){
+  const wrap = document.createElement("section");
+  wrap.className = "landing-shell";
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Seu atalho para a próxima sessão";
+  const title = document.createElement("h2");
+  title.className = "landing-title";
+  title.innerHTML = "Menos busca.<br><span>Mais filme.</span>";
+  const copy = document.createElement("p");
+  copy.className = "landing-copy";
+  copy.textContent = "Responda sete perguntas sobre o seu momento e receba três opções que combinam de verdade com o seu clima, seu tempo e sua companhia.";
+  const actions = document.createElement("div");
+  actions.className = "landing-actions";
+  const enter = document.createElement("button");
+  enter.className = "cta";
+  enter.textContent = "Entrar e encontrar meu filme";
+  enter.onclick = () => { state.screen = "login"; render(); };
+  const how = document.createElement("button");
+  how.className = "cta secondary";
+  how.textContent = "Como funciona";
+  how.onclick = () => { copy.scrollIntoView({ behavior: "smooth", block: "center" }); };
+  actions.appendChild(enter);
+  actions.appendChild(how);
+  const proof = document.createElement("div");
+  proof.className = "landing-proof";
+  [["7", "filtros que entendem o seu momento"], ["3", "filmes para decidir sem rolar"], ["0", "horas perdidas comparando listas"]].forEach(([value, label]) => {
+    const card = document.createElement("div");
+    card.className = "proof-card";
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    const span = document.createElement("span");
+    span.textContent = label;
+    card.appendChild(strong);
+    card.appendChild(span);
+    proof.appendChild(card);
+  });
+  wrap.appendChild(kicker);
+  wrap.appendChild(title);
+  wrap.appendChild(copy);
+  wrap.appendChild(actions);
+  wrap.appendChild(proof);
+  return wrap;
+}
+
+function renderLogin(){
+  const wrap = document.createElement("section");
+  wrap.className = "auth-card";
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Acesso à sua sessão";
+  const title = document.createElement("h2");
+  title.textContent = "Entrar no Pipoca & Play";
+  const copy = document.createElement("p");
+  copy.textContent = "Use seu acesso autorizado para continuar. O administrador define quais contas podem usar a plataforma.";
+  wrap.appendChild(kicker);
+  wrap.appendChild(title);
+  wrap.appendChild(copy);
+  if(authError){
+    const error = document.createElement("div");
+    error.className = "auth-error";
+    error.textContent = authError;
+    wrap.appendChild(error);
+  }
+  const form = document.createElement("form");
+  const emailField = document.createElement("div");
+  emailField.className = "field";
+  const emailLabel = document.createElement("label");
+  emailLabel.textContent = "E-mail";
+  const email = document.createElement("input");
+  email.type = "email";
+  email.name = "email";
+  email.autocomplete = "username";
+  email.placeholder = "voce@exemplo.com";
+  email.required = true;
+  emailField.appendChild(emailLabel);
+  emailField.appendChild(email);
+  const passwordField = document.createElement("div");
+  passwordField.className = "field";
+  const passwordLabel = document.createElement("label");
+  passwordLabel.textContent = "Senha";
+  const password = document.createElement("input");
+  password.type = "password";
+  password.name = "password";
+  password.autocomplete = "current-password";
+  password.placeholder = "Sua senha";
+  password.required = true;
+  passwordField.appendChild(passwordLabel);
+  passwordField.appendChild(password);
+  const submit = document.createElement("button");
+  submit.className = "cta";
+  submit.type = "submit";
+  submit.textContent = "Continuar";
+  form.appendChild(emailField);
+  form.appendChild(passwordField);
+  form.appendChild(submit);
+  form.onsubmit = event => {
+    event.preventDefault();
+    submit.disabled = true;
+    login(email.value, password.value);
+  };
+  wrap.appendChild(form);
+  const note = document.createElement("p");
+  note.className = "auth-footnote";
+  note.textContent = "A sessão é protegida por cookie HttpOnly e expira automaticamente.";
+  wrap.appendChild(note);
+  const back = document.createElement("button");
+  back.className = "back-link";
+  back.textContent = "← Voltar para a apresentação";
+  back.onclick = () => { authError = ""; state.screen = "landing"; render(); };
+  wrap.appendChild(back);
+  return wrap;
+}
+
+function renderAdmin(){
+  const wrap = document.createElement("section");
+  wrap.className = "admin-shell";
+  const header = document.createElement("div");
+  header.className = "admin-header";
+  const heading = document.createElement("div");
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Área restrita";
+  const title = document.createElement("h2");
+  title.textContent = "Painel do administrador";
+  const copy = document.createElement("p");
+  copy.textContent = sessionUser ? sessionUser.email : "";
+  heading.appendChild(kicker);
+  heading.appendChild(title);
+  heading.appendChild(copy);
+  const badge = document.createElement("span");
+  badge.className = "admin-badge";
+  badge.textContent = "ACESSO ADMIN";
+  header.appendChild(heading);
+  header.appendChild(badge);
+  wrap.appendChild(header);
+  const grid = document.createElement("div");
+  grid.className = "admin-grid";
+  const config = adminStatus && adminStatus.config ? adminStatus.config : {};
+  const entries = [
+    ["Sessão", "Protegida por cookie assinado", "status-ok"],
+    ["Credenciais admin", config.admin_credentials_configured ? "Configuradas" : "Não configuradas", config.admin_credentials_configured ? "status-ok" : "status-warn"],
+    ["Chave da sessão", config.auth_secret_configured ? "Configurada" : "Não configurada", config.auth_secret_configured ? "status-ok" : "status-warn"],
+    ["Usuários autorizados", String(config.allowed_user_count || 0) + " conta(s) além do admin", "status-ok"],
+    ["Motor de recomendação", "Acesso autenticado obrigatório", "status-ok"],
+    ["Catálogo em tempo real", "Opcional via TMDB_API_KEY", "status-warn"]
+  ];
+  entries.forEach(([label, value, className]) => {
+    const card = document.createElement("div");
+    card.className = "admin-stat";
+    const labelEl = document.createElement("div");
+    labelEl.className = "label";
+    labelEl.textContent = label;
+    const valueEl = document.createElement("strong");
+    valueEl.className = className;
+    valueEl.textContent = value;
+    card.appendChild(labelEl);
+    card.appendChild(valueEl);
+    grid.appendChild(card);
+  });
+  wrap.appendChild(grid);
+  const note = document.createElement("p");
+  note.className = "disclaimer";
+  note.textContent = "Para liberar ou remover usuários, atualize USER_EMAILS no ambiente da aplicação. Em produção, mantenha AUTH_SECRET, ADMIN_PASSWORD e USER_PASSWORD fortes e privados.";
+  wrap.appendChild(note);
+  return wrap;
 }
 
 function renderMarquee(){
@@ -1208,6 +1525,7 @@ async function runSearch(){
 
     // busca os pôsteres reais antes de mostrar os cards
     await Promise.all(result.recommendations.map(async rec => {
+      if(rec.poster_url) return;
       try{
         const poster = await fetchPosterUrl(rec);
         rec.poster_url = poster || "";
@@ -1288,9 +1606,10 @@ function renderResults(){
     .forEach(rec => scrollRow.appendChild(renderTicket(rec)));
   wrap.appendChild(scrollRow);
 
-  const disc = document.createElement("p");
+    const disc = document.createElement("p");
   disc.className = "disclaimer";
-  disc.textContent = "Notas, prêmios, classificação indicativa e onde assistir são estimados por IA a partir do conhecimento do modelo — não são consultados em tempo real e podem estar desatualizados ou imprecisos. Pôsteres vêm da Wikipedia e podem não corresponder exatamente à edição do filme. Confira antes de decidir usando os links de verificação.";
+  disc.textContent = "A pontuação MATCH é própria do sistema, não é uma nota de crítica. Quando a integração de catálogo está habilitada, imagens e disponibilidade vêm de uma fonte externa; caso contrário, a disponibilidade não é confirmada. Confira antes de decidir usando os links de verificação.";
+
   wrap.appendChild(disc);
 
   return wrap;
@@ -1308,9 +1627,9 @@ function renderTicket(rec){
   fallback.innerHTML = '<span class="ico">🎞️</span><span class="txt">pôster não disponível</span>';
   banner.appendChild(fallback);
 
-  if(rec.poster_url){
+  if(rec.backdrop_url || rec.poster_url){
     const img = document.createElement("img");
-    img.src = rec.poster_url;
+    img.src = rec.backdrop_url || rec.poster_url;
     img.alt = rec.title_pt || rec.title_original || "pôster do filme";
     img.loading = "lazy";
     img.onload = () => {
@@ -1439,7 +1758,8 @@ function renderTicket(rec){
   }
 
   /* where to watch */
-  if(rec.where_to_watch && rec.where_to_watch.length){
+      if(rec.where_to_watch && rec.where_to_watch.length){
+
     const wl = document.createElement("div");
     wl.className = "label";
     wl.textContent = "ONDE ASSISTIR";
@@ -1456,6 +1776,12 @@ function renderTicket(rec){
       chips.appendChild(chip);
     });
     body.appendChild(chips);
+  }else{
+    const unavailable = document.createElement("p");
+    unavailable.className = "disclaimer";
+    unavailable.style.textAlign = "left";
+    unavailable.textContent = rec.availability_note || "Disponibilidade não confirmada no momento.";
+    body.appendChild(unavailable);
   }
 
   /* verification links */
@@ -1572,6 +1898,7 @@ function escapeHtml(str){
 }
 
 render();
+bootstrapAuth();
 </script>
 </body>
 </html>

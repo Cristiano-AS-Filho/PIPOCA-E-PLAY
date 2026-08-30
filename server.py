@@ -14,6 +14,18 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from auth import (
+    authenticate,
+    clear_session_cookie,
+    config_status,
+    create_session,
+    is_secure_request,
+    public_user,
+    read_session,
+    session_cookie,
+)
+from metadata import enrich_result
+
 ROOT = Path(__file__).parent
 PUBLIC = ROOT / "public"
 REQUESTS_BY_IP = defaultdict(deque)
@@ -34,6 +46,16 @@ def load_env_file():
 
 
 load_env_file()
+
+OFFICIAL_FILTER_OPTIONS = {
+    "genre": {"Livre (Qualquer)", "Ação", "Comédia", "Drama", "Ficção Científica", "Terror", "Romance", "Suspense / Thriller", "Animação", "Documentário", "Aventura", "Fantasia"},
+    "mood": {"Livre (Qualquer)", "Quer dar risada / Divertido", "Para chorar / Emocionante", "Tensão / Adrenalina", "Para pensar / Cabeça", "Leve / Relaxante para descansar", "Inspirador / Motivacional", "Sombrio / Assustador"},
+    "duration": {"Livre (Qualquer)", "Curto (Até 90 min)", "Padrão (90 a 120 min)", "Longo (Mais de 120 min)"},
+    "era": {"Livre (Qualquer)", "Lançamentos Recentes (2023-2026)", "Anos 2010s", "Anos 2000s", "Anos 90s", "Clássicos (Antes de 1990)"},
+    "platform": {"Livre (Qualquer)", "Netflix", "Amazon Prime Video", "Max (HBO)", "Disney+", "Apple TV+", "Paramount+", "Cinema / Aluguel"},
+    "companionship": {"Sozinho(a)", "Em Casal", "Com Amigos", "Em Família (com crianças)"},
+    "popularity": {"Indiferente", "Grandes Sucessos / Blockbusters", "Filmes Cult / Menos Conhecidos", "Aclamados pela Crítica / Premiações (Oscar, Cannes)"},
+}
 
 RECOMMENDATION_SCHEMA = {
     "type": "object",
@@ -117,27 +139,49 @@ def clean_filters(value):
         item = value.get(key, "")
         if not isinstance(item, str) or len(item) > 120:
             raise ValueError("Um dos filtros é inválido.")
-        cleaned[key] = item.strip()
+        item = item.strip()
+        if item not in OFFICIAL_FILTER_OPTIONS[key]:
+            raise ValueError("Uma das respostas não pertence às opções oficiais.")
+        cleaned[key] = item
     if not all(cleaned.values()):
         raise ValueError("Responda às sete perguntas antes de buscar.")
     return cleaned
 
 
-def prompt_for(filters):
-    return f"""Você é um recomendador de filmes para o público brasileiro. Responda em pt-BR.
-Escolha exatamente três filmes reais e priorize compatibilidade, não popularidade genérica.
+def buildRecommendationPrompt(filters):
+    return f"""Atue como um especialista em cinema e recomendador personalizado para o público brasileiro. Responda em pt-BR.
 
-Preferências:
-- Gênero: {filters['genre']}
-- Clima: {filters['mood']}
+Estou procurando uma recomendação perfeita para assistir agora. Considere conjuntamente estas sete dimensões:
+- Gênero principal: {filters['genre']}
+- Vibe/clima emocional desejado: {filters['mood']}
 - Tempo disponível: {filters['duration']}
-- Época: {filters['era']}
-- Plataforma: {filters['platform']}
+- Época do filme: {filters['era']}
+- Plataforma de streaming: {filters['platform']}
 - Companhia: {filters['companionship']}
-- Perfil: {filters['popularity']}
+- Perfil de popularidade/estilo: {filters['popularity']}
 
-Para dados não confirmados, use 0, string vazia ou array vazio. Não invente disponibilidade,
-notas ou prêmios. A resposta deve obedecer exatamente ao JSON solicitado."""
+Priorize gênero, vibe e plataforma especificada; depois duração e companhia; por fim época e popularidade. Os filtros são preferências contextuais, não generalizações rígidas. A duração curta deve favorecer títulos de até 90 minutos; a faixa padrão, 90 a 120; a longa, acima de 120. Quando houver plataforma específica, trate disponibilidade como dado a ser validado por uma fonte externa, nunca como fato conhecido apenas pela IA. Para família com crianças, evite conteúdo inadequado quando a classificação for conhecida.
+
+Selecione exatamente três filmes reais, ordenados da maior para a menor compatibilidade, e explique por que cada um combina com o perfil. O match_score é a compatibilidade própria do sistema entre 0 e 100, não é nota do IMDb, da crítica ou de qualquer outra fonte. Não escolha simplesmente os filmes mais populares.
+
+Não invente avaliações, plataformas, disponibilidade, URLs, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado."""
+
+
+def validate_recommendation_payload(payload):
+    if not isinstance(payload, dict) or not isinstance(payload.get("recommendations"), list):
+        raise RuntimeError("A resposta do motor não tem o formato esperado.")
+    recommendations = payload["recommendations"]
+    if len(recommendations) != 3:
+        raise RuntimeError("O motor deve retornar exatamente 3 recomendações.")
+    required = {"rank", "title_original", "title_pt", "year", "runtime_minutes", "genres", "synopsis", "why_it_matches", "match_score"}
+    for index, recommendation in enumerate(recommendations, start=1):
+        if not isinstance(recommendation, dict) or not required.issubset(recommendation):
+            raise RuntimeError(f"A recomendação {index} está incompleta.")
+        if recommendation.get("rank") != index:
+            raise RuntimeError("As recomendações devem estar ordenadas por posição.")
+        if not 0 <= int(recommendation.get("match_score", 0)) <= 100:
+            raise RuntimeError("A pontuação de compatibilidade é inválida.")
+    return payload
 
 
 def extract_response_text(response):
@@ -162,7 +206,7 @@ def call_openai(filters):
         raise RuntimeError("OPENAI_API_KEY não foi configurada no servidor.")
     payload = {
         "model": os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
-        "input": prompt_for(filters),
+        "input": buildRecommendationPrompt(filters),
         "text": {
             "format": {
                 "type": "json_schema",
@@ -196,7 +240,12 @@ def call_openai(filters):
         reason = (result.get("incomplete_details") or {}).get("reason")
         suffix = f" Motivo: {reason}." if reason else ""
         raise RuntimeError(f"A OpenAI não retornou texto final (status: {status}).{suffix}")
-    return text
+    try:
+        structured = validate_recommendation_payload(json.loads(text))
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        raise RuntimeError("A OpenAI retornou um JSON inválido.") from error
+    enriched = enrich_result(structured)
+    return json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -208,17 +257,77 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         super().end_headers()
 
-    def send_json(self, status, payload):
+    def send_json(self, status, payload, headers=None):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
+    def current_user(self):
+        return read_session(self.headers.get("Cookie"))
+
+    def request_json(self, max_length=8_192):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > max_length:
+            raise ValueError("Solicitação inválida.")
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def do_GET(self):
+        if self.path == "/api/auth/me":
+            user = self.current_user()
+            self.send_json(HTTPStatus.OK, {"authenticated": bool(user), "user": public_user(user)})
+            return
+        if self.path == "/api/admin/status":
+            user = self.current_user()
+            if not user or user.get("role") != "admin":
+                self.send_json(HTTPStatus.FORBIDDEN, {"error": "Acesso reservado ao administrador."})
+                return
+            self.send_json(HTTPStatus.OK, {"user": public_user(user), "config": config_status()})
+            return
+        if self.path.startswith("/api/"):
+            self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
+            return
+        super().do_GET()
+
     def do_POST(self):
+        if self.path == "/api/auth/login":
+            try:
+                body = self.request_json(4_096)
+                email = body.get("email", "")
+                password = body.get("password", "")
+                if not isinstance(email, str) or not isinstance(password, str):
+                    raise ValueError("Informe e-mail e senha.")
+                user = authenticate(email, password)
+                if not user:
+                    self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "E-mail ou senha inválidos."})
+                    return
+                self.send_json(
+                    HTTPStatus.OK,
+                    {"authenticated": True, "user": public_user(user)},
+                    {"Set-Cookie": session_cookie(create_session(user["email"], user["role"]), is_secure_request(self.headers))},
+                )
+            except (ValueError, json.JSONDecodeError) as error:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
+
+        if self.path == "/api/auth/logout":
+            self.send_json(
+                HTTPStatus.OK,
+                {"authenticated": False},
+                {"Set-Cookie": clear_session_cookie(is_secure_request(self.headers))},
+            )
+            return
+
         if self.path != "/api/recommend":
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
+            return
+        user = self.current_user()
+        if not user:
+            self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "Faça login para receber recomendações."})
             return
         now = time.monotonic()
         requests = REQUESTS_BY_IP[self.client_address[0]]
@@ -229,10 +338,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
         requests.append(now)
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > 8_192:
-                raise ValueError("Solicitação inválida.")
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = self.request_json()
             text = call_openai(clean_filters(body.get("filters")))
             self.send_json(HTTPStatus.OK, {"text": text})
         except (ValueError, json.JSONDecodeError) as error:
