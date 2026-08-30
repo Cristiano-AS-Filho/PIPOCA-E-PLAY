@@ -140,6 +140,22 @@ Para dados não confirmados, use 0, string vazia ou array vazio. Não invente di
 notas ou prêmios. A resposta deve obedecer exatamente ao JSON solicitado."""
 
 
+def extract_response_text(response):
+    """Extrai texto de uma resposta REST da OpenAI.
+
+    `output_text` é uma conveniência dos SDKs. A API REST retorna os blocos em
+    `output[].content[]`, então essa leitura mantém o backend independente de SDK.
+    """
+    parts = []
+    for item in response.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "output_text" and content.get("text"):
+                parts.append(content["text"])
+    return "".join(parts).strip()
+
+
 def call_openai(filters):
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -155,6 +171,8 @@ def call_openai(filters):
                 "schema": RECOMMENDATION_SCHEMA,
             }
         },
+        "max_output_tokens": 1800,
+        "reasoning": {"effort": "low"},
         "store": False,
     }
     request = urllib.request.Request(
@@ -172,9 +190,12 @@ def call_openai(filters):
     except urllib.error.URLError as error:
         raise RuntimeError("Não foi possível conectar ao serviço da OpenAI.") from error
 
-    text = result.get("output_text", "")
+    text = extract_response_text(result)
     if not text:
-        raise RuntimeError("A OpenAI não retornou uma recomendação utilizável.")
+        status = result.get("status", "desconhecido")
+        reason = (result.get("incomplete_details") or {}).get("reason")
+        suffix = f" Motivo: {reason}." if reason else ""
+        raise RuntimeError(f"A OpenAI não retornou texto final (status: {status}).{suffix}")
     return text
 
 
