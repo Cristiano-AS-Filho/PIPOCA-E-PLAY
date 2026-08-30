@@ -1,0 +1,1577 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipoca & Play</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0F1218;
+    --bg-elev:#171B24;
+    --bg-elev-2:#1E2330;
+    --marquee:#F2A93B;
+    --marquee-dim:#8A6A2E;
+    --velvet:#8A2A4C;
+    --cream:#EFE6D8;
+    --cream-dim:#C9BFAF;
+    --teal:#3C8C7A;
+    --ink:#181310;
+    --danger:#C4553D;
+    --gold:#C9992E;
+    --radius:10px;
+    --max:460px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--cream);
+    font-family:'Inter',system-ui,sans-serif;
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- ambient popcorn background ---------- */
+  #popcorn-bg{
+    position:fixed;
+    inset:0;
+    z-index:0;
+    overflow:hidden;
+    pointer-events:none;
+    background:var(--bg);
+    /* Toda palavra deste app vive dentro da coluna central (--max).
+       Por isso a pipoca perto/atrás do texto cai para ~10% de opacidade,
+       preservando contraste e leitura em qualquer ponto de rolagem. */
+    mask-image: linear-gradient(90deg,
+      black 0,
+      black calc(50% - 270px),
+      rgba(0,0,0,0.1) calc(50% - 230px),
+      rgba(0,0,0,0.1) calc(50% + 230px),
+      black calc(50% + 270px),
+      black 100%
+    );
+    -webkit-mask-image: linear-gradient(90deg,
+      black 0,
+      black calc(50% - 270px),
+      rgba(0,0,0,0.1) calc(50% - 230px),
+      rgba(0,0,0,0.1) calc(50% + 230px),
+      black calc(50% + 270px),
+      black 100%
+    );
+    mask-repeat:no-repeat;
+    -webkit-mask-repeat:no-repeat;
+  }
+  #popcorn-bg::after{
+    content:"";
+    position:absolute;inset:0;
+    background:
+      radial-gradient(ellipse at 50% 0%, rgba(242,169,59,0.10), transparent 55%),
+      linear-gradient(180deg, rgba(15,18,24,0.30) 0%, rgba(15,18,24,0.66) 55%, rgba(15,18,24,0.90) 100%);
+    pointer-events:none;
+  }
+
+  /* ---------- realistic popcorn kernel (butterfly-type, multi-lobe) ---------- */
+  .kernel{
+    position:absolute;
+    transform:translateY(-46px) rotate(var(--rot,0deg)) scale(0.6);
+    opacity:0;
+    animation:fallIn .6s cubic-bezier(.22,.9,.4,1.15) both;
+  }
+  .kernel.tier-large{ z-index:3; filter:drop-shadow(0 3px 3px rgba(0,0,0,0.28)); }
+  .kernel.tier-medium{ z-index:2; opacity:0.95; }
+  .kernel.tier-small{ z-index:1; filter:blur(0.4px); opacity:0.8; }
+
+  .kernel .petal{
+    position:absolute;
+    inset:0;
+    background:radial-gradient(circle at 32% 26%, #FDFDFD 0%, #F4EFEA 55%, #C5BBB1 100%);
+    box-shadow:
+      inset -3px -3px 4px rgba(140,70,17,0.20),
+      inset 2px 2px 3px rgba(255,255,255,0.65),
+      0 1px 2px rgba(0,0,0,0.22);
+  }
+  .kernel .p1{ border-radius:58% 42% 63% 37% / 47% 58% 42% 53%; }
+  .kernel .p2{ border-radius:40% 60% 45% 55% / 60% 40% 62% 38%; transform:rotate(35deg) scale(0.82); }
+  .kernel .p3{ border-radius:65% 35% 40% 60% / 40% 55% 45% 60%; transform:rotate(-28deg) scale(0.7); }
+  .kernel .core{
+    position:absolute;
+    width:38%; height:34%;
+    left:30%; top:40%;
+    border-radius:50% 50% 55% 45% / 55% 45% 55% 45%;
+    background:radial-gradient(circle at 35% 28%, #F2AA4C 0%, #D9822B 55%, #8C4611 100%);
+    box-shadow:0 0 4px rgba(242,170,76,0.55), inset -1px -1px 2px rgba(140,70,17,0.55);
+  }
+
+  @keyframes fallIn{
+    0%{ transform:translateY(-46px) rotate(var(--rot,0deg)) scale(0.6); opacity:0; }
+    62%{ transform:translateY(8px) rotate(var(--rot,0deg)) scale(1.06); opacity:1; }
+    100%{ transform:translateY(0) rotate(var(--rot,0deg)) scale(1); opacity:1; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    .kernel{animation:none;opacity:1;transform:translateY(0) rotate(var(--rot,0deg)) scale(1);}
+  }
+
+  #app{
+    position:relative;
+    z-index:1;
+    max-width:var(--max);
+    margin:0 auto;
+    padding:20px 16px 48px;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+  }
+
+  /* ---------- Marquee header ---------- */
+  .marquee{
+    text-align:center;
+    padding:18px 10px 22px;
+    position:relative;
+  }
+  .marquee-bulbs{
+    display:flex;
+    justify-content:center;
+    gap:7px;
+    margin-bottom:10px;
+  }
+  .bulb{
+    width:6px;height:6px;border-radius:50%;
+    background:var(--marquee);
+    box-shadow:0 0 6px 1px rgba(242,169,59,0.7);
+    animation:flicker 2.6s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce){ .bulb{animation:none;opacity:0.9;} }
+  .bulb:nth-child(odd){animation-delay:0.4s;}
+  .bulb:nth-child(3n){animation-delay:0.9s;}
+  @keyframes flicker{
+    0%,100%{opacity:1;}
+    50%{opacity:0.35;}
+  }
+  .marquee h1{
+    font-family:'Bebas Neue',cursive;
+    font-size:44px;
+    letter-spacing:3px;
+    margin:0;
+    color:var(--marquee);
+    line-height:0.95;
+    text-shadow:0 0 18px rgba(242,169,59,0.25);
+  }
+  .marquee p{
+    margin:6px 0 0;
+    font-size:12.5px;
+    color:var(--cream-dim);
+    letter-spacing:0.5px;
+    font-family:'IBM Plex Mono',monospace;
+  }
+
+  .header-shield{
+    position:relative;
+    margin:-20px -16px 0;
+    padding:20px 16px 4px;
+    backdrop-filter:blur(3px);
+    -webkit-backdrop-filter:blur(3px);
+    background:linear-gradient(180deg, rgba(15,18,24,0.62) 0%, rgba(15,18,24,0.30) 75%, rgba(15,18,24,0) 100%);
+  }
+
+  /* ---------- top nav ---------- */
+  .topnav{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11.5px;
+    color:var(--cream-dim);
+  }
+  .topnav button{
+    background:none;border:1px solid rgba(239,230,216,0.18);
+    color:var(--cream-dim);
+    padding:6px 10px;
+    border-radius:20px;
+    font-family:inherit;
+    font-size:11px;
+    cursor:pointer;
+    transition:border-color .15s, color .15s;
+  }
+  .topnav button:hover{border-color:var(--marquee);color:var(--marquee);}
+
+  /* ---------- progress dots (film perforation) ---------- */
+  .perf{
+    display:flex;
+    gap:6px;
+    justify-content:center;
+    margin:22px 0 26px;
+  }
+  .perf span{
+    width:9px;height:9px;border-radius:2px;
+    background:var(--bg-elev-2);
+    border:1px solid rgba(239,230,216,0.15);
+  }
+  .perf span.done{background:var(--marquee);border-color:var(--marquee);}
+  .perf span.now{background:var(--velvet);border-color:var(--velvet);}
+
+  /* ---------- step card ---------- */
+  .step-eyebrow{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;
+    color:var(--marquee);
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    margin-bottom:6px;
+  }
+  .step-question{
+    font-family:'Bebas Neue',cursive;
+    font-size:30px;
+    letter-spacing:0.5px;
+    line-height:1.05;
+    margin:0 0 18px;
+    color:var(--cream);
+  }
+  .options{
+    display:flex;
+    flex-direction:column;
+    gap:9px;
+  }
+  .opt{
+    text-align:left;
+    background:var(--bg-elev);
+    border:1px solid rgba(239,230,216,0.10);
+    color:var(--cream);
+    padding:13px 16px;
+    border-radius:var(--radius);
+    font-family:'Inter',sans-serif;
+    font-size:14.5px;
+    font-weight:500;
+    cursor:pointer;
+    transition:border-color .15s, background .15s, transform .1s;
+  }
+  .opt:hover{border-color:var(--marquee);background:var(--bg-elev-2);}
+  .opt:active{transform:scale(0.99);}
+  .opt.selected{
+    border-color:var(--marquee);
+    background:linear-gradient(90deg, rgba(242,169,59,0.14), rgba(242,169,59,0.04));
+  }
+
+  .back-link{
+    margin-top:18px;
+    background:none;border:none;
+    color:var(--cream-dim);
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    cursor:pointer;
+    padding:6px 0;
+  }
+  .back-link:hover{color:var(--marquee);}
+
+  /* ---------- summary ---------- */
+  .summary-list{
+    display:flex;flex-wrap:wrap;gap:8px;
+    margin:4px 0 22px;
+  }
+  .tag{
+    background:var(--bg-elev);
+    border:1px solid rgba(239,230,216,0.14);
+    padding:7px 12px;
+    border-radius:20px;
+    font-size:12.5px;
+    color:var(--cream-dim);
+  }
+  .tag b{color:var(--cream);font-weight:600;}
+
+  .cta{
+    width:100%;
+    background:var(--marquee);
+    color:var(--ink);
+    border:none;
+    padding:15px 18px;
+    border-radius:var(--radius);
+    font-family:'Bebas Neue',cursive;
+    font-size:19px;
+    letter-spacing:1px;
+    cursor:pointer;
+    transition:filter .15s, transform .1s;
+  }
+  .cta:hover{filter:brightness(1.08);}
+  .cta:active{transform:scale(0.985);}
+  .cta.secondary{
+    background:none;
+    border:1px solid rgba(239,230,216,0.25);
+    color:var(--cream);
+  }
+  .cta.small{padding:11px 14px;font-size:15px;}
+
+  /* ---------- loading ---------- */
+  .loading{
+    text-align:center;
+    padding:60px 10px;
+  }
+  .reel{
+    width:46px;height:46px;margin:0 auto 18px;
+    border-radius:50%;
+    border:3px solid rgba(242,169,59,0.2);
+    border-top-color:var(--marquee);
+    animation:spin 0.9s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce){ .reel{animation:spin 2.4s linear infinite;} }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .loading p{
+    font-family:'IBM Plex Mono',monospace;
+    color:var(--cream-dim);
+    font-size:13px;
+  }
+
+  /* ---------- error ---------- */
+  .error-box{
+    background:rgba(196,85,61,0.12);
+    border:1px solid rgba(196,85,61,0.4);
+    border-radius:var(--radius);
+    padding:16px;
+    margin-bottom:16px;
+    font-size:13.5px;
+    color:var(--cream);
+  }
+
+  /* ---------- results ---------- */
+  .results-header{
+    font-family:'Bebas Neue',cursive;
+    font-size:26px;
+    letter-spacing:0.5px;
+    margin:0 0 4px;
+  }
+  .results-sub{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    color:var(--cream-dim);
+    margin:0 0 20px;
+  }
+
+  /* ---------- hero pick ---------- */
+  .hero-pick{
+    border:1px solid rgba(242,169,59,0.35);
+    background:linear-gradient(135deg, rgba(242,169,59,0.10), rgba(138,42,76,0.08));
+    border-radius:var(--radius);
+    padding:16px 18px;
+    margin-bottom:26px;
+  }
+  .hero-pick .hp-eyebrow{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    color:var(--marquee);
+    margin-bottom:6px;
+  }
+  .hero-pick .hp-title{
+    font-family:'Bebas Neue',cursive;
+    font-size:24px;
+    letter-spacing:0.3px;
+    margin:0 0 6px;
+  }
+  .hero-pick .hp-reason{
+    font-size:13px;
+    color:var(--cream-dim);
+    line-height:1.5;
+    margin:0;
+  }
+
+  /* ---------- horizontal ticket carousel ---------- */
+  .scroll-hint{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;
+    letter-spacing:1px;
+    color:var(--cream-dim);
+    text-align:center;
+    margin:0 0 12px;
+    opacity:0.75;
+  }
+  .tickets-scroll{
+    display:flex;
+    gap:16px;
+    overflow-x:auto;
+    overflow-y:visible;
+    scroll-snap-type:x mandatory;
+    -webkit-overflow-scrolling:touch;
+    margin:0 -16px 8px;
+    padding:4px 16px 20px;
+    scrollbar-width:thin;
+    scrollbar-color:var(--marquee-dim) transparent;
+  }
+  .tickets-scroll::-webkit-scrollbar{height:6px;}
+  .tickets-scroll::-webkit-scrollbar-track{background:transparent;}
+  .tickets-scroll::-webkit-scrollbar-thumb{background:var(--marquee-dim);border-radius:3px;}
+  .tickets-scroll .ticket{
+    flex:0 0 82vw;
+    max-width:300px;
+    scroll-snap-align:start;
+    margin-bottom:0;
+  }
+
+  .ticket{
+    position:relative;
+    background:var(--cream);
+    color:var(--ink);
+    border-radius:var(--radius);
+    overflow:visible;
+  }
+
+  /* poster / backdrop banner */
+  .ticket-banner{
+    position:relative;
+    height:170px;
+    border-radius:var(--radius) var(--radius) 0 0;
+    overflow:hidden;
+    background:linear-gradient(135deg,#2b2f3a,#11141b);
+  }
+  .ticket-banner img{
+    position:absolute;inset:0;
+    width:100%;height:100%;
+    object-fit:cover;
+    display:block;
+    opacity:0;
+    transition:opacity .25s ease;
+  }
+  .ticket-banner img.loaded{opacity:1;}
+  .ticket-banner .fallback{
+    position:absolute;inset:0;
+    display:flex;align-items:center;justify-content:center;flex-direction:column;
+    gap:6px;
+    color:rgba(239,230,216,0.32);
+    text-align:center;
+    padding:10px;
+  }
+  .ticket-banner .fallback .ico{font-size:26px;}
+  .ticket-banner .fallback .txt{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+  }
+  .ticket-banner .fallback .spin-mini{
+    width:18px;height:18px;
+    border-radius:50%;
+    border:2px solid rgba(242,169,59,0.25);
+    border-top-color:var(--marquee);
+    animation:spin 0.9s linear infinite;
+    margin-bottom:2px;
+  }
+  @media (prefers-reduced-motion: reduce){ .spin-mini{animation:spin 2.4s linear infinite;} }
+
+  .ticket-head{
+    padding:14px 18px 16px;
+    position:relative;
+  }
+  .rank-row{
+    display:flex;justify-content:space-between;align-items:flex-start;
+    gap:8px;
+    margin-bottom:8px;
+    flex-wrap:wrap;
+  }
+  .badges-left{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+  .rank-badge{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;
+    letter-spacing:1px;
+    background:var(--velvet);
+    color:var(--cream);
+    padding:4px 9px;
+    border-radius:3px;
+  }
+  .age-badge{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;
+    letter-spacing:0.5px;
+    background:rgba(24,19,16,0.08);
+    color:var(--ink);
+    border:1px solid rgba(24,19,16,0.2);
+    padding:4px 8px;
+    border-radius:3px;
+  }
+  .match-stamp{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;
+    font-weight:600;
+    color:var(--teal);
+    border:1.5px solid var(--teal);
+    padding:3px 8px;
+    border-radius:3px;
+    transform:rotate(-3deg);
+    white-space:nowrap;
+  }
+  .ticket h3{
+    font-family:'Bebas Neue',cursive;
+    font-size:26px;
+    letter-spacing:0.3px;
+    margin:2px 0 0;
+    line-height:1.05;
+  }
+  .ticket .orig-title{
+    font-size:12px;
+    font-style:italic;
+    color:#5a5148;
+    margin:2px 0 0;
+  }
+  .meta-row{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11.5px;
+    color:#5a5148;
+    margin-top:8px;
+    display:flex;flex-wrap:wrap;gap:10px;
+  }
+  .vibe-row{
+    display:flex;flex-wrap:wrap;gap:6px;
+    margin-top:10px;
+  }
+  .vibe-chip{
+    font-size:10.5px;
+    font-family:'IBM Plex Mono',monospace;
+    color:var(--velvet);
+    border:1px solid rgba(138,42,76,0.4);
+    padding:3px 8px;
+    border-radius:12px;
+  }
+  .tear-line{
+    border-top:2px dashed rgba(24,19,16,0.22);
+    margin:0 18px;
+    position:relative;
+  }
+  .tear-line::before, .tear-line::after{
+    content:"";
+    position:absolute;
+    top:-11px;
+    width:22px;height:22px;
+    background:var(--bg);
+    border-radius:50%;
+  }
+  .tear-line::before{left:-29px;}
+  .tear-line::after{right:-29px;}
+  .ticket-body{
+    padding:16px 18px 20px;
+  }
+  .ticket-body .label{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10px;
+    letter-spacing:1px;
+    text-transform:uppercase;
+    color:var(--velvet);
+    margin:0 0 4px;
+  }
+  .ticket-body p{
+    margin:0 0 14px;
+    font-size:13.5px;
+    line-height:1.5;
+  }
+
+  .ratings-row{
+    display:flex;flex-wrap:wrap;gap:8px;
+    margin-bottom:12px;
+  }
+  .rating-pill{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11.5px;
+    font-weight:600;
+    padding:5px 10px;
+    border-radius:6px;
+    background:rgba(24,19,16,0.06);
+    border:1px solid rgba(24,19,16,0.12);
+  }
+  .awards-row{
+    display:flex;align-items:center;gap:6px;
+    font-size:12.5px;
+    color:var(--gold);
+    background:rgba(201,153,46,0.12);
+    border:1px solid rgba(201,153,46,0.35);
+    padding:7px 10px;
+    border-radius:6px;
+    margin-bottom:14px;
+  }
+
+  .watch-chips{
+    display:flex;flex-wrap:wrap;gap:8px;
+    margin-bottom:16px;
+  }
+  .watch-chip{
+    font-size:11.5px;
+    font-family:'Inter',sans-serif;
+    font-weight:600;
+    background:rgba(60,140,122,0.12);
+    border:1px solid rgba(60,140,122,0.35);
+    color:#1f4f44;
+    padding:5px 10px;
+    border-radius:14px;
+    display:inline-flex;align-items:center;gap:5px;
+  }
+
+  .links-row{
+    display:flex;gap:8px;flex-wrap:wrap;
+    margin-top:2px;
+  }
+  .link-chip{
+    font-size:11.5px;
+    font-family:'IBM Plex Mono',monospace;
+    text-decoration:none;
+    color:var(--ink);
+    background:rgba(24,19,16,0.06);
+    border:1px solid rgba(24,19,16,0.15);
+    padding:6px 10px;
+    border-radius:16px;
+  }
+  .link-chip:hover{background:rgba(24,19,16,0.12);}
+
+  .interp-box{
+    font-size:13px;
+    color:var(--cream-dim);
+    background:var(--bg-elev);
+    border-left:2px solid var(--marquee);
+    padding:12px 14px;
+    border-radius:6px;
+    margin-bottom:22px;
+    line-height:1.5;
+  }
+
+  .disclaimer{
+    font-size:11px;
+    color:var(--cream-dim);
+    opacity:0.65;
+    line-height:1.5;
+    margin-top:4px;
+    text-align:center;
+  }
+
+  /* ---------- history ---------- */
+  .hist-item{
+    background:var(--bg-elev);
+    border:1px solid rgba(239,230,216,0.1);
+    border-radius:var(--radius);
+    padding:13px 15px;
+    margin-bottom:10px;
+    cursor:pointer;
+    transition:border-color .15s;
+  }
+  .hist-item:hover{border-color:var(--marquee);}
+  .hist-item .hd{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;
+    color:var(--cream-dim);
+    margin-bottom:6px;
+  }
+  .hist-item .ht{
+    font-size:13.5px;
+    font-weight:600;
+  }
+  .empty-state{
+    text-align:center;
+    padding:40px 20px;
+    color:var(--cream-dim);
+    font-size:13.5px;
+  }
+
+  .footer-space{flex:1;}
+</style>
+</head>
+<body>
+<div id="popcorn-bg"></div>
+<div id="app"></div>
+
+<script>
+/* =========================================================
+   PIPOCA & PLAY — motor de recomendação
+   Preserva a lógica dos 7 filtros do MVP original.
+   ========================================================= */
+
+const PROMPT_VERSION = "v1.2";
+
+// Rota do backend. A chave OpenAI fica exclusivamente no servidor.
+const RECOMMENDATION_ENDPOINT = "/api/recommend";
+
+const STEPS = [
+  {
+    key: "genre",
+    eyebrow: "1 de 7",
+    question: "O que você quer assistir?",
+    options: ["Livre (Qualquer)","Ação","Comédia","Drama","Ficção Científica","Terror","Romance","Suspense / Thriller","Animação","Documentário","Aventura","Fantasia"]
+  },
+  {
+    key: "mood",
+    eyebrow: "2 de 7",
+    question: "Como você quer se sentir?",
+    options: ["Livre (Qualquer)","Quer dar risada / Divertido","Para chorar / Emocionante","Tensão / Adrenalina","Para pensar / Cabeça","Leve / Relaxante para descansar","Inspirador / Motivacional","Sombrio / Assustador"]
+  },
+  {
+    key: "duration",
+    eyebrow: "3 de 7",
+    question: "Quanto tempo você tem?",
+    options: ["Livre (Qualquer)","Curto (Até 90 min)","Padrão (90 a 120 min)","Longo (Mais de 120 min)"]
+  },
+  {
+    key: "era",
+    eyebrow: "4 de 7",
+    question: "Você prefere alguma época?",
+    options: ["Livre (Qualquer)","Lançamentos Recentes (2023-2026)","Anos 2010s","Anos 2000s","Anos 90s","Clássicos (Antes de 1990)"]
+  },
+  {
+    key: "platform",
+    eyebrow: "5 de 7",
+    question: "Onde pretende assistir?",
+    options: ["Livre (Qualquer)","Netflix","Amazon Prime Video","Max (HBO)","Disney+","Apple TV+","Paramount+","Cinema / Aluguel"]
+  },
+  {
+    key: "companionship",
+    eyebrow: "6 de 7",
+    question: "Vai assistir com quem?",
+    options: ["Sozinho(a)","Em Casal","Com Amigos","Em Família (com crianças)"]
+  },
+  {
+    key: "popularity",
+    eyebrow: "7 de 7",
+    question: "Que tipo de filme você prefere?",
+    options: ["Indiferente","Grandes Sucessos / Blockbusters","Filmes Cult / Menos Conhecidos","Aclamados pela Crítica / Premiações (Oscar, Cannes)"]
+  }
+];
+
+const LOADING_MESSAGES = [
+  "Consultando o roteirista de plantão…",
+  "Comparando clima, tempo e companhia…",
+  "Selecionando os 3 melhores candidatos…",
+  "Buscando os pôsteres certinhos…"
+];
+
+let state = {
+  screen: "wizard", // wizard | summary | loading | results | history | error
+  stepIndex: 0,
+  filters: {},
+  interpretation: "",
+  bestChoice: null,
+  recommendations: [],
+  errorMsg: "",
+  historyList: null,
+  viewingHistoryItem: null
+};
+
+/* =========================================================
+   PIPOCA DE FUNDO — enche a tela conforme o progresso
+   ========================================================= */
+function seededRandom(seed){
+  let s = seed;
+  return function(){
+    s = (s * 9301 + 49297) % 233280;
+    return s / 233280;
+  };
+}
+
+const rng = seededRandom(1337);
+const POPCORN_COUNT = 170;
+const POPCORN_KERNELS = [];
+for(let i = 0; i < POPCORN_COUNT; i++){
+  const r1 = rng(), r2 = rng(), r3 = rng(), r4 = rng(), r5 = rng();
+  // tiers: pequenas ao fundo (mais comuns), médias flutuando, grandes em foco (mais raras)
+  let tier, size;
+  if(r5 < 0.40){ tier = "small";  size = 9 + r3 * 6;  }
+  else if(r5 < 0.85){ tier = "medium"; size = 17 + r3 * 9; }
+  else { tier = "large"; size = 27 + r3 * 9; }
+
+  POPCORN_KERNELS.push({
+    x: r1 * 100,
+    y: Math.pow(r2, 1.35) * 100, // mais denso perto do topo, rareando conforme desce
+    size: size,
+    rot: r4 * 360,
+    tier: tier
+  });
+}
+
+const kernelEls = new Map(); // idx -> elemento no DOM
+
+function popcornLevel(){
+  // fração de 0 a 1 de quanto a tela deve estar "cheia" de pipoca, de cima para baixo
+  if(state.screen === "wizard"){
+    return state.stepIndex / STEPS.length;
+  }
+  // summary, loading, results, history, error: já respondeu tudo
+  return 1;
+}
+
+function buildKernelEl(k){
+  const el = document.createElement("div");
+  el.className = "kernel tier-" + k.tier;
+  el.style.left = k.x.toFixed(2) + "%";
+  el.style.top = k.y.toFixed(2) + "%";
+  el.style.width = k.size.toFixed(1) + "px";
+  el.style.height = (k.size * 0.86).toFixed(1) + "px";
+  el.style.setProperty("--rot", k.rot.toFixed(1) + "deg");
+
+  const p1 = document.createElement("span");
+  p1.className = "petal p1";
+  const p2 = document.createElement("span");
+  p2.className = "petal p2";
+  const p3 = document.createElement("span");
+  p3.className = "petal p3";
+  const core = document.createElement("span");
+  core.className = "core";
+
+  el.appendChild(p1);
+  el.appendChild(p2);
+  el.appendChild(p3);
+  el.appendChild(core);
+  return el;
+}
+
+function syncPopcorn(){
+  const container = document.getElementById("popcorn-bg");
+  if(!container) return;
+  const thresholdY = popcornLevel() * 100;
+
+  POPCORN_KERNELS.forEach((k, idx) => {
+    const shouldShow = k.y <= thresholdY;
+    const exists = kernelEls.has(idx);
+
+    if(shouldShow && !exists){
+      const el = buildKernelEl(k);
+      container.appendChild(el);
+      kernelEls.set(idx, el);
+    } else if(!shouldShow && exists){
+      kernelEls.get(idx).remove();
+      kernelEls.delete(idx);
+    }
+  });
+}
+
+function buildRecommendationPrompt(filters){
+  return (
+`Atue como um especialista em cinema e recomendador personalizado de filmes, com foco no público do Brasil (streaming e classificação indicativa brasileiros).
+
+Estou procurando uma recomendação perfeita para assistir agora.
+
+Considere cuidadosamente minhas preferências e restrições:
+
+Gênero: ${filters.genre}
+Vibe/Clima desejado: ${filters.mood}
+Tempo disponível: ${filters.duration}
+Época do filme: ${filters.era}
+Plataforma disponível: ${filters.platform}
+Companhia: ${filters.companionship}
+Perfil do filme: ${filters.popularity}
+
+Selecione os 3 melhores filmes com a maior compatibilidade com esse perfil. Não escolha simplesmente filmes populares — priorize a compatibilidade real entre gênero, clima emocional, duração, época, companhia e perfil de popularidade.
+
+Use seu melhor conhecimento sobre cada filme (notas, prêmios, onde assistir no Brasil, classificação indicativa). Não é necessário verificação em tempo real, mas não invente números absurdos nem plataformas inexistentes — use apenas dados plausíveis e realistas para cada título real.
+
+Responda APENAS com um objeto JSON válido, compacto (sem quebras de linha ou espaços desnecessários, sem markdown, sem texto antes ou depois), no formato exato:
+
+{"interpretation":"uma frase em pt-BR resumindo o pedido","best_choice":{"title_pt":"título do rank 1","reason":"uma frase curta em pt-BR do porquê é a melhor pedida de hoje"},"recommendations":[{"rank":1,"title_original":"","title_pt":"","year":0,"runtime_minutes":0,"age_rating_br":0,"genres":["max 3"],"vibe_tags":["max 3"],"synopsis":"sem spoilers, max 22 palavras, pt-BR","why_it_matches":"max 16 palavras, pt-BR","match_score":0,"ratings":{"imdb":0,"rotten_tomatoes_critics":0},"awards":{"oscars_won":0,"highlight":"max 6 palavras ou vazio"},"where_to_watch":[{"platform":"","type":"assinatura|aluguel_compra|cinema"}]}]}
+
+O array "recommendations" deve ter exatamente 3 itens, ordenados do maior para o menor match_score. Use age_rating_br 0 para "Livre". Deixe campos vazios ("" ou [] ou 0) quando não tiver certeza — nunca invente um número aleatório para preencher.`
+  );
+}
+
+async function getRecommendations(filters){
+  const response = await fetch(RECOMMENDATION_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filters })
+  });
+  if(!response.ok){
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || "Falha ao consultar o motor de recomendação (HTTP " + response.status + ").");
+  }
+  const data = await response.json();
+  const text = data.text || "";
+  const clean = text.replace(/```json/gi,"").replace(/```/g,"").trim();
+  let parsed;
+  try{
+    parsed = JSON.parse(clean);
+  }catch(e){
+    throw new Error("Não consegui interpretar a resposta do motor de recomendação. Tente novamente.");
+  }
+  if(!parsed.recommendations || !Array.isArray(parsed.recommendations) || parsed.recommendations.length === 0){
+    throw new Error("O motor de recomendação não retornou resultados válidos.");
+  }
+  return parsed;
+}
+
+/* =========================================================
+   PÔSTERES REAIS — via Wikipedia REST API (sem chave)
+   O modelo não consegue prever URLs de imagem válidas,
+   então buscamos a imagem real do filme depois de ter o título.
+   ========================================================= */
+function upscaleWikiThumb(src){
+  // ".../thumb/x/xx/Nome.jpg/220px-Nome.jpg" -> pede uma versão maior
+  return src.replace(/\/\d+px-/, "/500px-");
+}
+
+async function wikiSummaryThumb(title, lang){
+  try{
+    const endpoint = "https://" + lang + ".wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(title);
+    const res = await fetch(endpoint, { headers: { "accept": "application/json" } });
+    if(!res.ok) return null;
+    const data = await res.json();
+    if(data.type === "disambiguation") return null;
+    if(data.thumbnail && data.thumbnail.source){
+      return upscaleWikiThumb(data.thumbnail.source);
+    }
+    return null;
+  }catch(e){
+    return null;
+  }
+}
+
+async function fetchPosterUrl(rec){
+  const original = (rec.title_original || rec.title_pt || "").trim();
+  const pt = (rec.title_pt || rec.title_original || "").trim();
+  const year = rec.year;
+  if(!original && !pt) return "";
+
+  const candidates = [];
+  if(original){
+    if(year) candidates.push(original + " (" + year + " film)");
+    candidates.push(original + " (film)");
+    candidates.push(original);
+  }
+  if(pt && pt !== original){
+    candidates.push(pt);
+  }
+
+  for(const lang of ["en","pt"]){
+    for(const c of candidates){
+      const url = await wikiSummaryThumb(c, lang);
+      if(url) return url;
+    }
+  }
+  return "";
+}
+
+/* ---------- storage helpers ---------- */
+async function saveToHistory(record){
+  try{
+    const key = "search:" + record.created_at;
+    await window.storage.set(key, JSON.stringify(record), false);
+  }catch(e){ /* best-effort, non-blocking */ }
+}
+
+async function loadHistory(){
+  try{
+    const listing = await window.storage.list("search:", false);
+    const keys = (listing && listing.keys) ? listing.keys.slice().sort().reverse() : [];
+    const items = [];
+    for(const k of keys){
+      try{
+        const r = await window.storage.get(k, false);
+        if(r && r.value) items.push(JSON.parse(r.value));
+      }catch(e){}
+    }
+    return items;
+  }catch(e){
+    return [];
+  }
+}
+
+/* ---------- external link builders (no API key required) ---------- */
+function justWatchUrl(title){
+  return "https://www.justwatch.com/br/pesquisa?q=" + encodeURIComponent(title);
+}
+function imdbUrl(title){
+  return "https://www.imdb.com/find/?q=" + encodeURIComponent(title);
+}
+function letterboxdUrl(title){
+  return "https://letterboxd.com/search/" + encodeURIComponent(title) + "/";
+}
+
+const WATCH_TYPE_ICON = {
+  assinatura: "📺",
+  aluguel_compra: "💰",
+  cinema: "🎦"
+};
+const WATCH_TYPE_LABEL = {
+  assinatura: "assinatura",
+  aluguel_compra: "aluguel/compra",
+  cinema: "cinema"
+};
+
+/* ---------- rendering ---------- */
+const app = document.getElementById("app");
+
+function render(){
+  app.innerHTML = "";
+  const header = document.createElement("div");
+  header.className = "header-shield";
+  header.appendChild(renderTopnav());
+  header.appendChild(renderMarquee());
+  app.appendChild(header);
+
+  if(state.screen === "wizard") app.appendChild(renderWizard());
+  else if(state.screen === "summary") app.appendChild(renderSummary());
+  else if(state.screen === "loading") app.appendChild(renderLoading());
+  else if(state.screen === "results") app.appendChild(renderResults());
+  else if(state.screen === "history") app.appendChild(renderHistory());
+  else if(state.screen === "error") app.appendChild(renderError());
+
+  const spacer = document.createElement("div");
+  spacer.className = "footer-space";
+  app.appendChild(spacer);
+
+  syncPopcorn();
+}
+
+function renderTopnav(){
+  const nav = document.createElement("div");
+  nav.className = "topnav";
+
+  const left = document.createElement("span");
+  left.textContent = "SESSÃO DE HOJE";
+
+  const right = document.createElement("div");
+  right.style.display = "flex";
+  right.style.gap = "8px";
+
+  const histBtn = document.createElement("button");
+  histBtn.textContent = "Histórico";
+  histBtn.onclick = async () => {
+    state.screen = "history";
+    state.historyList = await loadHistory();
+    render();
+  };
+
+  const newBtn = document.createElement("button");
+  newBtn.textContent = "Nova busca";
+  newBtn.onclick = () => {
+    state.screen = "wizard";
+    state.stepIndex = 0;
+    state.filters = {};
+    render();
+  };
+
+  right.appendChild(histBtn);
+  right.appendChild(newBtn);
+  nav.appendChild(left);
+  nav.appendChild(right);
+  return nav;
+}
+
+function renderMarquee(){
+  const wrap = document.createElement("div");
+  wrap.className = "marquee";
+
+  const bulbs = document.createElement("div");
+  bulbs.className = "marquee-bulbs";
+  for(let i=0;i<9;i++){
+    const b = document.createElement("span");
+    b.className = "bulb";
+    bulbs.appendChild(b);
+  }
+
+  const h1 = document.createElement("h1");
+  h1.textContent = "PIPOCA & PLAY";
+  const p = document.createElement("p");
+  p.textContent = "7 perguntas. 3 filmes. Zero rolagem infinita.";
+
+  wrap.appendChild(bulbs);
+  wrap.appendChild(h1);
+  wrap.appendChild(p);
+  return wrap;
+}
+
+function renderPerf(){
+  const perf = document.createElement("div");
+  perf.className = "perf";
+  STEPS.forEach((s, i) => {
+    const dot = document.createElement("span");
+    if(i < state.stepIndex) dot.className = "done";
+    else if(i === state.stepIndex) dot.className = "now";
+    perf.appendChild(dot);
+  });
+  return perf;
+}
+
+function renderWizard(){
+  const wrap = document.createElement("div");
+  wrap.appendChild(renderPerf());
+
+  const step = STEPS[state.stepIndex];
+
+  const eyebrow = document.createElement("div");
+  eyebrow.className = "step-eyebrow";
+  eyebrow.textContent = step.eyebrow;
+
+  const q = document.createElement("h2");
+  q.className = "step-question";
+  q.textContent = step.question;
+
+  const opts = document.createElement("div");
+  opts.className = "options";
+
+  step.options.forEach(opt => {
+    const b = document.createElement("button");
+    b.className = "opt" + (state.filters[step.key] === opt ? " selected" : "");
+    b.textContent = opt;
+    b.onclick = () => {
+      state.filters[step.key] = opt;
+      if(state.stepIndex < STEPS.length - 1){
+        state.stepIndex += 1;
+      }else{
+        state.screen = "summary";
+      }
+      render();
+    };
+    opts.appendChild(b);
+  });
+
+  wrap.appendChild(eyebrow);
+  wrap.appendChild(q);
+  wrap.appendChild(opts);
+
+  if(state.stepIndex > 0){
+    const back = document.createElement("button");
+    back.className = "back-link";
+    back.textContent = "← Voltar";
+    back.onclick = () => { state.stepIndex -= 1; render(); };
+    wrap.appendChild(back);
+  }
+
+  return wrap;
+}
+
+function renderSummary(){
+  const wrap = document.createElement("div");
+
+  const eyebrow = document.createElement("div");
+  eyebrow.className = "step-eyebrow";
+  eyebrow.textContent = "SUA BUSCA";
+
+  const q = document.createElement("h2");
+  q.className = "step-question";
+  q.textContent = "Confere pra mim?";
+
+  const list = document.createElement("div");
+  list.className = "summary-list";
+  STEPS.forEach(s => {
+    const tag = document.createElement("div");
+    tag.className = "tag";
+    tag.innerHTML = "<b>" + escapeHtml(state.filters[s.key]) + "</b>";
+    list.appendChild(tag);
+  });
+
+  const cta = document.createElement("button");
+  cta.className = "cta";
+  cta.textContent = "🎬 Encontrar meu filme";
+  cta.onclick = () => runSearch();
+
+  const back = document.createElement("button");
+  back.className = "back-link";
+  back.textContent = "← Ajustar respostas";
+  back.style.display = "block";
+  back.onclick = () => { state.screen = "wizard"; state.stepIndex = STEPS.length - 1; render(); };
+
+  wrap.appendChild(eyebrow);
+  wrap.appendChild(q);
+  wrap.appendChild(list);
+  wrap.appendChild(cta);
+  wrap.appendChild(back);
+  return wrap;
+}
+
+function renderLoading(){
+  const wrap = document.createElement("div");
+  wrap.className = "loading";
+  const reel = document.createElement("div");
+  reel.className = "reel";
+  const p = document.createElement("p");
+  p.textContent = LOADING_MESSAGES[Math.floor(Math.random()*LOADING_MESSAGES.length)];
+  wrap.appendChild(reel);
+  wrap.appendChild(p);
+  return wrap;
+}
+
+function renderError(){
+  const wrap = document.createElement("div");
+  const box = document.createElement("div");
+  box.className = "error-box";
+  box.textContent = state.errorMsg || "Algo deu errado.";
+  const retry = document.createElement("button");
+  retry.className = "cta small";
+  retry.textContent = "Tentar de novo";
+  retry.onclick = () => runSearch();
+  const back = document.createElement("button");
+  back.className = "back-link";
+  back.textContent = "← Ajustar respostas";
+  back.style.display = "block";
+  back.onclick = () => { state.screen = "summary"; render(); };
+  wrap.appendChild(box);
+  wrap.appendChild(retry);
+  wrap.appendChild(back);
+  return wrap;
+}
+
+async function runSearch(){
+  state.screen = "loading";
+  render();
+  try{
+    const result = await getRecommendations(state.filters);
+
+    // busca os pôsteres reais antes de mostrar os cards
+    await Promise.all(result.recommendations.map(async rec => {
+      try{
+        const poster = await fetchPosterUrl(rec);
+        rec.poster_url = poster || "";
+      }catch(e){
+        rec.poster_url = "";
+      }
+    }));
+
+    state.interpretation = result.interpretation || "";
+    state.bestChoice = result.best_choice || null;
+    state.recommendations = result.recommendations;
+    state.screen = "results";
+    render();
+
+    const record = {
+      filters: { ...state.filters },
+      interpretation: state.interpretation,
+      bestChoice: state.bestChoice,
+      recommendations: state.recommendations,
+      prompt_version: PROMPT_VERSION,
+      created_at: new Date().toISOString()
+    };
+    saveToHistory(record);
+  }catch(e){
+    state.errorMsg = e.message || "Não consegui buscar recomendações agora.";
+    state.screen = "error";
+    render();
+  }
+}
+
+function renderResults(){
+  const wrap = document.createElement("div");
+
+  const h = document.createElement("div");
+  h.className = "results-header";
+  h.textContent = "Encontramos 3 opções pra você";
+  const sub = document.createElement("div");
+  sub.className = "results-sub";
+  sub.textContent = "ROTEIRO Nº " + PROMPT_VERSION.toUpperCase() + " · MOTOR: CHATGPT";
+  wrap.appendChild(h);
+  wrap.appendChild(sub);
+
+  if(state.interpretation){
+    const box = document.createElement("div");
+    box.className = "interp-box";
+    box.textContent = state.interpretation;
+    wrap.appendChild(box);
+  }
+
+  if(state.bestChoice && (state.bestChoice.title_pt || state.bestChoice.reason)){
+    const hero = document.createElement("div");
+    hero.className = "hero-pick";
+    const eyebrow = document.createElement("div");
+    eyebrow.className = "hp-eyebrow";
+    eyebrow.textContent = "🍿 Melhor pedida de hoje";
+    const title = document.createElement("div");
+    title.className = "hp-title";
+    title.textContent = state.bestChoice.title_pt || "";
+    const reason = document.createElement("p");
+    reason.className = "hp-reason";
+    reason.textContent = state.bestChoice.reason || "";
+    hero.appendChild(eyebrow);
+    if(state.bestChoice.title_pt) hero.appendChild(title);
+    if(state.bestChoice.reason) hero.appendChild(reason);
+    wrap.appendChild(hero);
+  }
+
+  const hint = document.createElement("p");
+  hint.className = "scroll-hint";
+  hint.textContent = "◀ arraste para o lado para ver as 3 opções ▶";
+  wrap.appendChild(hint);
+
+  const scrollRow = document.createElement("div");
+  scrollRow.className = "tickets-scroll";
+  state.recommendations
+    .slice()
+    .sort((a,b) => (b.match_score||0) - (a.match_score||0))
+    .forEach(rec => scrollRow.appendChild(renderTicket(rec)));
+  wrap.appendChild(scrollRow);
+
+  const disc = document.createElement("p");
+  disc.className = "disclaimer";
+  disc.textContent = "Notas, prêmios, classificação indicativa e onde assistir são estimados por IA a partir do conhecimento do modelo — não são consultados em tempo real e podem estar desatualizados ou imprecisos. Pôsteres vêm da Wikipedia e podem não corresponder exatamente à edição do filme. Confira antes de decidir usando os links de verificação.";
+  wrap.appendChild(disc);
+
+  return wrap;
+}
+
+function renderTicket(rec){
+  const t = document.createElement("div");
+  t.className = "ticket";
+
+  /* --- banner / poster --- */
+  const banner = document.createElement("div");
+  banner.className = "ticket-banner";
+  const fallback = document.createElement("div");
+  fallback.className = "fallback";
+  fallback.innerHTML = '<span class="ico">🎞️</span><span class="txt">pôster não disponível</span>';
+  banner.appendChild(fallback);
+
+  if(rec.poster_url){
+    const img = document.createElement("img");
+    img.src = rec.poster_url;
+    img.alt = rec.title_pt || rec.title_original || "pôster do filme";
+    img.loading = "lazy";
+    img.onload = () => {
+      img.classList.add("loaded");
+      fallback.style.display = "none";
+    };
+    img.onerror = () => { img.remove(); };
+    banner.appendChild(img);
+  }
+
+  const head = document.createElement("div");
+  head.className = "ticket-head";
+
+  const rankRow = document.createElement("div");
+  rankRow.className = "rank-row";
+
+  const badgesLeft = document.createElement("div");
+  badgesLeft.className = "badges-left";
+  const badge = document.createElement("span");
+  badge.className = "rank-badge";
+  badge.textContent = "ESCOLHA #" + rec.rank;
+  badgesLeft.appendChild(badge);
+  if(rec.age_rating_br){
+    const age = document.createElement("span");
+    age.className = "age-badge";
+    age.textContent = rec.age_rating_br + " anos";
+    badgesLeft.appendChild(age);
+  }
+
+  const stamp = document.createElement("span");
+  stamp.className = "match-stamp";
+  stamp.textContent = (rec.match_score || "—") + "% MATCH";
+
+  rankRow.appendChild(badgesLeft);
+  rankRow.appendChild(stamp);
+
+  const h3 = document.createElement("h3");
+  h3.textContent = rec.title_pt || rec.title_original;
+
+  head.appendChild(rankRow);
+  head.appendChild(h3);
+
+  if(rec.title_pt && rec.title_original && rec.title_pt !== rec.title_original){
+    const orig = document.createElement("div");
+    orig.className = "orig-title";
+    orig.textContent = "Título original: " + rec.title_original;
+    head.appendChild(orig);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "meta-row";
+  const parts = [];
+  if(rec.year) parts.push(String(rec.year));
+  if(rec.runtime_minutes) parts.push(rec.runtime_minutes + " min");
+  if(rec.genres && rec.genres.length) parts.push(rec.genres.join(" · "));
+  parts.forEach(p => {
+    const span = document.createElement("span");
+    span.textContent = p;
+    meta.appendChild(span);
+  });
+  head.appendChild(meta);
+
+  if(rec.vibe_tags && rec.vibe_tags.length){
+    const vibeRow = document.createElement("div");
+    vibeRow.className = "vibe-row";
+    rec.vibe_tags.forEach(v => {
+      const chip = document.createElement("span");
+      chip.className = "vibe-chip";
+      chip.textContent = v;
+      vibeRow.appendChild(chip);
+    });
+    head.appendChild(vibeRow);
+  }
+
+  const tear = document.createElement("div");
+  tear.className = "tear-line";
+
+  const body = document.createElement("div");
+  body.className = "ticket-body";
+
+  const l1 = document.createElement("div");
+  l1.className = "label";
+  l1.textContent = "SINOPSE";
+  const p1 = document.createElement("p");
+  p1.textContent = rec.synopsis || "";
+
+  const l2 = document.createElement("div");
+  l2.className = "label";
+  l2.textContent = "POR QUE COMBINA";
+  const p2 = document.createElement("p");
+  p2.textContent = rec.why_it_matches || "";
+
+  body.appendChild(l1);
+  body.appendChild(p1);
+  body.appendChild(l2);
+  body.appendChild(p2);
+
+  /* ratings */
+  if(rec.ratings && (rec.ratings.imdb || rec.ratings.rotten_tomatoes_critics)){
+    const ratingsRow = document.createElement("div");
+    ratingsRow.className = "ratings-row";
+    if(rec.ratings.imdb){
+      const pill = document.createElement("span");
+      pill.className = "rating-pill";
+      pill.textContent = "IMDb " + rec.ratings.imdb;
+      ratingsRow.appendChild(pill);
+    }
+    if(rec.ratings.rotten_tomatoes_critics){
+      const pill = document.createElement("span");
+      pill.className = "rating-pill";
+      pill.textContent = "🍅 " + rec.ratings.rotten_tomatoes_critics + "%";
+      ratingsRow.appendChild(pill);
+    }
+    body.appendChild(ratingsRow);
+  }
+
+  /* awards */
+  if(rec.awards && (rec.awards.oscars_won || rec.awards.highlight)){
+    const awardsRow = document.createElement("div");
+    awardsRow.className = "awards-row";
+    let txt = "🏆 ";
+    if(rec.awards.oscars_won) txt += rec.awards.oscars_won + "x Oscar";
+    if(rec.awards.highlight) txt += (rec.awards.oscars_won ? " · " : "") + rec.awards.highlight;
+    awardsRow.textContent = txt;
+    body.appendChild(awardsRow);
+  }
+
+  /* where to watch */
+  if(rec.where_to_watch && rec.where_to_watch.length){
+    const wl = document.createElement("div");
+    wl.className = "label";
+    wl.textContent = "ONDE ASSISTIR";
+    body.appendChild(wl);
+    const chips = document.createElement("div");
+    chips.className = "watch-chips";
+    rec.where_to_watch.slice(0,4).forEach(w => {
+      if(!w.platform) return;
+      const chip = document.createElement("span");
+      chip.className = "watch-chip";
+      const icon = WATCH_TYPE_ICON[w.type] || "🎬";
+      const label = WATCH_TYPE_LABEL[w.type] || "";
+      chip.textContent = icon + " " + w.platform + (label ? " · " + label : "");
+      chips.appendChild(chip);
+    });
+    body.appendChild(chips);
+  }
+
+  /* verification links */
+  const linksLabel = document.createElement("div");
+  linksLabel.className = "label";
+  linksLabel.textContent = "CONFERIR NA FONTE";
+  body.appendChild(linksLabel);
+
+  const links = document.createElement("div");
+  links.className = "links-row";
+  const titleForLinks = rec.title_original || rec.title_pt;
+  [
+    ["JustWatch", justWatchUrl(titleForLinks)],
+    ["IMDb", imdbUrl(titleForLinks)],
+    ["Letterboxd", letterboxdUrl(titleForLinks)]
+  ].forEach(([label, url]) => {
+    const a = document.createElement("a");
+    a.className = "link-chip";
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = label + " ↗";
+    links.appendChild(a);
+  });
+  body.appendChild(links);
+
+  t.appendChild(banner);
+  t.appendChild(head);
+  t.appendChild(tear);
+  t.appendChild(body);
+  return t;
+}
+
+function renderHistory(){
+  const wrap = document.createElement("div");
+  const h = document.createElement("div");
+  h.className = "results-header";
+  h.textContent = "Histórico de buscas";
+  wrap.appendChild(h);
+
+  if(state.viewingHistoryItem){
+    const item = state.viewingHistoryItem;
+    const back = document.createElement("button");
+    back.className = "back-link";
+    back.textContent = "← Todas as buscas";
+    back.style.display = "block";
+    back.style.marginBottom = "14px";
+    back.onclick = () => { state.viewingHistoryItem = null; render(); };
+    wrap.appendChild(back);
+
+    if(item.interpretation){
+      const box = document.createElement("div");
+      box.className = "interp-box";
+      box.textContent = item.interpretation;
+      wrap.appendChild(box);
+    }
+    if(item.bestChoice && item.bestChoice.title_pt){
+      const hero = document.createElement("div");
+      hero.className = "hero-pick";
+      hero.innerHTML = '<div class="hp-eyebrow">🍿 Melhor pedida de hoje</div><div class="hp-title">' +
+        escapeHtml(item.bestChoice.title_pt) + '</div><p class="hp-reason">' +
+        escapeHtml(item.bestChoice.reason || "") + '</p>';
+      wrap.appendChild(hero);
+    }
+    const hint = document.createElement("p");
+    hint.className = "scroll-hint";
+    hint.textContent = "◀ arraste para o lado para ver as 3 opções ▶";
+    wrap.appendChild(hint);
+
+    const scrollRow = document.createElement("div");
+    scrollRow.className = "tickets-scroll";
+    item.recommendations
+      .slice()
+      .sort((a,b) => (b.match_score||0) - (a.match_score||0))
+      .forEach(rec => scrollRow.appendChild(renderTicket(rec)));
+    wrap.appendChild(scrollRow);
+    return wrap;
+  }
+
+  if(!state.historyList || state.historyList.length === 0){
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "Nenhuma busca ainda. Suas próximas recomendações vão aparecer aqui.";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  state.historyList.forEach(item => {
+    const el = document.createElement("div");
+    el.className = "hist-item";
+    const hd = document.createElement("div");
+    hd.className = "hd";
+    const date = new Date(item.created_at);
+    hd.textContent = date.toLocaleDateString("pt-BR", { day:"2-digit", month:"2-digit", year:"numeric" }) +
+      " · " + date.toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" });
+    const ht = document.createElement("div");
+    ht.className = "ht";
+    ht.textContent = (item.filters.genre || "") + " · " + (item.filters.mood || "");
+    el.appendChild(hd);
+    el.appendChild(ht);
+    el.onclick = () => { state.viewingHistoryItem = item; render(); };
+    wrap.appendChild(el);
+  });
+
+  return wrap;
+}
+
+function escapeHtml(str){
+  if(str === undefined || str === null) return "";
+  return String(str)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;");
+}
+
+render();
+</script>
+</body>
+</html>
