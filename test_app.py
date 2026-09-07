@@ -16,8 +16,15 @@ os.environ["TMDB_API_KEY"] = ""
 os.environ["USER_STORE_FILE"] = str(TEST_STORE)
 
 from auth import authenticate, create_session, read_session  # noqa: E402
-from metadata import NullMetadataProvider  # noqa: E402
-from server import buildRecommendationPrompt, clean_filters, validate_recommendation_payload  # noqa: E402
+from metadata import NullMetadataProvider, TMDBMetadataProvider  # noqa: E402
+from rate_limit import check_rate_limit  # noqa: E402
+from server import (  # noqa: E402
+    RECOMMENDATION_SCHEMA,
+    buildRecommendationPrompt,
+    clean_filters,
+    duration_violations,
+    validate_recommendation_payload,
+)
 from user_store import (  # noqa: E402
     admin_summary,
     admin_users,
@@ -191,6 +198,54 @@ class PipocaPlayTests(unittest.TestCase):
         metadata = NullMetadataProvider().lookup("Example")
         self.assertFalse(metadata["availability_verified"])
         self.assertEqual(metadata["availability"], [])
+        self.assertEqual(metadata["ratings"], [])
+
+    def test_recommendation_schema_never_asks_ai_for_ratings_or_awards(self):
+        item_schema = RECOMMENDATION_SCHEMA["properties"]["recommendations"]["items"]
+        self.assertNotIn("ratings", item_schema["properties"])
+        self.assertNotIn("awards", item_schema["properties"])
+        self.assertNotIn("ratings", item_schema["required"])
+        self.assertNotIn("awards", item_schema["required"])
+
+    def test_duration_violations_flags_out_of_range_and_ignores_unknown(self):
+        short_ok = {"title_pt": "Curto ok", "runtime_minutes": 80}
+        short_bad = {"title_pt": "Curto estourado", "runtime_minutes": 140}
+        unknown = {"title_pt": "Sem duração conhecida", "runtime_minutes": 0}
+        self.assertEqual(duration_violations("Curto (Até 90 min)", [short_ok, unknown]), [])
+        self.assertEqual(duration_violations("Curto (Até 90 min)", [short_bad]), [short_bad])
+        self.assertEqual(duration_violations("Livre (Qualquer)", [short_bad]), [])
+
+    def test_rate_limit_blocks_after_max_requests_in_memory_fallback(self):
+        identifier = "rate-limit-test@pipocaplay.com"
+        for _ in range(3):
+            self.assertTrue(check_rate_limit(identifier, max_requests=3, window_seconds=60))
+        self.assertFalse(check_rate_limit(identifier, max_requests=3, window_seconds=60))
+
+    def test_tmdb_provider_extracts_real_vote_average_as_rating(self):
+        provider = TMDBMetadataProvider("fake-key")
+        search_response = {"results": [{"id": 42, "poster_path": None, "backdrop_path": None}]}
+        details_response = {
+            "original_title": "Example",
+            "title": "Exemplo",
+            "release_date": "2020-01-01",
+            "runtime": 100,
+            "genres": [],
+            "overview": "",
+            "vote_average": 7.83,
+            "vote_count": 500,
+            "watch/providers": {"results": {}},
+        }
+        calls = {"n": 0}
+
+        def fake_get(path, params):
+            calls["n"] += 1
+            return search_response if path == "/search/movie" else details_response
+
+        with patch.object(provider, "_get", side_effect=fake_get):
+            metadata = provider.lookup("Example", "Exemplo", 2020)
+        self.assertEqual(metadata["ratings"], [
+            {"source": "TMDB", "score": 7.8, "scale": "0-10", "retrieved_at": metadata["ratings"][0]["retrieved_at"]}
+        ])
 
 
 if __name__ == "__main__":

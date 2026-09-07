@@ -6,10 +6,8 @@ A chave OpenAI nunca é enviada para o navegador: somente este processo a lê.
 
 import json
 import os
-import time
 import urllib.error
 import urllib.request
-from collections import defaultdict, deque
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,10 +34,10 @@ from user_store import (
     update_user_status,
 )
 from metadata import enrich_result
+from rate_limit import check_rate_limit
 
 ROOT = Path(__file__).parent
 PUBLIC = ROOT / "public"
-REQUESTS_BY_IP = defaultdict(deque)
 MAX_REQUESTS_PER_MINUTE = 12
 
 
@@ -93,7 +91,7 @@ RECOMMENDATION_SCHEMA = {
                 "required": [
                     "rank", "title_original", "title_pt", "year", "runtime_minutes",
                     "age_rating_br", "genres", "vibe_tags", "synopsis", "why_it_matches",
-                    "match_score", "ratings", "awards", "where_to_watch",
+                    "match_score", "where_to_watch",
                 ],
                 "properties": {
                     "rank": {"type": "integer", "minimum": 1, "maximum": 3},
@@ -107,22 +105,6 @@ RECOMMENDATION_SCHEMA = {
                     "synopsis": {"type": "string"},
                     "why_it_matches": {"type": "string"},
                     "match_score": {"type": "integer", "minimum": 0, "maximum": 100},
-                    "ratings": {
-                        "type": "object", "additionalProperties": False,
-                        "required": ["imdb", "rotten_tomatoes_critics"],
-                        "properties": {
-                            "imdb": {"type": "number", "minimum": 0, "maximum": 10},
-                            "rotten_tomatoes_critics": {"type": "integer", "minimum": 0, "maximum": 100},
-                        },
-                    },
-                    "awards": {
-                        "type": "object", "additionalProperties": False,
-                        "required": ["oscars_won", "highlight"],
-                        "properties": {
-                            "oscars_won": {"type": "integer", "minimum": 0},
-                            "highlight": {"type": "string"},
-                        },
-                    },
                     "where_to_watch": {
                         "type": "array",
                         "items": {
@@ -178,6 +160,32 @@ Selecione exatamente três filmes reais, ordenados da maior para a menor compati
 Não invente avaliações, plataformas, disponibilidade, URLs, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado."""
 
 
+# Seção 4 da especificação: a duração é uma restrição, não uma sugestão.
+# (mínimo exclusivo, máximo inclusivo) em minutos; None = sem limite nesse lado.
+DURATION_BOUNDS = {
+    "Curto (Até 90 min)": (None, 90),
+    "Padrão (90 a 120 min)": (90, 120),
+    "Longo (Mais de 120 min)": (120, None),
+}
+
+
+def duration_violations(duration_filter, recommendations):
+    bounds = DURATION_BOUNDS.get(duration_filter)
+    if not bounds:
+        return []
+    minimum, maximum = bounds
+    violating = []
+    for recommendation in recommendations:
+        runtime = recommendation.get("runtime_minutes") or 0
+        if runtime <= 0:
+            continue  # duração desconhecida: não há como validar, não pune o candidato
+        if minimum is not None and runtime <= minimum:
+            violating.append(recommendation)
+        elif maximum is not None and runtime > maximum:
+            violating.append(recommendation)
+    return violating
+
+
 def validate_recommendation_payload(payload):
     if not isinstance(payload, dict) or not isinstance(payload.get("recommendations"), list):
         raise RuntimeError("A resposta do motor não tem o formato esperado.")
@@ -211,13 +219,16 @@ def extract_response_text(response):
     return "".join(parts).strip()
 
 
-def call_openai(filters):
+def _fetch_openai_recommendations(filters, extra_instructions=""):
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY não foi configurada no servidor.")
+    prompt = buildRecommendationPrompt(filters)
+    if extra_instructions:
+        prompt = f"{prompt}\n\n{extra_instructions}"
     payload = {
         "model": os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
-        "input": buildRecommendationPrompt(filters),
+        "input": prompt,
         "text": {
             "format": {
                 "type": "json_schema",
@@ -252,9 +263,30 @@ def call_openai(filters):
         suffix = f" Motivo: {reason}." if reason else ""
         raise RuntimeError(f"A OpenAI não retornou texto final (status: {status}).{suffix}")
     try:
-        structured = validate_recommendation_payload(json.loads(text))
+        return validate_recommendation_payload(json.loads(text))
     except (json.JSONDecodeError, TypeError, ValueError) as error:
         raise RuntimeError("A OpenAI retornou um JSON inválido.") from error
+
+
+def call_openai(filters):
+    structured = _fetch_openai_recommendations(filters)
+    violations = duration_violations(filters.get("duration"), structured["recommendations"])
+    if violations:
+        offenders = ", ".join(
+            f"{item.get('title_original') or item.get('title_pt')} ({item.get('runtime_minutes')} min)"
+            for item in violations
+        )
+        corrective_note = (
+            "Sua resposta anterior violou a restrição de tempo disponível: "
+            f"{offenders}. Tempo disponível é uma restrição obrigatória, não uma preferência — "
+            f"substitua por filmes reais cuja duração respeite \"{filters.get('duration')}\"."
+        )
+        try:
+            retry = _fetch_openai_recommendations(filters, corrective_note)
+        except RuntimeError:
+            retry = None
+        if retry and not duration_violations(filters.get("duration"), retry["recommendations"]):
+            structured = retry
     enriched = enrich_result(structured)
     return json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))
 
@@ -431,14 +463,9 @@ class AppHandler(SimpleHTTPRequestHandler):
         if not user:
             self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "Faça login para receber recomendações."})
             return
-        now = time.monotonic()
-        requests = REQUESTS_BY_IP[self.client_address[0]]
-        while requests and now - requests[0] > 60:
-            requests.popleft()
-        if len(requests) >= MAX_REQUESTS_PER_MINUTE:
+        if not check_rate_limit(user["email"], MAX_REQUESTS_PER_MINUTE, 60):
             self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
             return
-        requests.append(now)
         try:
             body = self.request_json()
             text = call_openai(clean_filters(body.get("filters")))

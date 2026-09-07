@@ -575,17 +575,6 @@
     background:rgba(24,19,16,0.06);
     border:1px solid rgba(24,19,16,0.12);
   }
-  .awards-row{
-    display:flex;align-items:center;gap:6px;
-    font-size:12.5px;
-    color:var(--gold);
-    background:rgba(201,153,46,0.12);
-    border:1px solid rgba(201,153,46,0.35);
-    padding:7px 10px;
-    border-radius:6px;
-    margin-bottom:14px;
-  }
-
   .watch-chips{
     display:flex;flex-wrap:wrap;gap:8px;
     margin-bottom:16px;
@@ -1057,34 +1046,6 @@ function syncPopcorn(){
       kernelEls.delete(idx);
     }
   });
-}
-
-function buildRecommendationPrompt(filters){
-  return (
-`Atue como um especialista em cinema e recomendador personalizado de filmes, com foco no público do Brasil (streaming e classificação indicativa brasileiros).
-
-Estou procurando uma recomendação perfeita para assistir agora.
-
-Considere cuidadosamente minhas preferências e restrições:
-
-Gênero: ${filters.genre}
-Vibe/Clima desejado: ${filters.mood}
-Tempo disponível: ${filters.duration}
-Época do filme: ${filters.era}
-Plataforma disponível: ${filters.platform}
-Companhia: ${filters.companionship}
-Perfil do filme: ${filters.popularity}
-
-Selecione os 3 melhores filmes com a maior compatibilidade com esse perfil. Não escolha simplesmente filmes populares — priorize a compatibilidade real entre gênero, clima emocional, duração, época, companhia e perfil de popularidade.
-
-Use seu melhor conhecimento sobre cada filme (notas, prêmios, onde assistir no Brasil, classificação indicativa). Não é necessário verificação em tempo real, mas não invente números absurdos nem plataformas inexistentes — use apenas dados plausíveis e realistas para cada título real.
-
-Responda APENAS com um objeto JSON válido, compacto (sem quebras de linha ou espaços desnecessários, sem markdown, sem texto antes ou depois), no formato exato:
-
-{"interpretation":"uma frase em pt-BR resumindo o pedido","best_choice":{"title_pt":"título do rank 1","reason":"uma frase curta em pt-BR do porquê é a melhor pedida de hoje"},"recommendations":[{"rank":1,"title_original":"","title_pt":"","year":0,"runtime_minutes":0,"age_rating_br":0,"genres":["max 3"],"vibe_tags":["max 3"],"synopsis":"sem spoilers, max 22 palavras, pt-BR","why_it_matches":"max 16 palavras, pt-BR","match_score":0,"ratings":{"imdb":0,"rotten_tomatoes_critics":0},"awards":{"oscars_won":0,"highlight":"max 6 palavras ou vazio"},"where_to_watch":[{"platform":"","type":"assinatura|aluguel_compra|cinema"}]}]}
-
-O array "recommendations" deve ter exatamente 3 itens, ordenados do maior para o menor match_score. Use age_rating_br 0 para "Livre". Deixe campos vazios ("" ou [] ou 0) quando não tiver certeza — nunca invente um número aleatório para preencher.`
-  );
 }
 
 async function getRecommendations(filters){
@@ -2029,34 +1990,18 @@ function renderTicket(rec){
   body.appendChild(l2);
   body.appendChild(p2);
 
-  /* ratings */
-  if(rec.ratings && (rec.ratings.imdb || rec.ratings.rotten_tomatoes_critics)){
+  /* ratings — cada item vem de uma fonte externa real (nunca da IA); nunca misturar escalas numa mesma pill */
+  if(rec.ratings && rec.ratings.length){
     const ratingsRow = document.createElement("div");
     ratingsRow.className = "ratings-row";
-    if(rec.ratings.imdb){
+    rec.ratings.forEach(r => {
+      if(!r || !r.source || r.score === "" || r.score === null || r.score === undefined) return;
       const pill = document.createElement("span");
       pill.className = "rating-pill";
-      pill.textContent = "IMDb " + rec.ratings.imdb;
+      pill.textContent = r.source + " " + r.score + (r.scale ? "/" + r.scale.split("-").pop() : "");
       ratingsRow.appendChild(pill);
-    }
-    if(rec.ratings.rotten_tomatoes_critics){
-      const pill = document.createElement("span");
-      pill.className = "rating-pill";
-      pill.textContent = "🍅 " + rec.ratings.rotten_tomatoes_critics + "%";
-      ratingsRow.appendChild(pill);
-    }
-    body.appendChild(ratingsRow);
-  }
-
-  /* awards */
-  if(rec.awards && (rec.awards.oscars_won || rec.awards.highlight)){
-    const awardsRow = document.createElement("div");
-    awardsRow.className = "awards-row";
-    let txt = "🏆 ";
-    if(rec.awards.oscars_won) txt += rec.awards.oscars_won + "x Oscar";
-    if(rec.awards.highlight) txt += (rec.awards.oscars_won ? " · " : "") + rec.awards.highlight;
-    awardsRow.textContent = txt;
-    body.appendChild(awardsRow);
+    });
+    if(ratingsRow.childNodes.length) body.appendChild(ratingsRow);
   }
 
   /* where to watch */

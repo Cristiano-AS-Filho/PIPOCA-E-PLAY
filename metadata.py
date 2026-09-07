@@ -9,8 +9,13 @@ import json
 import os
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 IMAGE_BASE = "https://image.tmdb.org/t/p/w780"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class ContentMetadataProvider:
@@ -23,6 +28,7 @@ class NullMetadataProvider(ContentMetadataProvider):
         return {
             "images": {"poster": "", "backdrop": ""},
             "availability": [],
+            "ratings": [],
             "metadata_source": "Fonte externa não configurada",
             "availability_verified": False,
         }
@@ -70,6 +76,18 @@ class TMDBMetadataProvider(ContentMetadataProvider):
                 availability.append({"platform": item["provider_name"], "type": "buy", "url": providers.get("link", "")})
 
         genres = [genre.get("name", "") for genre in details.get("genres", []) if genre.get("name")]
+
+        ratings = []
+        vote_average = details.get("vote_average")
+        vote_count = details.get("vote_count") or 0
+        if isinstance(vote_average, (int, float)) and vote_count > 0:
+            ratings.append({
+                "source": "TMDB",
+                "score": round(float(vote_average), 1),
+                "scale": "0-10",
+                "retrieved_at": _now(),
+            })
+
         return {
             "images": {
                 "poster": (IMAGE_BASE + movie["poster_path"]) if movie.get("poster_path") else "",
@@ -82,6 +100,7 @@ class TMDBMetadataProvider(ContentMetadataProvider):
             "genres": genres[:3],
             "synopsis": details.get("overview") or "",
             "availability": availability[:6],
+            "ratings": ratings,
             "metadata_source": "TMDB",
             "availability_verified": bool(availability),
         }
@@ -110,6 +129,9 @@ def enrich_result(result: dict) -> dict:
         recommendation["metadata_source"] = metadata.get("metadata_source", "")
         recommendation["availability_verified"] = metadata.get("availability_verified", False)
         recommendation["availability_note"] = "" if metadata.get("availability_verified") else "Disponibilidade não confirmada no momento."
+        # Notas exibidas ao usuário vêm só da fonte externa (nunca da IA) — ver ANEXO 16 da especificação.
+        recommendation["ratings"] = metadata.get("ratings", [])
+        recommendation.pop("awards", None)
         if metadata.get("availability"):
             recommendation["where_to_watch"] = [
                 {"platform": item["platform"], "type": item["type"]} for item in metadata["availability"] if item.get("platform")

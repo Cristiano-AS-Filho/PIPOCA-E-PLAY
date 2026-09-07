@@ -6,9 +6,12 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+MAX_REQUESTS_PER_MINUTE = 12
+
 # A Vercel executa este arquivo a partir da raiz do projeto.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from auth import read_session  # noqa: E402
+from rate_limit import check_rate_limit  # noqa: E402
 from server import call_openai, clean_filters  # noqa: E402
 
 
@@ -23,8 +26,12 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if not read_session(self.headers.get("Cookie")):
+        user = read_session(self.headers.get("Cookie"))
+        if not user:
             self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "Faça login para receber recomendações."})
+            return
+        if not check_rate_limit(user["email"], MAX_REQUESTS_PER_MINUTE, 60):
+            self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
