@@ -812,6 +812,7 @@ const LOADING_MESSAGES = [
 let sessionUser = null;
 let authError = "";
 let adminStatus = null;
+const ADMIN_PANEL_URL = "/admin";
 let authMode = "login";
 let accessStatus = null;
 let pendingStatusTimer = null;
@@ -895,9 +896,12 @@ async function login(email, password){
     if(!response.ok) throw new Error(data.error || "Não foi possível entrar agora.");
     clearPendingAccess();
     sessionUser = data.user;
-    state.screen = sessionUser.role === "admin" ? "admin" : "wizard";
+    if(sessionUser.role === "admin"){
+      window.location.href = ADMIN_PANEL_URL;
+      return;
+    }
+    state.screen = "wizard";
     render();
-    if(sessionUser.role === "admin") await openAdmin();
   }catch(e){
     authError = e.message || "Não foi possível entrar agora.";
     render();
@@ -1280,8 +1284,8 @@ function renderTopnav(){
 
     if(sessionUser.role === "admin"){
       const adminBtn = document.createElement("button");
-      adminBtn.textContent = "Painel";
-      adminBtn.onclick = () => openAdmin();
+      adminBtn.textContent = "Painel admin";
+      adminBtn.onclick = () => { window.location.href = ADMIN_PANEL_URL; };
       right.appendChild(adminBtn);
     }else{
       const histBtn = document.createElement("button");
@@ -1575,6 +1579,15 @@ function renderAdmin(){
   header.appendChild(badge);
   wrap.appendChild(header);
 
+  const dedicated = document.createElement("a");
+  dedicated.className = "admin-action";
+  dedicated.href = ADMIN_PANEL_URL;
+  dedicated.style.display = "inline-block";
+  dedicated.style.textDecoration = "none";
+  dedicated.style.marginBottom = "14px";
+  dedicated.textContent = "Abrir painel completo em /admin";
+  wrap.appendChild(dedicated);
+
   if(authError){
     const error = document.createElement("div");
     error.className = "auth-error";
@@ -1590,7 +1603,7 @@ function renderAdmin(){
     ["Aguardando liberação", String(summary.pending || 0) + " pedido(s)", summary.pending ? "status-warn" : "status-ok"],
     ["Acessos liberados", String(summary.approved || 0) + " usuário(s)", "status-ok"],
     ["Pedidos rejeitados", String(summary.rejected || 0) + " pedido(s)", summary.rejected ? "status-warn" : "status-ok"],
-    ["Persistência", config.storage_mode === "redis-rest" ? "Redis REST conectado" : "Arquivo local", config.persistent_storage_configured ? "status-ok" : "status-warn"],
+    ["Persistência", (config.storage && config.storage.label) || config.storage_mode || "—", config.persistent_storage_configured ? "status-ok" : "status-warn"],
     ["Credenciais admin", config.admin_credentials_configured ? "Configuradas" : "Não configuradas", config.admin_credentials_configured ? "status-ok" : "status-warn"],
     ["Chave da sessão", config.auth_secret_configured ? "Configurada" : "Não configurada", config.auth_secret_configured ? "status-ok" : "status-warn"]
   ];

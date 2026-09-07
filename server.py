@@ -15,26 +15,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from auth import (
-    authenticate,
-    clear_session_cookie,
-    config_status,
-    create_session,
-    is_secure_request,
-    public_user,
-    read_session,
-    session_cookie,
-)
-from user_store import (
-    StorageError,
-    admin_summary,
-    admin_users,
-    delete_user,
-    find_user,
-    get_status_by_token,
-    register_user,
-    update_user_status,
-)
+import api_core
+from auth import is_secure_request, public_user, read_session
 from metadata import enrich_result
 
 ROOT = Path(__file__).parent
@@ -288,140 +270,61 @@ class AppHandler(SimpleHTTPRequestHandler):
             raise ValueError("Solicitação inválida.")
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
+    def request_json_or_empty(self, max_length=8_192):
+        try:
+            body = self.request_json(max_length)
+        except (ValueError, json.JSONDecodeError):
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    def send_result(self, result):
+        status, payload, headers = result
+        self.send_json(status, payload, headers)
+
     def do_GET(self):
         path = urlparse(self.path)
+        if path.path == "/api/health":
+            self.send_result(api_core.health())
+            return
         if path.path == "/api/auth/me":
             user = self.current_user()
             self.send_json(HTTPStatus.OK, {"authenticated": bool(user), "user": public_user(user)})
             return
         if path.path == "/api/auth/status":
-            try:
-                params = parse_qs(path.query)
-                email = params.get("email", [""])[0]
-                token = params.get("token", [""])[0]
-                status = get_status_by_token(email, token)
-                if not status:
-                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "Pedido de acesso não encontrado."})
-                    return
-                self.send_json(HTTPStatus.OK, {"email": email.strip().lower(), "status": status})
-            except StorageError as error:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
+            params = parse_qs(path.query)
+            self.send_result(
+                api_core.registration_status(params.get("email", [""])[0], params.get("token", [""])[0])
+            )
             return
         if path.path in {"/api/admin/status", "/api/admin/users"}:
-            user = self.current_user()
-            if not user or user.get("role") != "admin":
-                self.send_json(HTTPStatus.FORBIDDEN, {"error": "Acesso reservado ao administrador."})
-                return
-            try:
-                self.send_json(
-                    HTTPStatus.OK,
-                    {
-                        "user": public_user(user),
-                        "config": config_status(),
-                        "summary": admin_summary(),
-                        "users": admin_users(),
-                    },
-                )
-            except StorageError as error:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
+            self.send_result(api_core.admin_overview(self.current_user()))
             return
         if path.path.startswith("/api/"):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
             return
+        if path.path in {"/admin", "/admin/"}:
+            self.path = "/admin.html"
         super().do_GET()
 
     def do_POST(self):
         if self.path == "/api/auth/register":
-            try:
-                body = self.request_json(4_096)
-                email = body.get("email", "")
-                password = body.get("password", "")
-                confirmation = body.get("confirmation", body.get("password_confirmation"))
-                if not isinstance(email, str) or not isinstance(password, str) or (confirmation is not None and not isinstance(confirmation, str)):
-                    raise ValueError("Informe e-mail e senha.")
-                record, token, was_reopened = register_user(email, password, confirmation)
-                self.send_json(
-                    HTTPStatus.OK if was_reopened else HTTPStatus.CREATED,
-                    {
-                        "registered": True,
-                        "email": record["email"],
-                        "status": record["status"],
-                        "token": token,
-                        "message": "Seu acesso será liberado assim que o administrador validar. Por favor, aguarde a liberação.",
-                    },
-                )
-            except FileExistsError as error:
-                self.send_json(HTTPStatus.CONFLICT, {"error": str(error)})
-            except StorageError as error:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
-            except (ValueError, json.JSONDecodeError) as error:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            self.send_result(api_core.register(self.request_json_or_empty(4_096)))
             return
 
         if self.path == "/api/auth/login":
-            try:
-                body = self.request_json(4_096)
-                email = body.get("email", "")
-                password = body.get("password", "")
-                if not isinstance(email, str) or not isinstance(password, str):
-                    raise ValueError("Informe e-mail e senha.")
-                account = find_user(email)
-                if account and account.get("status") == "pending":
-                    self.send_json(HTTPStatus.FORBIDDEN, {"error": "Seu cadastro ainda está aguardando a validação do administrador."})
-                    return
-                if account and account.get("status") == "rejected":
-                    self.send_json(HTTPStatus.FORBIDDEN, {"error": "Seu pedido de acesso foi rejeitado. Você pode realizar um novo cadastro."})
-                    return
-                user = authenticate(email, password)
-                if not user:
-                    self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "E-mail ou senha inválidos."})
-                    return
-                self.send_json(
-                    HTTPStatus.OK,
-                    {"authenticated": True, "user": public_user(user)},
-                    {"Set-Cookie": session_cookie(create_session(user["email"], user["role"], user.get("user_id")), is_secure_request(self.headers))},
-                )
-            except StorageError as error:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
-            except (ValueError, json.JSONDecodeError) as error:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
-            return
-
-        if self.path == "/api/auth/logout":
-            self.send_json(
-                HTTPStatus.OK,
-                {"authenticated": False},
-                {"Set-Cookie": clear_session_cookie(is_secure_request(self.headers))},
+            self.send_result(
+                api_core.login(self.request_json_or_empty(4_096), is_secure_request(self.headers))
             )
             return
 
+        if self.path == "/api/auth/logout":
+            self.send_result(api_core.logout(is_secure_request(self.headers)))
+            return
+
         if self.path == "/api/admin/users":
-            user = self.current_user()
-            if not user or user.get("role") != "admin":
-                self.send_json(HTTPStatus.FORBIDDEN, {"error": "Acesso reservado ao administrador."})
-                return
-            try:
-                body = self.request_json(4_096)
-                action = body.get("action", "")
-                user_id = body.get("user_id", "")
-                if not isinstance(action, str) or not isinstance(user_id, str) or not user_id:
-                    raise ValueError("Ação administrativa inválida.")
-                if action == "delete":
-                    delete_user(user_id)
-                    payload = {"deleted": True}
-                elif action in {"approve", "reject"}:
-                    payload = {"user": update_user_status(user_id, "approved" if action == "approve" else "rejected")}
-                else:
-                    raise ValueError("Ação administrativa inválida.")
-                payload["summary"] = admin_summary()
-                payload["users"] = admin_users()
-                self.send_json(HTTPStatus.OK, payload)
-            except LookupError as error:
-                self.send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
-            except StorageError as error:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
-            except (ValueError, json.JSONDecodeError) as error:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            self.send_result(
+                api_core.admin_action(self.current_user(), self.request_json_or_empty(4_096))
+            )
             return
 
         if self.path != "/api/recommend":

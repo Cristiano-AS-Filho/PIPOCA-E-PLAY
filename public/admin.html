@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Pipoca &amp; Play — Administração</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%8D%BF%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0F1218; --bg-elev:#171B24; --bg-elev-2:#1E2330;
+    --marquee:#F2A93B; --velvet:#8A2A4C; --cream:#EFE6D8; --cream-dim:#C9BFAF;
+    --teal:#3C8C7A; --ink:#181310; --danger:#C4553D; --line:rgba(239,230,216,.12);
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--cream);
+    font-family:'Inter',system-ui,sans-serif; min-height:100vh;
+    -webkit-font-smoothing:antialiased; padding:24px 16px 64px;
+  }
+  a{color:var(--marquee);}
+  .wrap{max-width:1060px;margin:0 auto;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+
+  header.top{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;margin-bottom:22px;}
+  .brand{display:flex;align-items:baseline;gap:10px;}
+  .brand h1{font-family:'Bebas Neue',cursive;font-size:34px;letter-spacing:1px;margin:0;}
+  .brand span{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--ink);background:var(--marquee);padding:5px 8px;border-radius:4px;}
+  .whoami{font-size:12px;color:var(--cream-dim);display:flex;align-items:center;gap:10px;}
+
+  .card{background:var(--bg-elev);border:1px solid var(--line);border-radius:var(--radius);padding:20px;}
+  .card + .card{margin-top:16px;}
+  h2{font-family:'Bebas Neue',cursive;font-size:26px;letter-spacing:.5px;margin:0 0 4px;}
+  .hint{font-size:12.5px;color:var(--cream-dim);line-height:1.5;margin:0 0 14px;}
+
+  label{display:block;font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;font-size:10px;color:var(--cream-dim);margin-bottom:6px;}
+  input,select{
+    width:100%;background:var(--bg-elev-2);border:1px solid var(--line);color:var(--cream);
+    border-radius:8px;padding:11px 12px;font:14px 'Inter',system-ui,sans-serif;
+  }
+  input:focus,select:focus{outline:none;border-color:var(--marquee);}
+  .field{margin-bottom:13px;}
+  .row{display:grid;gap:12px;}
+  @media(min-width:640px){ .row.cols-2{grid-template-columns:1fr 1fr;} .row.cols-3{grid-template-columns:1fr 1fr auto;} }
+
+  button{
+    background:var(--marquee);color:var(--ink);border:none;border-radius:8px;
+    padding:11px 16px;font:600 13px 'Inter',system-ui,sans-serif;cursor:pointer;
+  }
+  button:hover{filter:brightness(1.07);}
+  button:disabled{opacity:.5;cursor:not-allowed;filter:none;}
+  button.ghost{background:transparent;color:var(--cream);border:1px solid var(--line);}
+  button.ghost:hover{border-color:var(--marquee);color:var(--marquee);filter:none;}
+  .act{
+    background:transparent;border:1px solid var(--line);color:var(--cream);
+    border-radius:6px;padding:7px 9px;font:11px 'IBM Plex Mono',monospace;cursor:pointer;
+  }
+  .act:hover{border-color:var(--marquee);color:var(--marquee);}
+  .act.ok{border-color:rgba(111,206,181,.45);color:#8ee2cc;}
+  .act.no{border-color:rgba(196,85,61,.45);color:#e58a76;}
+
+  .banner{border-radius:8px;padding:13px 15px;font-size:13px;line-height:1.5;margin-bottom:16px;border:1px solid;}
+  .banner.err{background:rgba(196,85,61,.12);border-color:rgba(196,85,61,.4);color:#f0b3a5;}
+  .banner.ok{background:rgba(60,140,122,.12);border-color:rgba(60,140,122,.4);color:#9fdcc9;}
+  .banner.warn{background:rgba(242,169,59,.1);border-color:rgba(242,169,59,.4);color:#f3cd8e;}
+  .banner strong{display:block;margin-bottom:4px;}
+  .banner ol{margin:8px 0 0;padding-left:18px;}
+  .banner li{margin-bottom:3px;}
+
+  .stats{display:grid;gap:10px;grid-template-columns:repeat(2,1fr);margin-bottom:18px;}
+  @media(min-width:720px){ .stats{grid-template-columns:repeat(5,1fr);} }
+  .stat{background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:13px;}
+  .stat .k{font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;font-size:9.5px;color:var(--cream-dim);margin-bottom:6px;}
+  .stat .v{font-size:22px;font-weight:700;line-height:1;}
+
+  .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;}
+  .toolbar input,.toolbar select{width:auto;flex:1 1 180px;padding:9px 11px;font-size:13px;}
+
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;}
+  table{border-collapse:collapse;width:100%;min-width:720px;font-size:13px;}
+  th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  th{font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;font-size:9.5px;color:var(--cream-dim);background:var(--bg-elev-2);}
+  tr:last-child td{border-bottom:none;}
+  td.actions{white-space:nowrap;display:flex;gap:6px;flex-wrap:wrap;}
+  .tag{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.6px;text-transform:uppercase;padding:4px 7px;border-radius:4px;border:1px solid;}
+  .tag.pending{color:#f3cd8e;border-color:rgba(242,169,59,.45);}
+  .tag.approved{color:#8ee2cc;border-color:rgba(60,140,122,.5);}
+  .tag.rejected{color:#e58a76;border-color:rgba(196,85,61,.45);}
+  .tag.admin{color:var(--ink);background:var(--marquee);border-color:var(--marquee);}
+  .empty{padding:22px;text-align:center;color:var(--cream-dim);font-size:13px;}
+  .foot{margin-top:22px;font-size:11.5px;color:var(--cream-dim);text-align:center;line-height:1.6;}
+  [hidden]{display:none !important;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><h1>Pipoca &amp; Play</h1><span>Administração</span></div>
+    <div class="whoami" id="whoami" hidden>
+      <span id="whoami-email" class="mono"></span>
+      <button class="ghost" id="logout">Sair</button>
+    </div>
+  </header>
+
+  <div id="feedback"></div>
+
+  <!-- ---------------- Login ---------------- -->
+  <section class="card" id="login-card">
+    <h2>Entrar como administrador</h2>
+    <p class="hint">Área restrita. Use o e-mail e a senha de administrador definidos nas variáveis
+      <span class="mono">ADMIN_EMAIL</span> e <span class="mono">ADMIN_PASSWORD</span>, ou uma conta
+      promovida a administrador neste painel.</p>
+    <form id="login-form" autocomplete="on">
+      <div class="row cols-2">
+        <div class="field">
+          <label for="login-email">E-mail</label>
+          <input id="login-email" name="email" type="email" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="login-password">Senha</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+      </div>
+      <button type="submit" id="login-submit">Entrar no painel</button>
+    </form>
+  </section>
+
+  <!-- ---------------- Painel ---------------- -->
+  <div id="panel" hidden>
+    <section class="card">
+      <h2>Acessos dos clientes</h2>
+      <p class="hint">Cada cadastro entra como <strong>pendente</strong> e só consegue usar a plataforma
+        depois que você liberar o acesso aqui.</p>
+
+      <div class="stats" id="stats"></div>
+
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Buscar por e-mail…" aria-label="Buscar por e-mail">
+        <select id="filter" aria-label="Filtrar por situação">
+          <option value="all">Todas as situações</option>
+          <option value="pending">Somente pendentes</option>
+          <option value="approved">Somente liberados</option>
+          <option value="rejected">Somente rejeitados</option>
+          <option value="admin">Somente administradores</option>
+        </select>
+        <button class="ghost" id="refresh">Atualizar</button>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th>E-mail</th><th>Situação</th><th>Papel</th><th>Cadastro</th><th>Ações</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty" hidden>Nenhuma conta corresponde a este filtro.</div>
+    </section>
+
+    <section class="card">
+      <h2>Criar acesso manualmente</h2>
+      <p class="hint">Cria uma conta já liberada, sem passar pela fila de aprovação. Combine com o cliente
+        uma senha provisória: ela pode ser trocada depois por você, aqui mesmo.</p>
+      <form id="create-form">
+        <div class="row cols-3">
+          <div class="field">
+            <label for="create-email">E-mail do cliente</label>
+            <input id="create-email" type="email" required>
+          </div>
+          <div class="field">
+            <label for="create-password">Senha provisória (mín. 8)</label>
+            <input id="create-password" type="text" minlength="8" required>
+          </div>
+          <div class="field">
+            <label for="create-role">Papel</label>
+            <select id="create-role">
+              <option value="user">Cliente</option>
+              <option value="admin">Administrador</option>
+            </select>
+          </div>
+        </div>
+        <button type="submit">Criar acesso liberado</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Diagnóstico do deploy</h2>
+      <p class="hint">Onde as contas estão sendo gravadas neste ambiente.</p>
+      <div id="diagnostics"></div>
+    </section>
+  </div>
+
+  <p class="foot">
+    Página restrita ao administrador · <a href="/">voltar para a plataforma</a><br>
+    Diagnóstico público em <a href="/api/health" class="mono">/api/health</a>
+  </p>
+</div>
+
+<script>
+"use strict";
+
+const SETUP_STEPS = [
+  "Abra o projeto na Vercel → aba Storage → Create Database.",
+  "Escolha Neon Postgres (recomendado), Upstash Redis ou Blob e conecte ao projeto.",
+  "A Vercel injeta as variáveis (POSTGRES_URL, KV_REST_API_URL ou BLOB_READ_WRITE_TOKEN) automaticamente.",
+  "Faça um novo deploy (Deployments → Redeploy) para as variáveis entrarem em vigor."
+];
+
+let session = null;
+let users = [];
+let summary = null;
+let config = null;
+
+const $ = (id) => document.getElementById(id);
+
+function feedback(kind, title, message, steps){
+  const box = $("feedback");
+  box.innerHTML = "";
+  if(!title && !message) return;
+  const div = document.createElement("div");
+  div.className = "banner " + kind;
+  if(title){ const strong = document.createElement("strong"); strong.textContent = title; div.appendChild(strong); }
+  if(message){ div.appendChild(document.createTextNode(message)); }
+  if(steps && steps.length){
+    const ol = document.createElement("ol");
+    steps.forEach((step) => { const li = document.createElement("li"); li.textContent = step; ol.appendChild(li); });
+    div.appendChild(ol);
+  }
+  box.appendChild(div);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function api(path, options){
+  const response = await fetch(path, Object.assign({ credentials: "same-origin", cache: "no-store" }, options || {}));
+  let data = {};
+  try { data = await response.json(); } catch (_) { data = {}; }
+  return { ok: response.ok, status: response.status, data };
+}
+
+function formatDate(value){
+  if(!value) return "—";
+  const date = new Date(value);
+  if(Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" }) +
+    " " + date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+const STATUS_LABEL = { pending: "Pendente", approved: "Liberado", rejected: "Rejeitado" };
+
+/* ---------------- storage / diagnóstico ---------------- */
+
+function storageBanner(storage){
+  if(!storage) return;
+  if(storage.persistent && storage.healthy !== false){
+    feedback("ok", "Armazenamento ativo", "As contas estão sendo gravadas em: " + storage.label + ".");
+    return;
+  }
+  feedback(
+    "err",
+    "Nenhum banco de contas conectado a este deploy",
+    (storage.error || "O cadastro de clientes não consegue gravar.") +
+      " O disco das funções serverless é temporário, por isso o cadastro falha até conectar um banco:",
+    SETUP_STEPS
+  );
+}
+
+function renderDiagnostics(){
+  const box = $("diagnostics");
+  box.innerHTML = "";
+  const storage = (config && config.storage) || null;
+  const rows = [
+    ["Armazenamento em uso", storage ? storage.label : "—"],
+    ["Persistente", storage && storage.persistent ? "sim" : "não"],
+    ["Postgres detectado", storage && storage.available["postgres"] ? "sim" : "não"],
+    ["Vercel Blob detectado", storage && storage.available["vercel-blob"] ? "sim" : "não"],
+    ["Redis REST detectado", storage && storage.available["redis-rest"] ? "sim" : "não"],
+    ["AUTH_SECRET configurado", config && config.auth_secret_configured ? "sim" : "não"],
+    ["ADMIN_EMAIL/ADMIN_PASSWORD", config && config.admin_credentials_configured ? "configurados" : "não configurados"],
+    ["Administradores na base", config ? String(config.stored_admin_count) : "—"]
+  ];
+  const grid = document.createElement("div");
+  grid.className = "stats";
+  grid.style.gridTemplateColumns = "repeat(auto-fit,minmax(190px,1fr))";
+  rows.forEach(([key, value]) => {
+    const cell = document.createElement("div");
+    cell.className = "stat";
+    const k = document.createElement("div"); k.className = "k"; k.textContent = key;
+    const v = document.createElement("div"); v.className = "v"; v.style.fontSize = "14px"; v.textContent = value;
+    cell.appendChild(k); cell.appendChild(v);
+    grid.appendChild(cell);
+  });
+  box.appendChild(grid);
+}
+
+/* ---------------- tabela ---------------- */
+
+function renderStats(){
+  const box = $("stats");
+  box.innerHTML = "";
+  const data = summary || { total: 0, pending: 0, approved: 0, rejected: 0, admins: 0 };
+  [
+    ["Pendentes", data.pending],
+    ["Liberados", data.approved],
+    ["Rejeitados", data.rejected],
+    ["Administradores", data.admins || 0],
+    ["Total", data.total]
+  ].forEach(([key, value]) => {
+    const cell = document.createElement("div");
+    cell.className = "stat";
+    const k = document.createElement("div"); k.className = "k"; k.textContent = key;
+    const v = document.createElement("div"); v.className = "v"; v.textContent = String(value);
+    cell.appendChild(k); cell.appendChild(v);
+    box.appendChild(cell);
+  });
+}
+
+function actionButton(label, className, handler){
+  const button = document.createElement("button");
+  button.className = "act " + className;
+  button.textContent = label;
+  button.onclick = handler;
+  return button;
+}
+
+function renderRows(){
+  const term = $("search").value.trim().toLowerCase();
+  const filter = $("filter").value;
+  const visible = users.filter((user) => {
+    if(term && !user.email.toLowerCase().includes(term)) return false;
+    if(filter === "all") return true;
+    if(filter === "admin") return user.role === "admin";
+    return user.status === filter;
+  });
+
+  const body = $("rows");
+  body.innerHTML = "";
+  $("empty").hidden = visible.length > 0;
+
+  visible.forEach((user) => {
+    const tr = document.createElement("tr");
+
+    const email = document.createElement("td");
+    email.className = "mono";
+    email.textContent = user.email;
+    tr.appendChild(email);
+
+    const status = document.createElement("td");
+    const statusTag = document.createElement("span");
+    statusTag.className = "tag " + user.status;
+    statusTag.textContent = STATUS_LABEL[user.status] || user.status;
+    status.appendChild(statusTag);
+    tr.appendChild(status);
+
+    const role = document.createElement("td");
+    const roleTag = document.createElement("span");
+    roleTag.className = "tag " + (user.role === "admin" ? "admin" : "approved");
+    roleTag.textContent = user.role === "admin" ? "Admin" : "Cliente";
+    role.appendChild(roleTag);
+    tr.appendChild(role);
+
+    const created = document.createElement("td");
+    created.textContent = formatDate(user.created_at);
+    tr.appendChild(created);
+
+    const actions = document.createElement("td");
+    actions.className = "actions";
+    const isSelf = Boolean(session && session.email &&
+      session.email.toLowerCase() === user.email.toLowerCase());
+    if(isSelf){
+      const note = document.createElement("span");
+      note.className = "mono";
+      note.style.fontSize = "11px";
+      note.style.color = "var(--cream-dim)";
+      note.textContent = "sua conta";
+      actions.appendChild(note);
+      actions.appendChild(actionButton("Nova senha", "", () => resetPassword(user)));
+      tr.appendChild(actions);
+      body.appendChild(tr);
+      return;
+    }
+    if(user.status !== "approved"){
+      actions.appendChild(actionButton("Liberar", "ok", () => act({ action: "approve", user_id: user.id })));
+    }
+    if(user.status !== "rejected"){
+      actions.appendChild(actionButton("Rejeitar", "no", () => act({ action: "reject", user_id: user.id })));
+    }
+    if(user.status !== "pending"){
+      actions.appendChild(actionButton("Voltar p/ pendente", "", () => act({ action: "pending", user_id: user.id })));
+    }
+    actions.appendChild(actionButton("Nova senha", "", () => resetPassword(user)));
+    actions.appendChild(actionButton(
+      user.role === "admin" ? "Tornar cliente" : "Tornar admin",
+      "",
+      () => act({ action: user.role === "admin" ? "demote" : "promote", user_id: user.id })
+    ));
+    actions.appendChild(actionButton("Excluir", "no", () => {
+      if(window.confirm("Excluir definitivamente o acesso de " + user.email + "?")){
+        act({ action: "delete", user_id: user.id });
+      }
+    }));
+    tr.appendChild(actions);
+
+    body.appendChild(tr);
+  });
+}
+
+function applyOverview(data){
+  users = Array.isArray(data.users) ? data.users : [];
+  summary = data.summary || summary;
+  config = data.config || config;
+  renderStats();
+  renderRows();
+  renderDiagnostics();
+}
+
+/* ---------------- ações ---------------- */
+
+async function act(payload){
+  const result = await api("/api/admin/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if(!result.ok){
+    if(result.status === 403){ showLogin("Sua sessão de administrador expirou. Entre novamente."); return false; }
+    feedback("err", "A ação não foi concluída", result.data.error || "Erro inesperado.",
+      result.data.storage && !result.data.storage.persistent ? SETUP_STEPS : null);
+    return false;
+  }
+  applyOverview(result.data);
+  feedback("ok", "Pronto", "A lista de acessos foi atualizada.");
+  return true;
+}
+
+async function resetPassword(user){
+  const password = window.prompt("Nova senha para " + user.email + " (mínimo 8 caracteres):");
+  if(password === null) return;
+  if(password.length < 8){
+    feedback("err", "Senha muito curta", "A senha precisa ter pelo menos 8 caracteres.");
+    return;
+  }
+  await act({ action: "set_password", user_id: user.id, password: password });
+}
+
+/* ---------------- sessão ---------------- */
+
+function showLogin(message){
+  session = null;
+  $("panel").hidden = true;
+  $("login-card").hidden = false;
+  $("whoami").hidden = true;
+  if(message) feedback("warn", "Acesso necessário", message);
+  loadHealth();
+}
+
+async function loadHealth(){
+  const result = await api("/api/health");
+  if(result.ok && result.data.storage) storageBanner(result.data.storage);
+  if(result.ok && result.data.admin_credentials_configured === false){
+    const box = $("feedback");
+    const div = document.createElement("div");
+    div.className = "banner warn";
+    const strong = document.createElement("strong");
+    strong.textContent = "Credenciais de administrador não configuradas";
+    div.appendChild(strong);
+    div.appendChild(document.createTextNode(
+      "Defina ADMIN_EMAIL e ADMIN_PASSWORD nas variáveis de ambiente do projeto na Vercel e faça um novo deploy. " +
+      "Sem isso, nenhum login de administrador é aceito."
+    ));
+    box.appendChild(div);
+  }
+}
+
+async function loadPanel(){
+  const result = await api("/api/admin/status");
+  if(result.status === 403){ showLogin(); return false; }
+  $("login-card").hidden = true;
+  $("panel").hidden = false;
+  $("whoami").hidden = false;
+  if(!result.ok){
+    applyOverview(result.data || {});
+    feedback("err", "Painel aberto, mas o banco de contas respondeu com erro",
+      result.data.error || "Erro inesperado.",
+      result.data.storage && !result.data.storage.persistent ? SETUP_STEPS : null);
+    return true;
+  }
+  session = result.data.user;
+  $("whoami-email").textContent = session ? session.email : "";
+  applyOverview(result.data);
+  const storage = result.data.config && result.data.config.storage;
+  if(storage && (!storage.persistent || storage.healthy === false)){ storageBanner(storage); }
+  else { feedback(null, null, null); }
+  return true;
+}
+
+/* ---------------- eventos ---------------- */
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("login-submit");
+  button.disabled = true;
+  try{
+    const result = await api("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: $("login-email").value, password: $("login-password").value })
+    });
+    if(!result.ok){
+      feedback("err", "Não foi possível entrar", result.data.error || "E-mail ou senha inválidos.");
+      return;
+    }
+    if(!result.data.user || result.data.user.role !== "admin"){
+      await api("/api/auth/logout", { method: "POST" });
+      feedback("err", "Esta conta não é administradora",
+        "O acesso ao painel é exclusivo de contas com papel de administrador. Use a plataforma em / para entrar como cliente.");
+      return;
+    }
+    $("login-password").value = "";
+    feedback(null, null, null);
+    await loadPanel();
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("logout").addEventListener("click", async () => {
+  await api("/api/auth/logout", { method: "POST" });
+  showLogin("Sessão encerrada.");
+});
+
+$("refresh").addEventListener("click", () => loadPanel());
+$("search").addEventListener("input", renderRows);
+$("filter").addEventListener("change", renderRows);
+
+$("create-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const created = await act({
+    action: "create",
+    email: $("create-email").value,
+    password: $("create-password").value,
+    role: $("create-role").value,
+    status: "approved"
+  });
+  if(created){
+    $("create-email").value = "";
+    $("create-password").value = "";
+  }
+});
+
+loadPanel();
+</script>
+</body>
+</html>

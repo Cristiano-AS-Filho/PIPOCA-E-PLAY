@@ -1,8 +1,14 @@
 """Persistência das contas de acesso do Pipoca & Play.
 
-Em desenvolvimento, os usuários são armazenados em um JSON local. Em produção
-serverless, configure KV_REST_API_URL/KV_REST_API_TOKEN ou
-UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN para usar Redis REST persistente.
+A base de contas é uma lista JSON. O backend é escolhido automaticamente a
+partir das variáveis de ambiente disponíveis, na seguinte ordem:
+
+1. ``postgres``    — ``POSTGRES_URL`` / ``DATABASE_URL`` (Neon, Supabase ou
+   qualquer Postgres criado em Vercel → Storage → Create Database).
+2. ``vercel-blob`` — ``BLOB_READ_WRITE_TOKEN`` (Vercel Blob privado).
+3. ``redis-rest``  — ``KV_REST_API_URL`` + ``KV_REST_API_TOKEN`` (Upstash).
+4. ``arquivo-local`` — apenas para desenvolvimento; o filesystem das funções
+   serverless é somente leitura, então este modo não persiste em produção.
 """
 
 from __future__ import annotations
@@ -25,8 +31,17 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN_LENGTH = 8
 PBKDF2_ITERATIONS = 260_000
 STORE_KEY = "pipoca-play:users"
+POSTGRES_TABLE = "pipoca_play_store"
 BLOB_PATH = os.environ.get("USER_STORE_BLOB_PATH", "pipoca-play/users.json").strip() or "pipoca-play/users.json"
+VALID_STATUSES = ("pending", "approved", "rejected")
+VALID_ROLES = ("user", "admin")
 _LOCK = threading.RLock()
+
+SETUP_HINT = (
+    "Abra o projeto na Vercel em Storage → Create Database e conecte um banco "
+    "Postgres (Neon), um Upstash Redis ou um Blob store. A Vercel injeta as "
+    "variáveis automaticamente; depois faça um novo deploy."
+)
 
 
 class StorageError(RuntimeError):
@@ -35,6 +50,10 @@ class StorageError(RuntimeError):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _is_serverless() -> bool:
+    return bool(os.environ.get("VERCEL")) or os.environ.get("ENVIRONMENT", "").lower() in {"prod", "production"}
 
 
 def normalize_email(email: str) -> str:
@@ -88,12 +107,34 @@ def hmac_compare(left: str, right: str) -> bool:
     return secrets.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# Detecção dos backends disponíveis
+# ---------------------------------------------------------------------------
+
+
 def _local_path() -> Path:
     configured = os.environ.get("USER_STORE_FILE", "").strip()
     path = Path(configured) if configured else Path(__file__).parent / "data" / "users.json"
     if not path.is_absolute():
         path = Path(__file__).parent / path
     return path
+
+
+POSTGRES_ENV_VARS = (
+    "USER_STORE_POSTGRES_URL",
+    "POSTGRES_URL",
+    "DATABASE_URL",
+    "POSTGRES_URL_NON_POOLING",
+    "DATABASE_URL_UNPOOLED",
+)
+
+
+def _postgres_dsn() -> str | None:
+    for name in POSTGRES_ENV_VARS:
+        value = os.environ.get(name, "").strip()
+        if value.startswith("postgres://") or value.startswith("postgresql://"):
+            return value
+    return None
 
 
 def _kv_credentials() -> tuple[str, str] | None:
@@ -129,11 +170,143 @@ def _blob_is_configured() -> bool:
 
 
 def storage_mode() -> str:
+    """Nome do backend efetivamente usado nesta invocação."""
+    forced = os.environ.get("USER_STORE_MODE", "").strip().lower()
+    if forced in {"postgres", "vercel-blob", "redis-rest", "arquivo-local"}:
+        return forced
+    if _postgres_dsn():
+        return "postgres"
     if _blob_is_configured():
         return "vercel-blob"
     if _kv_credentials():
         return "redis-rest"
     return "arquivo-local"
+
+
+STORAGE_LABELS = {
+    "postgres": "Postgres (Neon/Vercel)",
+    "vercel-blob": "Vercel Blob privado",
+    "redis-rest": "Redis REST (Upstash/Vercel KV)",
+    "arquivo-local": "Arquivo local (somente desenvolvimento)",
+}
+
+
+def storage_is_persistent() -> bool:
+    """Um modo é persistente quando sobrevive ao fim da invocação serverless."""
+    mode = storage_mode()
+    if mode in {"postgres", "vercel-blob", "redis-rest"}:
+        return True
+    return not _is_serverless()
+
+
+def storage_diagnostics(probe: bool = False) -> dict:
+    """Resumo do armazenamento para o painel administrativo e para /api/health."""
+    mode = storage_mode()
+    diagnostics = {
+        "mode": mode,
+        "label": STORAGE_LABELS.get(mode, mode),
+        "persistent": storage_is_persistent(),
+        "serverless": _is_serverless(),
+        "available": {
+            "postgres": bool(_postgres_dsn()),
+            "vercel-blob": _blob_is_configured(),
+            "redis-rest": bool(_kv_credentials()),
+        },
+        "setup_hint": SETUP_HINT,
+        "healthy": None,
+        "error": None,
+    }
+    if not diagnostics["persistent"]:
+        diagnostics["error"] = (
+            "Nenhum armazenamento persistente está conectado a este deploy. " + SETUP_HINT
+        )
+        diagnostics["healthy"] = False
+        return diagnostics
+    if probe:
+        try:
+            load_users()
+            diagnostics["healthy"] = True
+        except StorageError as error:
+            diagnostics["healthy"] = False
+            diagnostics["error"] = str(error)
+    return diagnostics
+
+
+# ---------------------------------------------------------------------------
+# Backend: Postgres
+# ---------------------------------------------------------------------------
+
+
+def _postgres_driver():
+    try:
+        import psycopg  # noqa: PLC0415
+    except ImportError as error:  # pragma: no cover - depende do ambiente
+        raise StorageError(
+            "O driver psycopg não está instalado. Reinstale as dependências do projeto "
+            "(requirements.txt) e faça um novo deploy."
+        ) from error
+    return psycopg
+
+
+def _postgres_connect():
+    dsn = _postgres_dsn()
+    if not dsn:
+        raise StorageError("Nenhuma URL de Postgres foi configurada. " + SETUP_HINT)
+    psycopg = _postgres_driver()
+    try:
+        return psycopg.connect(dsn, connect_timeout=8, autocommit=True)
+    except Exception as error:
+        raise StorageError(
+            "Não foi possível conectar ao banco Postgres das contas. Confira a variável "
+            "POSTGRES_URL/DATABASE_URL do projeto."
+        ) from error
+
+
+def _read_postgres() -> list[dict]:
+    with _postgres_connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"CREATE TABLE IF NOT EXISTS {POSTGRES_TABLE} ("
+                "key text PRIMARY KEY, "
+                "value jsonb NOT NULL, "
+                "updated_at timestamptz NOT NULL DEFAULT now())"
+            )
+            cursor.execute(f"SELECT value FROM {POSTGRES_TABLE} WHERE key = %s", (STORE_KEY,))
+            row = cursor.fetchone()
+    if not row or row[0] is None:
+        return []
+    data = row[0]
+    if isinstance(data, (str, bytes, bytearray)):
+        try:
+            data = json.loads(data)
+        except (TypeError, ValueError) as error:
+            raise StorageError("A base de contas no Postgres contém dados inválidos.") from error
+    if not isinstance(data, list):
+        raise StorageError("A base de contas no Postgres está inválida.")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _write_postgres(users: list[dict]) -> None:
+    payload = json.dumps(users, ensure_ascii=False, separators=(",", ":"))
+    with _postgres_connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"CREATE TABLE IF NOT EXISTS {POSTGRES_TABLE} ("
+                "key text PRIMARY KEY, "
+                "value jsonb NOT NULL, "
+                "updated_at timestamptz NOT NULL DEFAULT now())"
+            )
+            cursor.execute(
+                f"INSERT INTO {POSTGRES_TABLE} (key, value, updated_at) "
+                "VALUES (%s, %s::jsonb, now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+                (STORE_KEY, payload),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Backend: Vercel Blob
+# ---------------------------------------------------------------------------
 
 
 def _blob_sdk():
@@ -262,6 +435,11 @@ def _write_blob(users: list[dict]) -> None:
         raise StorageError("Não foi possível gravar a base de contas no Vercel Blob.") from error
 
 
+# ---------------------------------------------------------------------------
+# Backend: Redis REST
+# ---------------------------------------------------------------------------
+
+
 def _kv_command(command: str, *args: str):
     credentials = _kv_credentials()
     if not credentials:
@@ -287,6 +465,11 @@ def _kv_command(command: str, *args: str):
     return body.get("result") if isinstance(body, dict) else None
 
 
+# ---------------------------------------------------------------------------
+# Backend: arquivo local (desenvolvimento)
+# ---------------------------------------------------------------------------
+
+
 def _read_local() -> list[dict]:
     path = _local_path()
     if not path.exists():
@@ -302,6 +485,11 @@ def _read_local() -> list[dict]:
 
 
 def _write_local(users: list[dict]) -> None:
+    if _is_serverless():
+        raise StorageError(
+            "Este deploy não tem um banco de contas conectado, e o disco das funções "
+            "serverless não guarda dados entre requisições. " + SETUP_HINT
+        )
     path = _local_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -309,14 +497,25 @@ def _write_local(users: list[dict]) -> None:
         temporary.write_text(json.dumps(users, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(path)
     except OSError as error:
-        raise StorageError("Não foi possível gravar a base de contas. Configure um armazenamento persistente.") from error
+        raise StorageError(
+            "Não foi possível gravar a base local de contas em "
+            f"{path}. Verifique a permissão de escrita da pasta."
+        ) from error
+
+
+# ---------------------------------------------------------------------------
+# Leitura e escrita
+# ---------------------------------------------------------------------------
 
 
 def load_users() -> list[dict]:
+    mode = storage_mode()
     with _LOCK:
-        if _blob_is_configured():
+        if mode == "postgres":
+            return _read_postgres()
+        if mode == "vercel-blob":
             return _read_blob()
-        if _kv_credentials():
+        if mode == "redis-rest":
             raw = _kv_command("GET", STORE_KEY)
             if not raw:
                 return []
@@ -331,21 +530,39 @@ def load_users() -> list[dict]:
 
 
 def save_users(users: list[dict]) -> None:
-    serialized = json.dumps(users, ensure_ascii=False, separators=(",", ":"))
+    mode = storage_mode()
     with _LOCK:
-        if _blob_is_configured():
+        if mode == "postgres":
+            _write_postgres(users)
+            return
+        if mode == "vercel-blob":
             _write_blob(users)
             return
-        if _kv_credentials():
-            _kv_command("SET", STORE_KEY, serialized)
+        if mode == "redis-rest":
+            _kv_command("SET", STORE_KEY, json.dumps(users, ensure_ascii=False, separators=(",", ":")))
             return
         _write_local(users)
+
+
+# ---------------------------------------------------------------------------
+# Regras de negócio
+# ---------------------------------------------------------------------------
 
 
 def find_user(email: str, users: list[dict] | None = None) -> dict | None:
     normalized = normalize_email(email)
     records = users if users is not None else load_users()
     return next((user for user in records if normalize_email(str(user.get("email", ""))) == normalized), None)
+
+
+def find_user_by_id(user_id: str, users: list[dict] | None = None) -> dict | None:
+    records = users if users is not None else load_users()
+    return next((user for user in records if str(user.get("id")) == str(user_id)), None)
+
+
+def _user_role(user: dict) -> str:
+    role = str(user.get("role", "user")).lower()
+    return role if role in VALID_ROLES else "user"
 
 
 def register_user(email: str, password: str, confirmation: str | None = None) -> tuple[dict, str, bool]:
@@ -363,6 +580,7 @@ def register_user(email: str, password: str, confirmation: str | None = None) ->
             "email": normalized,
             "password_hash": hash_password(password),
             "status": "pending",
+            "role": _user_role(existing) if existing else "user",
             "status_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
@@ -377,14 +595,46 @@ def register_user(email: str, password: str, confirmation: str | None = None) ->
         return record, token, bool(existing)
 
 
+def create_user(email: str, password: str, status: str = "approved", role: str = "user") -> dict:
+    """Criação direta pelo painel administrativo, já liberada."""
+    normalized = validate_registration(email, password)
+    if status not in VALID_STATUSES:
+        raise ValueError("Status de acesso inválido.")
+    if role not in VALID_ROLES:
+        raise ValueError("Papel de acesso inválido.")
+    with _LOCK:
+        users = load_users()
+        if find_user(normalized, users):
+            raise FileExistsError("Já existe uma conta com este e-mail.")
+        now = _now()
+        record = {
+            "id": secrets.token_urlsafe(16),
+            "email": normalized,
+            "password_hash": hash_password(password),
+            "status": status,
+            "role": role,
+            "status_token_hash": "",
+            "created_at": now,
+            "updated_at": now,
+            "approved_at": now if status == "approved" else None,
+            "rejected_at": now if status == "rejected" else None,
+        }
+        users.append(record)
+        save_users(users)
+        return _public_admin_user(record)
+
+
 def get_status_by_token(email: str, token: str) -> str | None:
     if not isinstance(token, str) or not token:
         return None
     user = find_user(email)
     if not user:
         return None
+    stored = str(user.get("status_token_hash", ""))
+    if not stored:
+        return None
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    if not hmac_compare(token_hash, str(user.get("status_token_hash", ""))):
+    if not hmac_compare(token_hash, stored):
         return None
     return str(user.get("status", "pending"))
 
@@ -394,11 +644,17 @@ def is_approved_user(email: str) -> bool:
     return bool(user and user.get("status") == "approved")
 
 
+def is_admin_user(email: str) -> bool:
+    user = find_user(email)
+    return bool(user and user.get("status") == "approved" and _user_role(user) == "admin")
+
+
 def _public_admin_user(user: dict) -> dict:
     return {
         "id": str(user.get("id", "")),
         "email": str(user.get("email", "")),
         "status": str(user.get("status", "pending")),
+        "role": _user_role(user),
         "created_at": user.get("created_at"),
         "updated_at": user.get("updated_at"),
         "approved_at": user.get("approved_at"),
@@ -422,24 +678,59 @@ def admin_summary() -> dict:
         "pending": sum(user.get("status") == "pending" for user in users),
         "approved": sum(user.get("status") == "approved" for user in users),
         "rejected": sum(user.get("status") == "rejected" for user in users),
+        "admins": sum(_user_role(user) == "admin" for user in users),
     }
 
 
-def update_user_status(user_id: str, status: str) -> dict:
-    if status not in {"approved", "rejected"}:
-        raise ValueError("Status de acesso inválido.")
+def _mutate(user_id: str, apply) -> dict:
     with _LOCK:
         users = load_users()
         target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
         if not target:
             raise LookupError("Usuário não encontrado.")
-        now = _now()
-        target["status"] = status
-        target["updated_at"] = now
-        target["approved_at"] = now if status == "approved" else None
-        target["rejected_at"] = now if status == "rejected" else None
+        apply(target)
+        target["updated_at"] = _now()
         save_users(users)
         return _public_admin_user(target)
+
+
+def update_user_status(user_id: str, status: str) -> dict:
+    if status not in VALID_STATUSES:
+        raise ValueError("Status de acesso inválido.")
+
+    def apply(target: dict) -> None:
+        now = _now()
+        target["status"] = status
+        target["approved_at"] = now if status == "approved" else None
+        target["rejected_at"] = now if status == "rejected" else None
+
+    return _mutate(user_id, apply)
+
+
+def update_user_role(user_id: str, role: str) -> dict:
+    if role not in VALID_ROLES:
+        raise ValueError("Papel de acesso inválido.")
+
+    def apply(target: dict) -> None:
+        target["role"] = role
+        if role == "admin" and target.get("status") != "approved":
+            target["status"] = "approved"
+            target["approved_at"] = _now()
+            target["rejected_at"] = None
+
+    return _mutate(user_id, apply)
+
+
+def set_user_password(user_id: str, password: str) -> dict:
+    if not isinstance(password, str) or len(password) < PASSWORD_MIN_LENGTH:
+        raise ValueError(f"A senha deve ter pelo menos {PASSWORD_MIN_LENGTH} caracteres.")
+    if len(password) > 128:
+        raise ValueError("A senha deve ter no máximo 128 caracteres.")
+
+    def apply(target: dict) -> None:
+        target["password_hash"] = hash_password(password)
+
+    return _mutate(user_id, apply)
 
 
 def delete_user(user_id: str) -> None:
