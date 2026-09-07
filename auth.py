@@ -14,7 +14,7 @@ import os
 import time
 from http import cookies
 
-from user_store import find_user, is_approved_user, verify_password
+from user_store import StorageError, find_user, is_admin_user, is_approved_user, verify_password
 
 
 SESSION_COOKIE = "pipoca_session"
@@ -47,19 +47,27 @@ def admin_password():
     return ""
 
 
-def config_status():
-    from user_store import admin_summary, storage_mode
+def root_admin_configured() -> bool:
+    """O administrador de ambiente só existe quando e-mail e senha estão definidos."""
+    return bool(admin_email() and admin_password())
 
+
+def config_status():
+    from user_store import admin_summary, storage_diagnostics
+
+    storage = storage_diagnostics()
     summary = admin_summary()
     return {
         "auth_secret_configured": bool(auth_secret()),
-        "admin_credentials_configured": bool(admin_email() and admin_password()),
+        "admin_credentials_configured": root_admin_configured(),
+        "stored_admin_count": summary["admins"],
         "user_access_configured": True,
         "allowed_user_count": summary["approved"],
         "pending_user_count": summary["pending"],
         "rejected_user_count": summary["rejected"],
-        "storage_mode": storage_mode(),
-        "persistent_storage_configured": storage_mode() == "redis-rest" or not _is_production(),
+        "storage_mode": storage["mode"],
+        "storage": storage,
+        "persistent_storage_configured": storage["persistent"],
         "production_mode": _is_production(),
     }
 
@@ -107,23 +115,31 @@ def read_session(cookie_header: str | None):
         email = str(payload["email"]).lower()
         if payload.get("role") == "user" and not is_approved_user(email):
             return None
+        if payload.get("role") == "admin" and not _is_root_admin(email) and not is_admin_user(email):
+            return None
         result = {"email": email, "role": payload["role"]}
         if payload.get("user_id"):
             result["user_id"] = str(payload["user_id"])
         return result
-    except (ValueError, TypeError, json.JSONDecodeError, base64.binascii.Error):
+    except (ValueError, TypeError, json.JSONDecodeError, base64.binascii.Error, StorageError):
         return None
+
+
+def _is_root_admin(email: str) -> bool:
+    """Administrador definido por variáveis de ambiente (ADMIN_EMAIL/ADMIN_PASSWORD)."""
+    return root_admin_configured() and hmac.compare_digest(email.strip().lower(), admin_email())
 
 
 def authenticate(email: str, password: str):
     normalized = email.strip().lower()
     if not normalized or not password or not auth_secret():
         return None
-    if hmac.compare_digest(normalized, admin_email()) and hmac.compare_digest(password, admin_password()):
+    if _is_root_admin(normalized) and hmac.compare_digest(password, admin_password()):
         return {"email": normalized, "role": "admin"}
     user = find_user(normalized)
     if user and user.get("status") == "approved" and verify_password(password, str(user.get("password_hash", ""))):
-        return {"email": normalized, "role": "user", "user_id": str(user.get("id", ""))}
+        role = "admin" if str(user.get("role", "user")).lower() == "admin" else "user"
+        return {"email": normalized, "role": role, "user_id": str(user.get("id", ""))}
     return None
 
 

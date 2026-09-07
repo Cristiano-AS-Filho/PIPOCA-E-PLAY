@@ -1,5 +1,4 @@
 import json
-import json
 import os
 import tempfile
 import unittest
@@ -18,14 +17,20 @@ os.environ["USER_STORE_FILE"] = str(TEST_STORE)
 from auth import authenticate, create_session, read_session  # noqa: E402
 from metadata import NullMetadataProvider  # noqa: E402
 from server import buildRecommendationPrompt, clean_filters, validate_recommendation_payload  # noqa: E402
+import api_core  # noqa: E402
 from user_store import (  # noqa: E402
+    StorageError,
     admin_summary,
     admin_users,
+    create_user,
     delete_user,
     get_status_by_token,
     register_user,
-    update_user_status,
+    set_user_password,
+    storage_diagnostics,
     storage_mode,
+    update_user_role,
+    update_user_status,
 )
 
 
@@ -84,7 +89,10 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(record["status"], "pending")
         self.assertEqual(get_status_by_token("user@test.local", token), "pending")
         self.assertIsNone(authenticate("user@test.local", "user-password"))
-        self.assertEqual(admin_summary(), {"total": 1, "pending": 1, "approved": 0, "rejected": 0})
+        self.assertEqual(
+            admin_summary(),
+            {"total": 1, "pending": 1, "approved": 0, "rejected": 0, "admins": 0},
+        )
 
     def test_admin_can_approve_reject_and_delete_user(self):
         record, token, _ = register_user("user@test.local", "user-password")
@@ -186,6 +194,213 @@ class PipocaPlayTests(unittest.TestCase):
         cookie = "pipoca_session=" + create_session(admin["email"], admin["role"])
         self.assertEqual(read_session(cookie)["role"], "admin")
         self.assertIsNone(authenticate("nobody@test.local", "wrong"))
+
+
+    # ------------------------------------------------------------------
+    # Armazenamento
+    # ------------------------------------------------------------------
+
+    def test_postgres_backend_is_preferred_and_round_trips(self):
+        stored = {}
+        statements = []
+
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, statement, params=None):
+                statements.append(statement.split()[0].upper())
+                self._row = None
+                if statement.lstrip().upper().startswith("SELECT"):
+                    value = stored.get(params[0])
+                    self._row = (value,) if value is not None else None
+                elif statement.lstrip().upper().startswith("INSERT"):
+                    stored[params[0]] = params[1]
+
+            def fetchone(self):
+                return self._row
+
+        class FakeConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def cursor(self):
+                return FakeCursor()
+
+        class FakeDriver:
+            @staticmethod
+            def connect(dsn, **kwargs):
+                return FakeConnection()
+
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://user:pass@host/db"}, clear=False):
+            with patch("user_store._postgres_driver", return_value=FakeDriver):
+                self.assertEqual(storage_mode(), "postgres")
+                record, _, _ = register_user("pg@test.local", "pg-password-123")
+                self.assertEqual(record["status"], "pending")
+                self.assertEqual(admin_summary()["pending"], 1)
+                self.assertEqual(json.loads(stored["pipoca-play:users"])[0]["email"], "pg@test.local")
+                self.assertIn("CREATE", statements)
+
+    def test_postgres_url_without_scheme_is_ignored(self):
+        with patch.dict(os.environ, {"DATABASE_URL": "  "}, clear=False):
+            self.assertEqual(storage_mode(), "arquivo-local")
+
+    def test_serverless_without_storage_explains_the_setup(self):
+        with patch.dict(os.environ, {"ENVIRONMENT": "production"}, clear=False):
+            diagnostics = storage_diagnostics()
+            self.assertFalse(diagnostics["persistent"])
+            self.assertIn("Storage", diagnostics["error"])
+            with self.assertRaises(StorageError) as raised:
+                register_user("nostore@test.local", "some-password")
+            message = str(raised.exception)
+            self.assertIn("serverless", message)
+            self.assertIn("Storage", message)
+
+    def test_storage_diagnostics_reports_the_active_backend(self):
+        diagnostics = storage_diagnostics(probe=True)
+        self.assertEqual(diagnostics["mode"], "arquivo-local")
+        self.assertTrue(diagnostics["persistent"])
+        self.assertTrue(diagnostics["healthy"])
+
+    # ------------------------------------------------------------------
+    # Administração
+    # ------------------------------------------------------------------
+
+    def test_stored_admin_can_sign_in_and_hold_an_admin_session(self):
+        created = create_user("boss@test.local", "boss-password", role="admin")
+        self.assertEqual(created["role"], "admin")
+        session = authenticate("boss@test.local", "boss-password")
+        self.assertEqual(session["role"], "admin")
+        cookie = "pipoca_session=" + create_session(session["email"], "admin", session["user_id"])
+        self.assertEqual(read_session(cookie)["role"], "admin")
+
+    def test_demoted_admin_loses_the_admin_session(self):
+        created = create_user("boss@test.local", "boss-password", role="admin")
+        cookie = "pipoca_session=" + create_session("boss@test.local", "admin", created["id"])
+        self.assertIsNotNone(read_session(cookie))
+        update_user_role(created["id"], "user")
+        self.assertIsNone(read_session(cookie))
+
+    def test_password_reset_replaces_the_stored_hash(self):
+        created = create_user("client@test.local", "first-password")
+        set_user_password(created["id"], "second-password")
+        self.assertIsNone(authenticate("client@test.local", "first-password"))
+        self.assertEqual(authenticate("client@test.local", "second-password")["role"], "user")
+
+    def test_admin_routes_require_an_admin_session(self):
+        for session in (None, {"email": "client@test.local", "role": "user"}):
+            status, payload, _ = api_core.admin_overview(session)
+            self.assertEqual(status, 403)
+            self.assertIn("administrador", payload["error"])
+            status, _, _ = api_core.admin_action(session, {"action": "delete", "user_id": "x"})
+            self.assertEqual(status, 403)
+
+    def test_admin_action_covers_the_full_lifecycle(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        status, payload, _ = api_core.admin_action(
+            admin, {"action": "create", "email": "novo@test.local", "password": "senha-inicial"}
+        )
+        self.assertEqual(status, 200)
+        user_id = payload["user"]["id"]
+        self.assertEqual(payload["user"]["status"], "approved")
+
+        status, payload, _ = api_core.admin_action(admin, {"action": "pending", "user_id": user_id})
+        self.assertEqual(payload["user"]["status"], "pending")
+        status, payload, _ = api_core.admin_action(admin, {"action": "approve", "user_id": user_id})
+        self.assertEqual(payload["user"]["status"], "approved")
+        status, payload, _ = api_core.admin_action(admin, {"action": "promote", "user_id": user_id})
+        self.assertEqual(payload["user"]["role"], "admin")
+        self.assertEqual(payload["summary"]["admins"], 1)
+        status, payload, _ = api_core.admin_action(admin, {"action": "demote", "user_id": user_id})
+        self.assertEqual(payload["user"]["role"], "user")
+        status, payload, _ = api_core.admin_action(
+            admin, {"action": "set_password", "user_id": user_id, "password": "nova-senha-1"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(authenticate("novo@test.local", "nova-senha-1")["role"], "user")
+        status, payload, _ = api_core.admin_action(admin, {"action": "delete", "user_id": user_id})
+        self.assertTrue(payload["deleted"])
+        self.assertEqual(payload["users"], [])
+
+    def test_admin_action_rejects_unknown_and_duplicated_input(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        status, _, _ = api_core.admin_action(admin, {"action": "inventada", "user_id": "abc"})
+        self.assertEqual(status, 400)
+        status, _, _ = api_core.admin_action(admin, {"action": "approve", "user_id": "nao-existe"})
+        self.assertEqual(status, 404)
+        api_core.admin_action(admin, {"action": "create", "email": "dup@test.local", "password": "senha-inicial"})
+        status, _, _ = api_core.admin_action(
+            admin, {"action": "create", "email": "dup@test.local", "password": "outra-senha"}
+        )
+        self.assertEqual(status, 409)
+
+    def test_admin_cannot_remove_their_own_access(self):
+        created = create_user("boss@test.local", "boss-password", role="admin")
+        session = {"email": "boss@test.local", "role": "admin"}
+        for action in ("delete", "reject", "pending", "demote"):
+            status, payload, _ = api_core.admin_action(
+                session, {"action": action, "user_id": created["id"]}
+            )
+            self.assertEqual(status, 400, action)
+            self.assertIn("seu próprio acesso", payload["error"])
+        self.assertEqual(authenticate("boss@test.local", "boss-password")["role"], "admin")
+
+    def test_admin_can_still_remove_another_admin(self):
+        mine = create_user("boss@test.local", "boss-password", role="admin")
+        other = create_user("other@test.local", "other-password", role="admin")
+        session = {"email": mine["email"], "role": "admin"}
+        status, payload, _ = api_core.admin_action(
+            session, {"action": "demote", "user_id": other["id"]}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["user"]["role"], "user")
+
+    # ------------------------------------------------------------------
+    # Rotas públicas
+    # ------------------------------------------------------------------
+
+    def test_health_reports_storage_without_leaking_secrets(self):
+        status, payload, _ = api_core.health()
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["admin_panel"], "/admin")
+        self.assertTrue(payload["admin_credentials_configured"])
+        self.assertEqual(payload["storage"]["mode"], "arquivo-local")
+        serialized = json.dumps(payload)
+        self.assertNotIn("admin-password", serialized)
+        self.assertNotIn("test-secret", serialized)
+
+    def test_login_explains_a_missing_admin_configuration(self):
+        with patch.dict(os.environ, {"ADMIN_PASSWORD": "", "ENVIRONMENT": "production"}, clear=False):
+            status, payload, _ = api_core.login(
+                {"email": "admin@test.local", "password": "qualquer"}, secure=True
+            )
+            self.assertEqual(status, 503)
+            self.assertIn("ADMIN_PASSWORD", payload["error"])
+
+    def test_login_sets_an_httponly_session_cookie(self):
+        create_user("client@test.local", "client-password")
+        status, payload, headers = api_core.login(
+            {"email": "client@test.local", "password": "client-password"}, secure=True
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["user"]["role"], "user")
+        self.assertIn("HttpOnly", headers["Set-Cookie"])
+        self.assertIn("Secure", headers["Set-Cookie"])
+
+    def test_pending_account_cannot_log_in_through_the_route(self):
+        register_user("wait@test.local", "wait-password")
+        status, payload, _ = api_core.login(
+            {"email": "wait@test.local", "password": "wait-password"}, secure=False
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("aguardando", payload["error"])
 
     def test_metadata_provider_is_explicitly_unconfirmed_without_key(self):
         metadata = NullMetadataProvider().lookup("Example")

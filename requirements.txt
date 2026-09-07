@@ -1,2 +1,5 @@
 # Dependências usadas pelas funções Python da Vercel.
+# SDK oficial usado pelo backend de contas em Vercel Blob.
 vercel>=0.5.0,<0.7
+# Driver do Postgres (Neon/Vercel Storage) usado pelo backend de contas.
+psycopg[binary]>=3.1,<4
