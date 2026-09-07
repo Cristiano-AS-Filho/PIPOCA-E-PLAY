@@ -668,7 +668,49 @@
   .proof-card{background:rgba(23,27,36,.82);border:1px solid rgba(239,230,216,.1);border-radius:var(--radius);padding:12px 10px;min-height:92px;}
   .proof-card strong{display:block;font-family:'Bebas Neue',cursive;color:var(--marquee);font-size:22px;letter-spacing:.5px;margin-bottom:5px;}
   .proof-card span{display:block;color:var(--cream-dim);font-size:11px;line-height:1.35;}
+
+  /* ---------- landing sections: como funciona / confiança / planos / faq ---------- */
+  .section{padding:40px 0 4px;border-top:1px solid rgba(239,230,216,.08);}
+  .section-title{font-family:'Bebas Neue',cursive;font-size:30px;line-height:1.05;letter-spacing:.4px;margin:0 0 10px;color:var(--cream);}
+  .section-copy{font-size:13.5px;line-height:1.6;color:var(--cream-dim);margin:0 0 22px;max-width:42ch;}
+
+  .how-steps{display:flex;flex-direction:column;gap:12px;}
+  .how-step{display:flex;gap:12px;align-items:flex-start;background:var(--bg-elev);border:1px solid rgba(239,230,216,.1);border-radius:var(--radius);padding:14px;}
+  .how-step-num{flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:var(--marquee);color:var(--ink);font:700 13px 'IBM Plex Mono',monospace;display:flex;align-items:center;justify-content:center;}
+  .how-step-body strong{display:block;font-size:14px;margin-bottom:3px;}
+  .how-step-body span{display:block;font-size:12.5px;color:var(--cream-dim);line-height:1.45;}
+
+  .trust-list{display:flex;flex-direction:column;gap:10px;}
+  .trust-item{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.5;color:var(--cream-dim);}
+  .trust-item .tick{flex:0 0 auto;color:var(--teal);font-weight:700;}
+
+  .plans-note{font-size:12px;color:var(--cream-dim);line-height:1.5;margin:0 0 20px;}
+  .plans-grid{display:flex;flex-direction:column;gap:14px;margin-bottom:8px;}
+  .plan-card{position:relative;background:var(--bg-elev);border:1px solid rgba(239,230,216,.12);border-radius:var(--radius);padding:20px 18px;}
+  .plan-card.highlight{border-color:var(--marquee);background:linear-gradient(160deg, rgba(242,169,59,.10), rgba(23,27,36,.9));box-shadow:0 14px 32px rgba(242,169,59,.08);}
+  .plan-badge{display:inline-block;font:700 10px 'IBM Plex Mono',monospace;letter-spacing:.8px;text-transform:uppercase;color:var(--ink);background:var(--marquee);padding:4px 8px;border-radius:20px;margin-bottom:10px;}
+  .plan-name{font-family:'Bebas Neue',cursive;font-size:24px;letter-spacing:.4px;margin:0 0 2px;}
+  .plan-price{display:flex;align-items:baseline;gap:5px;margin:4px 0 10px;}
+  .plan-price strong{font-family:'Bebas Neue',cursive;font-size:34px;color:var(--marquee);}
+  .plan-price span{font-size:12px;color:var(--cream-dim);}
+  .plan-credits{font-size:13.5px;color:var(--cream);margin:0 0 4px;font-weight:600;}
+  .plan-tagline{font-size:12px;color:var(--cream-dim);margin:0 0 14px;}
+  .plan-per-credit{font:11px 'IBM Plex Mono',monospace;color:var(--cream-dim);margin:0 0 14px;opacity:.85;}
+  .plan-cta{width:100%;}
+
+  .faq-list{display:flex;flex-direction:column;gap:8px;}
+  .faq-item{background:var(--bg-elev);border:1px solid rgba(239,230,216,.1);border-radius:var(--radius);padding:2px 14px;}
+  .faq-item summary{cursor:pointer;list-style:none;padding:13px 0;font-size:13.5px;font-weight:600;color:var(--cream);display:flex;justify-content:space-between;align-items:center;gap:10px;}
+  .faq-item summary::-webkit-details-marker{display:none;}
+  .faq-item summary::after{content:"+";font-family:'IBM Plex Mono',monospace;color:var(--marquee);font-size:16px;flex:0 0 auto;}
+  .faq-item[open] summary::after{content:"–";}
+  .faq-item p{font-size:12.5px;line-height:1.55;color:var(--cream-dim);margin:0 0 14px;}
+
+  .final-cta{text-align:center;padding:34px 0 10px;}
+  .final-cta p{font-size:14px;line-height:1.55;color:var(--cream-dim);margin:0 auto 16px;max-width:36ch;}
+
   .auth-card{background:rgba(23,27,36,.92);border:1px solid rgba(242,169,59,.28);border-radius:var(--radius);padding:22px 18px;margin-top:28px;box-shadow:0 16px 38px rgba(0,0,0,.18);}
+  .auth-plan-note{background:rgba(242,169,59,.1);border:1px solid rgba(242,169,59,.3);border-radius:8px;color:var(--cream);font-size:12.5px;line-height:1.5;padding:11px 12px;margin-bottom:14px;}
   .auth-card h2{font-family:'Bebas Neue',cursive;font-size:32px;letter-spacing:.5px;margin:0 0 5px;}
   .auth-card p{font-size:13px;line-height:1.5;color:var(--cream-dim);margin:0 0 20px;}
   .field{display:flex;flex-direction:column;gap:7px;margin-bottom:13px;}
@@ -728,6 +770,9 @@
     .admin-grid{grid-template-columns:repeat(2,1fr);}
     .status-actions{flex-direction:row;}
     .status-actions .cta{flex:1;}
+    .plans-grid{flex-direction:row;align-items:stretch;}
+    .plan-card{flex:1;display:flex;flex-direction:column;}
+    .plan-cta{margin-top:auto;}
   }
 </style>
 </head>
@@ -798,10 +843,44 @@ const LOADING_MESSAGES = [
   "Buscando os pôsteres certinhos…"
 ];
 
+// 1 crédito = 1 consulta (filme, série ou novela). Cobrança ainda não está
+// integrada (ver nota no fluxo de cadastro) — esta é a vitrine dos planos.
+const PLANS = [
+  {
+    id: "silver",
+    name: "Silver",
+    price: "R$ 15",
+    credits: "2 consultas por dia",
+    perCredit: "a partir de R$ 0,25 por indicação",
+    tagline: "Pra quem assiste no fim de semana",
+    badge: ""
+  },
+  {
+    id: "gold",
+    name: "Gold",
+    price: "R$ 25",
+    credits: "5 consultas por dia",
+    perCredit: "a partir de R$ 0,17 por indicação",
+    tagline: "Pra quem assiste quase todo dia",
+    badge: "MAIS ESCOLHIDO",
+    highlight: true
+  },
+  {
+    id: "diamante",
+    name: "Diamante",
+    price: "R$ 30",
+    credits: "Consultas ilimitadas",
+    perCredit: "sem limite dentro do ciclo de 30 dias",
+    tagline: "Pra quem vive maratonando",
+    badge: "MELHOR CUSTO-BENEFÍCIO"
+  }
+];
+
 let sessionUser = null;
 let authError = "";
 let adminStatus = null;
 let authMode = "login";
+let selectedPlanId = null;
 let accessStatus = null;
 let pendingStatusTimer = null;
 let pendingAccess = null;
@@ -918,6 +997,7 @@ async function logout(){
   try{ await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); }catch(e){}
   sessionUser = null;
   adminStatus = null;
+  selectedPlanId = null;
   clearPendingAccess();
   state.screen = "landing";
   state.stepIndex = 0;
@@ -1275,7 +1355,15 @@ function renderTopnav(){
   return nav;
 }
 
-function renderLanding(){
+function goToRegister(planId){
+  selectedPlanId = planId || null;
+  authMode = "register";
+  authError = "";
+  state.screen = "login";
+  render();
+}
+
+function renderHero(){
   const wrap = document.createElement("section");
   wrap.className = "landing-shell";
   const kicker = document.createElement("div");
@@ -1283,22 +1371,25 @@ function renderLanding(){
   kicker.textContent = "Seu atalho para a próxima sessão";
   const title = document.createElement("h2");
   title.className = "landing-title";
-  title.innerHTML = "Menos busca.<br><span>Mais filme.</span>";
+  title.innerHTML = "Chega de rolar catálogo.<br><span>Comece a assistir.</span>";
   const copy = document.createElement("p");
   copy.className = "landing-copy";
-  copy.textContent = "Responda sete perguntas sobre o seu momento e receba três opções que combinam de verdade com o seu clima, seu tempo e sua companhia.";
+  copy.textContent = "Responda 7 perguntas rápidas sobre o seu momento e receba 3 filmes, séries ou novelas com compatibilidade real — sem nota inventada, sem plataforma inventada.";
   const actions = document.createElement("div");
   actions.className = "landing-actions";
   const enter = document.createElement("button");
   enter.className = "cta";
-  enter.textContent = "Entrar e encontrar meu filme";
-  enter.onclick = () => { state.screen = "login"; render(); };
-  const how = document.createElement("button");
-  how.className = "cta secondary";
-  how.textContent = "Como funciona";
-  how.onclick = () => { copy.scrollIntoView({ behavior: "smooth", block: "center" }); };
+  enter.textContent = "Quero minhas recomendações";
+  enter.onclick = () => goToRegister(null);
+  const plans = document.createElement("button");
+  plans.className = "cta secondary";
+  plans.textContent = "Ver planos";
+  plans.onclick = () => {
+    const target = document.getElementById("planos");
+    if(target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   actions.appendChild(enter);
-  actions.appendChild(how);
+  actions.appendChild(plans);
   const proof = document.createElement("div");
   proof.className = "landing-proof";
   [["7", "filtros que entendem o seu momento"], ["3", "filmes para decidir sem rolar"], ["0", "horas perdidas comparando listas"]].forEach(([value, label]) => {
@@ -1320,6 +1411,203 @@ function renderLanding(){
   return wrap;
 }
 
+function renderHowItWorks(){
+  const wrap = document.createElement("section");
+  wrap.className = "section";
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Como funciona";
+  const title = document.createElement("h3");
+  title.className = "section-title";
+  title.textContent = "Do “não sei o que ver” até o play";
+  const steps = document.createElement("div");
+  steps.className = "how-steps";
+  [
+    ["Responda 7 perguntas rápidas", "Gênero, vibe, tempo, época, plataforma, companhia e estilo — em menos de 1 minuto."],
+    ["Receba 3 opções com % de match", "Cada uma vem com o motivo exato de por que combina com o seu momento agora."],
+    ["Veja onde assistir e aperte o play", "Sem abrir 5 apps pra descobrir se está disponível."]
+  ].forEach(([strongText, spanText], index) => {
+    const step = document.createElement("div");
+    step.className = "how-step";
+    const num = document.createElement("div");
+    num.className = "how-step-num";
+    num.textContent = String(index + 1);
+    const body = document.createElement("div");
+    body.className = "how-step-body";
+    const strong = document.createElement("strong");
+    strong.textContent = strongText;
+    const span = document.createElement("span");
+    span.textContent = spanText;
+    body.appendChild(strong);
+    body.appendChild(span);
+    step.appendChild(num);
+    step.appendChild(body);
+    steps.appendChild(step);
+  });
+  wrap.appendChild(kicker);
+  wrap.appendChild(title);
+  wrap.appendChild(steps);
+  return wrap;
+}
+
+function renderTrust(){
+  const wrap = document.createElement("section");
+  wrap.className = "section";
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Por que confiar";
+  const title = document.createElement("h3");
+  title.className = "section-title";
+  title.textContent = "A gente não inventa dado pra te agradar";
+  const list = document.createElement("div");
+  list.className = "trust-list";
+  [
+    "Nota e disponibilidade vêm de fonte externa real — nunca do “achismo” da IA.",
+    "Entendemos o seu clima, não só o seu gênero favorito: suspense leve é diferente de suspense pesado.",
+    "Cada recomendação explica por que combina com você agora, não com todo mundo."
+  ].forEach(text => {
+    const item = document.createElement("div");
+    item.className = "trust-item";
+    const tick = document.createElement("span");
+    tick.className = "tick";
+    tick.textContent = "✓";
+    const span = document.createElement("span");
+    span.textContent = text;
+    item.appendChild(tick);
+    item.appendChild(span);
+    list.appendChild(item);
+  });
+  wrap.appendChild(kicker);
+  wrap.appendChild(title);
+  wrap.appendChild(list);
+  return wrap;
+}
+
+function renderPlans(){
+  const wrap = document.createElement("section");
+  wrap.className = "section";
+  wrap.id = "planos";
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Assinatura mensal";
+  const title = document.createElement("h3");
+  title.className = "section-title";
+  title.textContent = "Escolha seu ritmo de maratona";
+  const note = document.createElement("p");
+  note.className = "plans-note";
+  note.textContent = "1 crédito = 1 consulta de filme, série ou novela. Sem fidelidade: mude de plano ou cancele quando quiser.";
+  const grid = document.createElement("div");
+  grid.className = "plans-grid";
+  PLANS.forEach(plan => {
+    const card = document.createElement("div");
+    card.className = "plan-card" + (plan.highlight ? " highlight" : "");
+    if(plan.badge){
+      const badge = document.createElement("span");
+      badge.className = "plan-badge";
+      badge.textContent = plan.badge;
+      card.appendChild(badge);
+    }
+    const name = document.createElement("div");
+    name.className = "plan-name";
+    name.textContent = plan.name;
+    const price = document.createElement("div");
+    price.className = "plan-price";
+    const strong = document.createElement("strong");
+    strong.textContent = plan.price;
+    const span = document.createElement("span");
+    span.textContent = "/mês";
+    price.appendChild(strong);
+    price.appendChild(span);
+    const credits = document.createElement("div");
+    credits.className = "plan-credits";
+    credits.textContent = plan.credits;
+    const tagline = document.createElement("div");
+    tagline.className = "plan-tagline";
+    tagline.textContent = plan.tagline;
+    const perCredit = document.createElement("div");
+    perCredit.className = "plan-per-credit";
+    perCredit.textContent = plan.perCredit;
+    const cta = document.createElement("button");
+    cta.className = "cta plan-cta" + (plan.highlight ? "" : " secondary");
+    cta.textContent = "Assinar " + plan.name;
+    cta.onclick = () => goToRegister(plan.id);
+    card.appendChild(name);
+    card.appendChild(price);
+    card.appendChild(credits);
+    card.appendChild(tagline);
+    card.appendChild(perCredit);
+    card.appendChild(cta);
+    grid.appendChild(card);
+  });
+  wrap.appendChild(kicker);
+  wrap.appendChild(title);
+  wrap.appendChild(note);
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+function renderFAQ(){
+  const wrap = document.createElement("section");
+  wrap.className = "section";
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Perguntas frequentes";
+  const title = document.createElement("h3");
+  title.className = "section-title";
+  title.textContent = "Antes de assinar";
+  const list = document.createElement("div");
+  list.className = "faq-list";
+  [
+    ["O que é um crédito?", "Cada consulta — um filme, série ou novela que você pede pro sistema recomendar — gasta 1 crédito. Simples assim."],
+    ["Os créditos acumulam se eu não usar?", "Não. Os créditos são diários e renovam todo dia dentro do seu ciclo de 30 dias."],
+    ["Posso trocar de plano ou cancelar quando quiser?", "Sim. A assinatura é mensal, sem fidelidade — mude de plano ou cancele quando quiser."],
+    ["Funciona para série e novela também?", "Sim. Você escolhe o que procura e o motor aplica os mesmos 7 filtros pra filme, série ou novela."]
+  ].forEach(([question, answer]) => {
+    const item = document.createElement("details");
+    item.className = "faq-item";
+    const summary = document.createElement("summary");
+    summary.textContent = question;
+    const p = document.createElement("p");
+    p.textContent = answer;
+    item.appendChild(summary);
+    item.appendChild(p);
+    list.appendChild(item);
+  });
+  wrap.appendChild(kicker);
+  wrap.appendChild(title);
+  wrap.appendChild(list);
+  return wrap;
+}
+
+function renderFinalCTA(){
+  const wrap = document.createElement("section");
+  wrap.className = "final-cta";
+  const title = document.createElement("h3");
+  title.className = "section-title";
+  title.textContent = "Sua próxima sessão está a 7 perguntas de distância";
+  const p = document.createElement("p");
+  p.textContent = "Você já perdeu mais tempo escolhendo o que assistir do que assistindo de verdade. Hoje isso muda.";
+  const cta = document.createElement("button");
+  cta.className = "cta";
+  cta.textContent = "Quero minhas recomendações";
+  cta.onclick = () => goToRegister(null);
+  wrap.appendChild(title);
+  wrap.appendChild(p);
+  wrap.appendChild(cta);
+  return wrap;
+}
+
+function renderLanding(){
+  const wrap = document.createElement("div");
+  wrap.appendChild(renderHero());
+  wrap.appendChild(renderHowItWorks());
+  wrap.appendChild(renderTrust());
+  wrap.appendChild(renderPlans());
+  wrap.appendChild(renderFAQ());
+  wrap.appendChild(renderFinalCTA());
+  return wrap;
+}
+
 function renderLogin(){
   const wrap = document.createElement("section");
   wrap.className = "auth-card";
@@ -1336,6 +1624,16 @@ function renderLogin(){
   wrap.appendChild(title);
   wrap.appendChild(copy);
 
+  if(authMode === "register" && selectedPlanId){
+    const plan = PLANS.find(p => p.id === selectedPlanId);
+    if(plan){
+      const planNote = document.createElement("div");
+      planNote.className = "auth-plan-note";
+      planNote.textContent = "Plano escolhido: " + plan.name + " (" + plan.price + "/mês). O pagamento por assinatura chega em breve — por enquanto, seu acesso segue o fluxo de aprovação do administrador.";
+      wrap.appendChild(planNote);
+    }
+  }
+
   const tabs = document.createElement("div");
   tabs.className = "auth-tabs";
   [["login", "Já tenho acesso"], ["register", "Quero me cadastrar"]].forEach(([mode, label]) => {
@@ -1343,7 +1641,7 @@ function renderLogin(){
     tab.type = "button";
     tab.className = "auth-tab" + (authMode === mode ? " active" : "");
     tab.textContent = label;
-    tab.onclick = () => { authMode = mode; authError = ""; render(); };
+    tab.onclick = () => { authMode = mode; authError = ""; if(mode === "login") selectedPlanId = null; render(); };
     tabs.appendChild(tab);
   });
   wrap.appendChild(tabs);
@@ -1403,7 +1701,7 @@ function renderLogin(){
   const back = document.createElement("button");
   back.className = "back-link";
   back.textContent = "← Voltar para a apresentação";
-  back.onclick = () => { authError = ""; state.screen = "landing"; render(); };
+  back.onclick = () => { authError = ""; selectedPlanId = null; state.screen = "landing"; render(); };
   wrap.appendChild(back);
   return wrap;
 }
