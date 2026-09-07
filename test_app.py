@@ -247,6 +247,21 @@ class PipocaPlayTests(unittest.TestCase):
                 self.assertEqual(json.loads(stored["pipoca-play:users"])[0]["email"], "pg@test.local")
                 self.assertIn("CREATE", statements)
 
+    def test_supabase_direct_host_gets_a_pooler_hint(self):
+        class FakeDriver:
+            @staticmethod
+            def connect(dsn, **kwargs):
+                raise RuntimeError("connection refused")
+
+        dsn = "postgresql://postgres:secret@db.qfttycqymfpvmcnmqfpx.supabase.co:5432/postgres"
+        with patch.dict(os.environ, {"DATABASE_URL": dsn}, clear=False):
+            with patch("user_store._postgres_driver", return_value=FakeDriver):
+                with self.assertRaises(StorageError) as raised:
+                    register_user("supa@test.local", "senha-do-supabase")
+                message = str(raised.exception)
+                self.assertIn("IPv6", message)
+                self.assertIn("Transaction pooler", message)
+
     def test_postgres_url_without_scheme_is_ignored(self):
         with patch.dict(os.environ, {"DATABASE_URL": "  "}, clear=False):
             self.assertEqual(storage_mode(), "arquivo-local")

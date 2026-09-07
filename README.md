@@ -43,6 +43,16 @@ O backend de contas é escolhido automaticamente a partir das variáveis present
 
 No modo `postgres`, a tabela `pipoca_play_store` é criada sozinha na primeira gravação; não é preciso rodar nenhuma migração. O driver `psycopg[binary]` já está em `requirements.txt`.
 
+### Usando Supabase em vez de Neon
+
+O modo `postgres` funciona com qualquer Postgres, incluindo Supabase — mas **use a string de "Transaction pooler"**, nunca a de conexão direta. No painel do Supabase: **Project Settings → Database → Connection string → aba "Transaction pooler"**. Ela tem o formato:
+
+```
+postgresql://postgres.<ref-do-projeto>:[SUA-SENHA]@aws-0-<região>.pooler.supabase.com:6543/postgres
+```
+
+A conexão direta (`db.<ref-do-projeto>.supabase.co:5432`, mostrada na aba "URI") só tem endereço **IPv6**, e as funções serverless da Vercel não têm saída IPv6 — a conexão falha mesmo com a senha certa. Se isso acontecer, `/api/health` e a mensagem de erro do cadastro já apontam essa causa específica.
+
 ## Executar localmente
 
 1. Copie `.env.example` para `.env`.

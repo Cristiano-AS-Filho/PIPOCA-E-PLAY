@@ -22,7 +22,7 @@ import secrets
 import threading
 import urllib.error
 import urllib.request
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -248,6 +248,17 @@ def _postgres_driver():
     return psycopg
 
 
+def _looks_like_supabase_direct_host(dsn: str) -> bool:
+    """A conexão direta do Supabase (db.<projeto>.supabase.co) só tem IPv6, e o
+    runtime serverless da Vercel não tem saída IPv6 — a conexão sempre falha
+    ali, mesmo com credenciais corretas. É preciso usar o pooler (Supavisor)."""
+    try:
+        host = urlparse(dsn.replace("postgres://", "postgresql://", 1)).hostname or ""
+    except ValueError:
+        return False
+    return host.startswith("db.") and host.endswith(".supabase.co")
+
+
 def _postgres_connect():
     dsn = _postgres_dsn()
     if not dsn:
@@ -256,6 +267,15 @@ def _postgres_connect():
     try:
         return psycopg.connect(dsn, connect_timeout=8, autocommit=True)
     except Exception as error:
+        if _looks_like_supabase_direct_host(dsn):
+            raise StorageError(
+                "Não foi possível conectar ao banco Postgres das contas. Você está usando a "
+                "conexão direta do Supabase (db.<projeto>.supabase.co), que só tem endereço "
+                "IPv6 — funções serverless da Vercel não alcançam esse host. Abra o Supabase → "
+                "Project Settings → Database → Connection string → aba \"Transaction pooler\" "
+                "e use essa URL (host aws-0-<região>.pooler.supabase.com, porta 6543) em "
+                "POSTGRES_URL/DATABASE_URL na Vercel."
+            ) from error
         raise StorageError(
             "Não foi possível conectar ao banco Postgres das contas. Confira a variável "
             "POSTGRES_URL/DATABASE_URL do projeto."
