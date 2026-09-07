@@ -48,7 +48,10 @@ def admin_password():
 
 
 def config_status():
+    import os
+
     from user_store import admin_summary, storage_mode
+    import asaas_client
 
     summary = admin_summary()
     return {
@@ -61,6 +64,9 @@ def config_status():
         "storage_mode": storage_mode(),
         "persistent_storage_configured": storage_mode() == "redis-rest" or not _is_production(),
         "production_mode": _is_production(),
+        "asaas_configured": asaas_client.is_configured(),
+        "asaas_environment": os.environ.get("ASAAS_ENVIRONMENT", "production").strip().lower() or "production",
+        "asaas_webhook_configured": bool(os.environ.get("ASAAS_WEBHOOK_TOKEN", "").strip()),
     }
 
 

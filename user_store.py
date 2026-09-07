@@ -19,12 +19,16 @@ import urllib.request
 from urllib.parse import quote, urlencode
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from plans import PLANS, daily_credits_for, plan_exists
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN_LENGTH = 8
 PBKDF2_ITERATIONS = 260_000
 STORE_KEY = "pipoca-play:users"
+BILLING_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 BLOB_PATH = os.environ.get("USER_STORE_BLOB_PATH", "pipoca-play/users.json").strip() or "pipoca-play/users.json"
 _LOCK = threading.RLock()
 
@@ -368,6 +372,16 @@ def register_user(email: str, password: str, confirmation: str | None = None) ->
             "updated_at": now,
             "approved_at": None,
             "rejected_at": None,
+            # Assinatura/cobrança (Asaas). Uma conta sem plano ativo não
+            # consegue usar /api/recommend — ver consume_credit().
+            "plan_id": existing.get("plan_id") if existing else None,
+            "subscription_status": existing.get("subscription_status", "none") if existing else "none",
+            "asaas_customer_id": existing.get("asaas_customer_id", "") if existing else "",
+            "asaas_subscription_id": existing.get("asaas_subscription_id", "") if existing else "",
+            "credits_daily_limit": existing.get("credits_daily_limit") if existing else None,
+            "credits_used_today": existing.get("credits_used_today", 0) if existing else 0,
+            "credits_date": existing.get("credits_date", "") if existing else "",
+            "subscription_updated_at": existing.get("subscription_updated_at") if existing else None,
         }
         if existing:
             users = [record if user.get("id") == existing.get("id") else user for user in users]
@@ -403,6 +417,8 @@ def _public_admin_user(user: dict) -> dict:
         "updated_at": user.get("updated_at"),
         "approved_at": user.get("approved_at"),
         "rejected_at": user.get("rejected_at"),
+        "plan_id": user.get("plan_id"),
+        "subscription_status": user.get("subscription_status", "none"),
     }
 
 
@@ -449,3 +465,144 @@ def delete_user(user_id: str) -> None:
         if len(remaining) == len(users):
             raise LookupError("Usuário não encontrado.")
         save_users(remaining)
+
+
+# ---------------------------------------------------------------------------
+# Assinatura e créditos (Asaas)
+# ---------------------------------------------------------------------------
+
+def _today_in_billing_timezone() -> str:
+    return datetime.now(BILLING_TIMEZONE).date().isoformat()
+
+
+def get_user_by_id(user_id: str) -> dict | None:
+    return next((user for user in load_users() if str(user.get("id")) == str(user_id)), None)
+
+
+def find_user_by_token(email: str, token: str) -> dict | None:
+    """Confirma posse do cadastro pendente pelo par (e-mail, token) — o mesmo
+    token devolvido no cadastro e usado hoje só pra consultar status. É o que
+    permite iniciar o checkout antes de existir uma sessão logada (a conta
+    ainda não foi aprovada, então ainda não pode logar)."""
+    if not isinstance(token, str) or not token:
+        return None
+    user = find_user(email)
+    if not user:
+        return None
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if not hmac_compare(token_hash, str(user.get("status_token_hash", ""))):
+        return None
+    return user
+
+
+def find_user_by_asaas_customer_id(customer_id: str) -> dict | None:
+    if not customer_id:
+        return None
+    return next((user for user in load_users() if user.get("asaas_customer_id") == customer_id), None)
+
+
+def set_asaas_customer_id(user_id: str, customer_id: str) -> None:
+    with _LOCK:
+        users = load_users()
+        target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
+        if not target:
+            raise LookupError("Usuário não encontrado.")
+        target["asaas_customer_id"] = customer_id
+        target["updated_at"] = _now()
+        save_users(users)
+
+
+def activate_subscription(user_id: str, plan_id: str, asaas_customer_id: str = "", asaas_subscription_id: str = "") -> dict:
+    """Ativa (ou renova) o plano de um usuário — chamado pelo webhook quando
+    o Asaas confirma um pagamento. Um pagamento confirmado aprova a conta na
+    hora: quem pagou não deveria esperar validação manual do administrador."""
+    if not plan_exists(plan_id):
+        raise ValueError("Plano desconhecido.")
+    with _LOCK:
+        users = load_users()
+        target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
+        if not target:
+            raise LookupError("Usuário não encontrado.")
+        now = _now()
+        target["plan_id"] = plan_id
+        target["subscription_status"] = "active"
+        target["credits_daily_limit"] = daily_credits_for(plan_id)
+        target["credits_used_today"] = 0
+        target["credits_date"] = _today_in_billing_timezone()
+        target["subscription_updated_at"] = now
+        if asaas_customer_id:
+            target["asaas_customer_id"] = asaas_customer_id
+        if asaas_subscription_id:
+            target["asaas_subscription_id"] = asaas_subscription_id
+        if target.get("status") != "approved":
+            target["status"] = "approved"
+            target["approved_at"] = now
+        target["updated_at"] = now
+        save_users(users)
+        return target
+
+
+def set_subscription_status(user_id: str, status: str) -> dict:
+    """Usado pelo webhook pra marcar 'overdue' (cobrança atrasada, ainda em
+    carência) ou 'cancelled' (assinatura encerrada/estornada/excluída)."""
+    if status not in {"overdue", "cancelled"}:
+        raise ValueError("Status de assinatura inválido.")
+    with _LOCK:
+        users = load_users()
+        target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
+        if not target:
+            raise LookupError("Usuário não encontrado.")
+        target["subscription_status"] = status
+        if status == "cancelled":
+            target["plan_id"] = None
+            target["credits_daily_limit"] = None
+        target["subscription_updated_at"] = _now()
+        target["updated_at"] = _now()
+        save_users(users)
+        return target
+
+
+def public_subscription_fields(user: dict) -> dict:
+    """Estado de assinatura pra devolver em /api/auth/me — computa os
+    créditos restantes de hoje sem gravar nada (a gravação de verdade só
+    acontece em consume_credit, no momento da consulta)."""
+    plan_id = user.get("plan_id")
+    limit = user.get("credits_daily_limit")
+    today = _today_in_billing_timezone()
+    used_today = user.get("credits_used_today", 0) if user.get("credits_date") == today else 0
+    remaining = None if limit is None else max(0, limit - used_today)
+    plan_meta = PLANS.get(plan_id) if plan_id else None
+    return {
+        "plan_id": plan_id,
+        "plan_name": plan_meta["name"] if plan_meta else None,
+        "subscription_status": user.get("subscription_status", "none"),
+        "credits_daily_limit": limit,
+        "credits_remaining_today": remaining,
+    }
+
+
+def consume_credit(user_id: str) -> tuple[bool, dict]:
+    """Gasta 1 crédito (1 consulta) se houver saldo. Retorna (ok, info) —
+    info sempre traz o estado de créditos pra exibir na UI, tenha dado certo
+    ou não."""
+    with _LOCK:
+        users = load_users()
+        target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
+        if not target:
+            raise LookupError("Usuário não encontrado.")
+        if target.get("subscription_status") != "active":
+            return False, public_subscription_fields(target)
+
+        today = _today_in_billing_timezone()
+        if target.get("credits_date") != today:
+            target["credits_used_today"] = 0
+            target["credits_date"] = today
+
+        limit = target.get("credits_daily_limit")
+        if limit is not None and target.get("credits_used_today", 0) >= limit:
+            save_users(users)
+            return False, public_subscription_fields(target)
+
+        target["credits_used_today"] = target.get("credits_used_today", 0) + 1
+        save_users(users)
+        return True, public_subscription_fields(target)

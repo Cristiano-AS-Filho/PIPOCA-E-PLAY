@@ -899,7 +899,9 @@ let state = {
   recommendations: [],
   errorMsg: "",
   historyList: null,
-  viewingHistoryItem: null
+  viewingHistoryItem: null,
+  loadingMessage: "",
+  paywallMessage: ""
 };
 
 async function bootstrapAuth(){
@@ -920,10 +922,36 @@ async function bootstrapAuth(){
   if(sessionUser && sessionUser.role === "admin") await openAdmin();
 }
 
-function setPendingAccess(data){
-  pendingAccess = { email: data.email, token: data.token };
+function setPendingAccess(data, planId){
+  pendingAccess = { email: data.email, token: data.token, planId: planId || null };
   accessStatus = data.status || "pending";
   try{ window.localStorage.setItem("pipoca_pending_access", JSON.stringify(pendingAccess)); }catch(e){}
+}
+
+async function startCheckout(planId, email, token){
+  try{
+    const payload = { plan_id: planId };
+    if(email && token){ payload.email = email; payload.token = token; }
+    const response = await fetch("/api/billing/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok || !data.checkout_url) throw new Error(data.error || "Não foi possível iniciar o pagamento agora.");
+    window.location.href = data.checkout_url;
+  }catch(e){
+    const message = e.message || "Não foi possível iniciar o pagamento agora.";
+    if(state.screen === "paywall"){
+      state.paywallMessage = message;
+      render();
+    }else{
+      authError = message;
+      state.screen = "access-status";
+      render();
+    }
+  }
 }
 
 function clearPendingAccess(){
@@ -982,11 +1010,20 @@ async function register(email, password, confirmation){
     });
     const data = await response.json().catch(() => ({}));
     if(!response.ok) throw new Error(data.error || "Não foi possível enviar o cadastro agora.");
-    setPendingAccess(data);
+    const chosenPlan = selectedPlanId;
+    setPendingAccess(data, chosenPlan);
     authMode = "login";
-    state.screen = "access-status";
-    render();
-    checkPendingAccess(false);
+    if(chosenPlan){
+      state.loadingMessage = "Preparando seu pagamento seguro…";
+      state.screen = "loading";
+      render();
+      await startCheckout(chosenPlan, data.email, data.token);
+      state.loadingMessage = "";
+    }else{
+      state.screen = "access-status";
+      render();
+      checkPendingAccess(false);
+    }
   }catch(e){
     authError = e.message || "Não foi possível enviar o cadastro agora.";
     render();
@@ -1136,7 +1173,9 @@ async function getRecommendations(filters){
   });
   if(!response.ok){
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.error || "Falha ao consultar o motor de recomendação (HTTP " + response.status + ").");
+    const err = new Error(error.error || "Falha ao consultar o motor de recomendação (HTTP " + response.status + ").");
+    if(response.status === 402) err.paymentRequired = true;
+    throw err;
   }
   const data = await response.json();
   const text = data.text || "";
@@ -1288,6 +1327,7 @@ function render(){
   else if(state.screen === "results") app.appendChild(renderResults());
   else if(state.screen === "history") app.appendChild(renderHistory());
   else if(state.screen === "error") app.appendChild(renderError());
+  else if(state.screen === "paywall") app.appendChild(renderPaywall());
 
   const spacer = document.createElement("div");
   spacer.className = "footer-space";
@@ -1316,7 +1356,16 @@ function renderTopnav(){
   }else{
     const account = document.createElement("span");
     account.className = "account-chip";
-    account.textContent = sessionUser.role === "admin" ? "ADMIN" : "USUÁRIO";
+    if(sessionUser.role === "admin"){
+      account.textContent = "ADMIN";
+    }else if(sessionUser.subscription_status === "active"){
+      const limit = sessionUser.credits_daily_limit;
+      const remaining = sessionUser.credits_remaining_today;
+      const creditsLabel = limit === null || limit === undefined ? "ILIMITADO" : (remaining + "/" + limit + " HOJE");
+      account.textContent = (sessionUser.plan_name || "PLANO").toUpperCase() + " · " + creditsLabel;
+    }else{
+      account.textContent = "SEM PLANO ATIVO";
+    }
     right.appendChild(account);
 
     if(sessionUser.role === "admin"){
@@ -1483,6 +1532,48 @@ function renderTrust(){
   return wrap;
 }
 
+function buildPlanCard(plan, onCta, ctaLabel){
+  const card = document.createElement("div");
+  card.className = "plan-card" + (plan.highlight ? " highlight" : "");
+  if(plan.badge){
+    const badge = document.createElement("span");
+    badge.className = "plan-badge";
+    badge.textContent = plan.badge;
+    card.appendChild(badge);
+  }
+  const name = document.createElement("div");
+  name.className = "plan-name";
+  name.textContent = plan.name;
+  const price = document.createElement("div");
+  price.className = "plan-price";
+  const strong = document.createElement("strong");
+  strong.textContent = plan.price;
+  const span = document.createElement("span");
+  span.textContent = "/mês";
+  price.appendChild(strong);
+  price.appendChild(span);
+  const credits = document.createElement("div");
+  credits.className = "plan-credits";
+  credits.textContent = plan.credits;
+  const tagline = document.createElement("div");
+  tagline.className = "plan-tagline";
+  tagline.textContent = plan.tagline;
+  const perCredit = document.createElement("div");
+  perCredit.className = "plan-per-credit";
+  perCredit.textContent = plan.perCredit;
+  const cta = document.createElement("button");
+  cta.className = "cta plan-cta" + (plan.highlight ? "" : " secondary");
+  cta.textContent = ctaLabel || ("Assinar " + plan.name);
+  cta.onclick = onCta;
+  card.appendChild(name);
+  card.appendChild(price);
+  card.appendChild(credits);
+  card.appendChild(tagline);
+  card.appendChild(perCredit);
+  card.appendChild(cta);
+  return card;
+}
+
 function renderPlans(){
   const wrap = document.createElement("section");
   wrap.className = "section";
@@ -1498,51 +1589,38 @@ function renderPlans(){
   note.textContent = "1 crédito = 1 consulta de filme, série ou novela. Sem fidelidade: mude de plano ou cancele quando quiser.";
   const grid = document.createElement("div");
   grid.className = "plans-grid";
-  PLANS.forEach(plan => {
-    const card = document.createElement("div");
-    card.className = "plan-card" + (plan.highlight ? " highlight" : "");
-    if(plan.badge){
-      const badge = document.createElement("span");
-      badge.className = "plan-badge";
-      badge.textContent = plan.badge;
-      card.appendChild(badge);
-    }
-    const name = document.createElement("div");
-    name.className = "plan-name";
-    name.textContent = plan.name;
-    const price = document.createElement("div");
-    price.className = "plan-price";
-    const strong = document.createElement("strong");
-    strong.textContent = plan.price;
-    const span = document.createElement("span");
-    span.textContent = "/mês";
-    price.appendChild(strong);
-    price.appendChild(span);
-    const credits = document.createElement("div");
-    credits.className = "plan-credits";
-    credits.textContent = plan.credits;
-    const tagline = document.createElement("div");
-    tagline.className = "plan-tagline";
-    tagline.textContent = plan.tagline;
-    const perCredit = document.createElement("div");
-    perCredit.className = "plan-per-credit";
-    perCredit.textContent = plan.perCredit;
-    const cta = document.createElement("button");
-    cta.className = "cta plan-cta" + (plan.highlight ? "" : " secondary");
-    cta.textContent = "Assinar " + plan.name;
-    cta.onclick = () => goToRegister(plan.id);
-    card.appendChild(name);
-    card.appendChild(price);
-    card.appendChild(credits);
-    card.appendChild(tagline);
-    card.appendChild(perCredit);
-    card.appendChild(cta);
-    grid.appendChild(card);
-  });
+  PLANS.forEach(plan => grid.appendChild(buildPlanCard(plan, () => goToRegister(plan.id))));
   wrap.appendChild(kicker);
   wrap.appendChild(title);
   wrap.appendChild(note);
   wrap.appendChild(grid);
+  return wrap;
+}
+
+function renderPaywall(){
+  const wrap = document.createElement("section");
+  wrap.className = "landing-shell";
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Créditos";
+  const title = document.createElement("h2");
+  title.className = "section-title";
+  title.textContent = "Hora de escolher um plano";
+  const copy = document.createElement("p");
+  copy.className = "section-copy";
+  copy.textContent = state.paywallMessage || "Assine um plano para continuar buscando recomendações.";
+  const grid = document.createElement("div");
+  grid.className = "plans-grid";
+  PLANS.forEach(plan => grid.appendChild(buildPlanCard(plan, () => startCheckout(plan.id))));
+  const back = document.createElement("button");
+  back.className = "back-link";
+  back.textContent = "← Voltar";
+  back.onclick = () => { state.screen = "summary"; render(); };
+  wrap.appendChild(kicker);
+  wrap.appendChild(title);
+  wrap.appendChild(copy);
+  wrap.appendChild(grid);
+  wrap.appendChild(back);
   return wrap;
 }
 
@@ -1710,33 +1788,53 @@ function renderAccessStatus(){
   const wrap = document.createElement("section");
   wrap.className = "status-panel";
   const status = accessStatus || "pending";
+  const planId = pendingAccess && pendingAccess.planId;
+  const plan = planId ? PLANS.find(p => p.id === planId) : null;
   const icon = document.createElement("div");
   icon.className = "status-icon";
-  icon.textContent = status === "approved" ? "LIBERADO" : status === "rejected" ? "REVISAR" : "EM ANÁLISE";
+  icon.textContent = status === "approved" ? "LIBERADO" : status === "rejected" ? "REVISAR" : plan ? "AGUARDANDO PAGAMENTO" : "EM ANÁLISE";
   const title = document.createElement("h2");
-  title.textContent = status === "approved" ? "Seu acesso foi validado" : status === "rejected" ? "Pedido não aprovado" : "Cadastro recebido";
+  title.textContent = status === "approved" ? "Seu acesso foi validado" : status === "rejected" ? "Pedido não aprovado" : plan ? "Confirmando seu pagamento" : "Cadastro recebido";
   const copy = document.createElement("p");
   copy.textContent = status === "approved"
-    ? "O administrador autorizou seu cadastro. Agora você já pode entrar na plataforma com o e-mail e a senha cadastrados."
+    ? (plan ? "Pagamento confirmado! Agora você já pode entrar na plataforma com o e-mail e a senha cadastrados." : "O administrador autorizou seu cadastro. Agora você já pode entrar na plataforma com o e-mail e a senha cadastrados.")
     : status === "rejected"
       ? "O administrador rejeitou este pedido. Se desejar, você pode enviar um novo cadastro para análise."
-      : "O seu acesso será liberado assim que o administrador validar. Por favor, aguarde a liberação. Esta tela será atualizada automaticamente.";
+      : plan
+        ? "Estamos aguardando a confirmação do seu pagamento (" + plan.name + " · " + plan.price + "/mês). Pix costuma confirmar em segundos; cartão pode levar um pouco mais. Esta tela atualiza sozinha."
+        : "O seu acesso será liberado assim que o administrador validar. Por favor, aguarde a liberação. Esta tela será atualizada automaticamente.";
   const email = document.createElement("div");
   email.className = "status-email";
   email.textContent = pendingAccess && pendingAccess.email ? pendingAccess.email : "";
   wrap.appendChild(icon);
   wrap.appendChild(title);
-  wrap.appendChild(copy);
+  if(plan && authError){
+    const error = document.createElement("div");
+    error.className = "auth-error";
+    error.textContent = authError;
+    wrap.appendChild(error);
+  }else{
+    wrap.appendChild(copy);
+  }
   wrap.appendChild(email);
 
   const actions = document.createElement("div");
   actions.className = "status-actions";
   if(status === "pending"){
-    const refresh = document.createElement("button");
-    refresh.className = "cta small";
-    refresh.textContent = "Verificar agora";
-    refresh.onclick = () => checkPendingAccess(true);
-    actions.appendChild(refresh);
+    if(!(plan && authError)){
+      const refresh = document.createElement("button");
+      refresh.className = "cta small";
+      refresh.textContent = "Verificar agora";
+      refresh.onclick = () => checkPendingAccess(true);
+      actions.appendChild(refresh);
+    }
+    if(plan){
+      const retryPayment = document.createElement("button");
+      retryPayment.className = "cta" + (authError ? "" : " secondary") + " small";
+      retryPayment.textContent = authError ? "Tentar pagamento de novo" : "Pagar de novo";
+      retryPayment.onclick = () => { authError = ""; startCheckout(plan.id, pendingAccess.email, pendingAccess.token); };
+      actions.appendChild(retryPayment);
+    }
   }else if(status === "approved"){
     const enter = document.createElement("button");
     enter.className = "cta small";
@@ -1851,7 +1949,9 @@ function renderAdmin(){
     ["Pedidos rejeitados", String(summary.rejected || 0) + " pedido(s)", summary.rejected ? "status-warn" : "status-ok"],
     ["Persistência", config.storage_mode === "redis-rest" ? "Redis REST conectado" : "Arquivo local", config.persistent_storage_configured ? "status-ok" : "status-warn"],
     ["Credenciais admin", config.admin_credentials_configured ? "Configuradas" : "Não configuradas", config.admin_credentials_configured ? "status-ok" : "status-warn"],
-    ["Chave da sessão", config.auth_secret_configured ? "Configurada" : "Não configurada", config.auth_secret_configured ? "status-ok" : "status-warn"]
+    ["Chave da sessão", config.auth_secret_configured ? "Configurada" : "Não configurada", config.auth_secret_configured ? "status-ok" : "status-warn"],
+    ["Cobrança (Asaas)", config.asaas_configured ? ("Ativa · " + (config.asaas_environment || "production")) : "Não configurada", config.asaas_configured ? "status-ok" : "status-warn"],
+    ["Webhook do Asaas", config.asaas_webhook_configured ? "Token configurado" : "Token não configurado", config.asaas_webhook_configured ? "status-ok" : "status-warn"]
   ];
   entries.forEach(([label, value, className]) => {
     const card = document.createElement("div");
@@ -2052,7 +2152,7 @@ function renderLoading(){
   const reel = document.createElement("div");
   reel.className = "reel";
   const p = document.createElement("p");
-  p.textContent = LOADING_MESSAGES[Math.floor(Math.random()*LOADING_MESSAGES.length)];
+  p.textContent = state.loadingMessage || LOADING_MESSAGES[Math.floor(Math.random()*LOADING_MESSAGES.length)];
   wrap.appendChild(reel);
   wrap.appendChild(p);
   return wrap;
@@ -2111,6 +2211,12 @@ async function runSearch(){
     };
     saveToHistory(record);
   }catch(e){
+    if(e.paymentRequired){
+      state.paywallMessage = e.message || "Assine um plano para continuar buscando recomendações.";
+      state.screen = "paywall";
+      render();
+      return;
+    }
     state.errorMsg = e.message || "Não consegui buscar recomendações agora.";
     state.screen = "error";
     render();

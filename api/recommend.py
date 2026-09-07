@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from auth import read_session  # noqa: E402
 from rate_limit import check_rate_limit  # noqa: E402
 from server import call_openai, clean_filters  # noqa: E402
+from user_store import consume_credit  # noqa: E402
 
 
 class handler(BaseHTTPRequestHandler):
@@ -33,6 +34,20 @@ class handler(BaseHTTPRequestHandler):
         if not check_rate_limit(user["email"], MAX_REQUESTS_PER_MINUTE, 60):
             self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
             return
+        if user.get("role") != "admin":
+            try:
+                allowed, credit_info = consume_credit(user.get("user_id", ""))
+            except LookupError as error:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
+                return
+            if not allowed:
+                message = (
+                    "Assine um plano para buscar recomendações."
+                    if credit_info.get("subscription_status") != "active"
+                    else "Seus créditos de hoje acabaram. Eles renovam amanhã, ou você pode subir de plano."
+                )
+                self.send_json(HTTPStatus.PAYMENT_REQUIRED, {"error": message, "subscription": credit_info})
+                return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > 8_192:

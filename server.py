@@ -6,6 +6,7 @@ A chave OpenAI nunca é enviada para o navegador: somente este processo a lê.
 
 import json
 import os
+import secrets
 import urllib.error
 import urllib.request
 from http import HTTPStatus
@@ -25,16 +26,26 @@ from auth import (
 )
 from user_store import (
     StorageError,
+    activate_subscription,
     admin_summary,
     admin_users,
+    consume_credit,
     delete_user,
     find_user,
+    find_user_by_asaas_customer_id,
+    find_user_by_token,
     get_status_by_token,
+    get_user_by_id,
+    public_subscription_fields,
     register_user,
+    set_asaas_customer_id,
+    set_subscription_status,
     update_user_status,
 )
 from metadata import enrich_result
 from rate_limit import check_rate_limit
+from plans import PLANS, plan_exists
+import asaas_client
 
 ROOT = Path(__file__).parent
 PUBLIC = ROOT / "public"
@@ -291,6 +302,137 @@ def call_openai(filters):
     return json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))
 
 
+# ---------------------------------------------------------------------------
+# Assinatura e cobrança (Asaas)
+# ---------------------------------------------------------------------------
+
+def _absolute_base_url(headers) -> str:
+    configured = os.environ.get("PUBLIC_BASE_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    host = headers.get("Host", "127.0.0.1:8000")
+    scheme = "https" if is_secure_request(headers) else "http"
+    return f"{scheme}://{host}"
+
+
+def user_payload(session_user):
+    """public_user() + estado de assinatura, pra front saber quantos créditos
+    restam sem precisar de uma chamada separada."""
+    payload = public_user(session_user)
+    if session_user and session_user.get("role") == "user" and session_user.get("user_id"):
+        record = get_user_by_id(session_user["user_id"])
+        if record:
+            payload.update(public_subscription_fields(record))
+    return payload
+
+
+def resolve_billing_user(session_user, body):
+    """Acha o cadastro completo pra iniciar um checkout.
+
+    Uma conta recém-criada ainda não tem sessão (login é bloqueado até
+    aprovação/pagamento), então além da sessão normal aceitamos provar posse
+    da conta com o par (email, token) que o cadastro já devolveu — o mesmo
+    usado pra tela de "aguardando liberação".
+    """
+    if session_user and session_user.get("role") == "user" and session_user.get("user_id"):
+        record = get_user_by_id(session_user["user_id"])
+        if record:
+            return record
+    email = body.get("email", "")
+    token = body.get("token", "")
+    if isinstance(email, str) and isinstance(token, str) and email and token:
+        return find_user_by_token(email, token)
+    return None
+
+
+def create_checkout_session(user_record, plan_id, headers) -> str:
+    if not plan_exists(plan_id):
+        raise ValueError("Plano desconhecido.")
+    if not asaas_client.is_configured():
+        raise RuntimeError("A cobrança ainda não foi configurada no servidor.")
+
+    plan = PLANS[plan_id]
+    base_url = _absolute_base_url(headers)
+    external_reference = f"{user_record['id']}:{plan_id}"
+    try:
+        customer = asaas_client.get_or_create_customer(
+            name=user_record["email"].split("@")[0].title(),
+            email=user_record["email"],
+            external_reference=user_record["id"],
+        )
+        customer_id = customer.get("id", "")
+        if customer_id and customer_id != user_record.get("asaas_customer_id"):
+            set_asaas_customer_id(user_record["id"], customer_id)
+        checkout = asaas_client.create_subscription_checkout(
+            customer_id=customer_id,
+            plan_name=plan["name"],
+            price=plan["price"],
+            external_reference=external_reference,
+            success_url=f"{base_url}/?checkout=success",
+            cancel_url=f"{base_url}/?checkout=cancelled",
+        )
+    except asaas_client.AsaasError as error:
+        raise RuntimeError(f"Não foi possível iniciar o pagamento: {error}") from error
+    return asaas_client.checkout_redirect_url(checkout)
+
+
+# Eventos do Asaas que ativam/renovam a assinatura (créditos voltam a valer).
+_ACTIVATE_EVENTS = {"PAYMENT_CONFIRMED", "PAYMENT_RECEIVED", "CHECKOUT_PAID"}
+# Cobrança atrasada: mantemos o cadastro, mas suspendemos o acesso até regularizar.
+_OVERDUE_EVENTS = {"PAYMENT_OVERDUE"}
+# Assinatura encerrada de vez (cancelamento, estorno, exclusão da cobrança).
+_CANCEL_EVENTS = {
+    "PAYMENT_DELETED",
+    "PAYMENT_REFUNDED",
+    "SUBSCRIPTION_DELETED",
+    "SUBSCRIPTION_INACTIVATED",
+    "CHECKOUT_CANCELED",
+    "CHECKOUT_EXPIRED",
+}
+
+
+def verify_asaas_webhook(headers) -> bool:
+    expected = os.environ.get("ASAAS_WEBHOOK_TOKEN", "").strip()
+    if not expected:
+        return False
+    received = headers.get("asaas-access-token", "")
+    return bool(received) and secrets.compare_digest(received, expected)
+
+
+def _resolve_webhook_user(payment: dict):
+    external_reference = str(payment.get("externalReference") or "")
+    if ":" in external_reference:
+        user_id, plan_id = external_reference.split(":", 1)
+        user = get_user_by_id(user_id)
+        if user:
+            return user, plan_id
+    customer_id = str(payment.get("customer") or "")
+    user = find_user_by_asaas_customer_id(customer_id)
+    if user:
+        return user, user.get("plan_id")
+    return None, None
+
+
+def handle_asaas_webhook_event(payload: dict) -> None:
+    event = str(payload.get("event") or "")
+    payment = payload.get("payment") or {}
+    user, plan_id = _resolve_webhook_user(payment)
+    if not user:
+        return  # nada pra mapear de volta — ignora silenciosamente (idempotente)
+
+    if event in _ACTIVATE_EVENTS and plan_id and plan_exists(plan_id):
+        activate_subscription(
+            user["id"],
+            plan_id,
+            asaas_subscription_id=str(payment.get("subscription") or ""),
+        )
+    elif event in _OVERDUE_EVENTS:
+        set_subscription_status(user["id"], "overdue")
+    elif event in _CANCEL_EVENTS:
+        set_subscription_status(user["id"], "cancelled")
+    # Outros eventos (ex: PAYMENT_CREATED, PAYMENT_UPDATED) não mudam acesso — ignorados.
+
+
 class AppHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(PUBLIC), **kwargs)
@@ -324,7 +466,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path)
         if path.path == "/api/auth/me":
             user = self.current_user()
-            self.send_json(HTTPStatus.OK, {"authenticated": bool(user), "user": public_user(user)})
+            self.send_json(HTTPStatus.OK, {"authenticated": bool(user), "user": user_payload(user)})
             return
         if path.path == "/api/auth/status":
             try:
@@ -410,7 +552,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     return
                 self.send_json(
                     HTTPStatus.OK,
-                    {"authenticated": True, "user": public_user(user)},
+                    {"authenticated": True, "user": user_payload(user)},
                     {"Set-Cookie": session_cookie(create_session(user["email"], user["role"], user.get("user_id")), is_secure_request(self.headers))},
                 )
             except StorageError as error:
@@ -456,6 +598,43 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
 
+        if self.path == "/api/billing/checkout":
+            try:
+                body = self.request_json(4_096)
+                plan_id = body.get("plan_id", "")
+                if not isinstance(plan_id, str):
+                    raise ValueError("Plano inválido.")
+                user_record = resolve_billing_user(self.current_user(), body)
+                if not user_record:
+                    self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "Não foi possível confirmar sua conta para iniciar o pagamento."})
+                    return
+                if not check_rate_limit("checkout:" + user_record["email"], 6, 60):
+                    self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
+                    return
+                checkout_url = create_checkout_session(user_record, plan_id, self.headers)
+                self.send_json(HTTPStatus.OK, {"checkout_url": checkout_url})
+            except LookupError as error:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
+            except StorageError as error:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
+            except (ValueError, json.JSONDecodeError) as error:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            except RuntimeError as error:
+                self.send_json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
+            return
+
+        if self.path == "/api/webhooks/asaas":
+            if not verify_asaas_webhook(self.headers):
+                self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "Assinatura do webhook inválida."})
+                return
+            try:
+                payload = self.request_json(65_536)
+                handle_asaas_webhook_event(payload)
+            except (ValueError, json.JSONDecodeError, LookupError, StorageError):
+                pass  # webhook sempre responde 200 pra evitar reenvio em loop; erro fica só no log
+            self.send_json(HTTPStatus.OK, {"received": True})
+            return
+
         if self.path != "/api/recommend":
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
             return
@@ -466,6 +645,20 @@ class AppHandler(SimpleHTTPRequestHandler):
         if not check_rate_limit(user["email"], MAX_REQUESTS_PER_MINUTE, 60):
             self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
             return
+        if user.get("role") != "admin":
+            user_id = user.get("user_id", "")
+            try:
+                allowed, credit_info = consume_credit(user_id)
+            except LookupError as error:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
+                return
+            if not allowed:
+                if credit_info.get("subscription_status") != "active":
+                    message = "Assine um plano para buscar recomendações."
+                else:
+                    message = "Seus créditos de hoje acabaram. Eles renovam amanhã, ou você pode subir de plano."
+                self.send_json(HTTPStatus.PAYMENT_REQUIRED, {"error": message, "subscription": credit_info})
+                return
         try:
             body = self.request_json()
             text = call_openai(clean_filters(body.get("filters")))

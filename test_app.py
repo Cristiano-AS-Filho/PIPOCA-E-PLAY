@@ -14,7 +14,10 @@ os.environ["ADMIN_PASSWORD"] = "admin-password"
 os.environ["ENVIRONMENT"] = "test"
 os.environ["TMDB_API_KEY"] = ""
 os.environ["USER_STORE_FILE"] = str(TEST_STORE)
+os.environ["ASAAS_API_KEY"] = ""
+os.environ["ASAAS_WEBHOOK_TOKEN"] = ""
 
+import asaas_client  # noqa: E402
 from auth import authenticate, create_session, read_session  # noqa: E402
 from metadata import NullMetadataProvider, TMDBMetadataProvider  # noqa: E402
 from rate_limit import check_rate_limit  # noqa: E402
@@ -22,15 +25,24 @@ from server import (  # noqa: E402
     RECOMMENDATION_SCHEMA,
     buildRecommendationPrompt,
     clean_filters,
+    create_checkout_session,
     duration_violations,
+    handle_asaas_webhook_event,
+    resolve_billing_user,
     validate_recommendation_payload,
+    verify_asaas_webhook,
 )
 from user_store import (  # noqa: E402
+    activate_subscription,
     admin_summary,
     admin_users,
+    consume_credit,
     delete_user,
+    find_user_by_token,
     get_status_by_token,
+    get_user_by_id,
     register_user,
+    set_subscription_status,
     update_user_status,
     storage_mode,
 )
@@ -246,6 +258,172 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(metadata["ratings"], [
             {"source": "TMDB", "score": 7.8, "scale": "0-10", "retrieved_at": metadata["ratings"][0]["retrieved_at"]}
         ])
+
+
+    def test_consume_credit_blocks_without_active_subscription(self):
+        record, _, _ = register_user("no-plan@test.local", "user-password")
+        ok, info = consume_credit(record["id"])
+        self.assertFalse(ok)
+        self.assertEqual(info["subscription_status"], "none")
+
+    def test_activate_subscription_sets_daily_limit_and_auto_approves(self):
+        record, _, _ = register_user("silver@test.local", "user-password")
+        updated = activate_subscription(record["id"], "silver", asaas_customer_id="cus_1", asaas_subscription_id="sub_1")
+        self.assertEqual(updated["status"], "approved")
+        self.assertEqual(updated["subscription_status"], "active")
+        self.assertEqual(updated["credits_daily_limit"], 2)
+        self.assertEqual(updated["asaas_customer_id"], "cus_1")
+
+    def test_consume_credit_enforces_daily_limit_then_resets_next_day(self):
+        record, _, _ = register_user("gold@test.local", "user-password")
+        activate_subscription(record["id"], "gold")  # 5 créditos/dia
+        for _ in range(5):
+            ok, _ = consume_credit(record["id"])
+            self.assertTrue(ok)
+        ok, info = consume_credit(record["id"])
+        self.assertFalse(ok)
+        self.assertEqual(info["credits_remaining_today"], 0)
+
+        # simula a virada do dia mexendo direto na base local
+        from user_store import load_users, save_users
+        users = load_users()
+        for user in users:
+            if user["id"] == record["id"]:
+                user["credits_date"] = "2000-01-01"
+        save_users(users)
+        ok, info = consume_credit(record["id"])
+        self.assertTrue(ok)
+        self.assertEqual(info["credits_remaining_today"], 4)
+
+    def test_diamante_plan_has_unlimited_credits(self):
+        record, _, _ = register_user("diamante@test.local", "user-password")
+        activate_subscription(record["id"], "diamante")
+        for _ in range(20):
+            ok, info = consume_credit(record["id"])
+            self.assertTrue(ok)
+            self.assertIsNone(info["credits_remaining_today"])
+
+    def test_set_subscription_status_cancelled_clears_plan(self):
+        record, _, _ = register_user("cancel@test.local", "user-password")
+        activate_subscription(record["id"], "silver")
+        cancelled = set_subscription_status(record["id"], "cancelled")
+        self.assertIsNone(cancelled["plan_id"])
+        self.assertEqual(cancelled["subscription_status"], "cancelled")
+
+    def test_find_user_by_token_matches_registration_token(self):
+        record, token, _ = register_user("token@test.local", "user-password")
+        found = find_user_by_token("token@test.local", token)
+        self.assertEqual(found["id"], record["id"])
+        self.assertIsNone(find_user_by_token("token@test.local", "token-errado"))
+
+    def test_resolve_billing_user_prefers_session_over_token(self):
+        record, token, _ = register_user("resolve@test.local", "user-password")
+        session_user = {"role": "user", "user_id": record["id"], "email": record["email"]}
+        resolved = resolve_billing_user(session_user, {})
+        self.assertEqual(resolved["id"], record["id"])
+        # sem sessão, cai pro par (email, token)
+        resolved_by_token = resolve_billing_user(None, {"email": record["email"], "token": token})
+        self.assertEqual(resolved_by_token["id"], record["id"])
+        self.assertIsNone(resolve_billing_user(None, {"email": record["email"], "token": "errado"}))
+
+    def test_asaas_client_sends_access_token_header_not_bearer(self):
+        captured = {}
+
+        class FakeResponse:
+            def __init__(self, body):
+                self.body = body
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["headers"] = {k.lower(): v for k, v in request.headers.items()}
+            captured["body"] = json.loads(request.data.decode("utf-8")) if request.data else None
+            return FakeResponse(b'{"id": "cus_123"}')
+
+        with patch.dict(os.environ, {"ASAAS_API_KEY": "test-key", "ASAAS_ENVIRONMENT": "sandbox"}, clear=False):
+            with patch("asaas_client.urllib.request.urlopen", side_effect=fake_urlopen):
+                result = asaas_client.create_customer("Fulano", "fulano@test.local", "user-123")
+
+        self.assertEqual(result["id"], "cus_123")
+        self.assertEqual(captured["headers"].get("access_token"), "test-key")
+        self.assertNotIn("authorization", captured["headers"])
+        self.assertTrue(captured["url"].startswith(asaas_client.SANDBOX_BASE_URL))
+        self.assertEqual(captured["body"]["externalReference"], "user-123")
+
+    def test_create_checkout_session_builds_composite_external_reference(self):
+        record, _, _ = register_user("checkout@test.local", "user-password")
+        captured = {}
+
+        def fake_get_or_create_customer(name, email, external_reference):
+            captured["customer_external_reference"] = external_reference
+            return {"id": "cus_999"}
+
+        def fake_create_subscription_checkout(**kwargs):
+            captured.update(kwargs)
+            return {"link": "https://asaas.example/checkout/abc"}
+
+        with patch.dict(os.environ, {"ASAAS_API_KEY": "test-key"}, clear=False):
+            with patch("server.asaas_client.get_or_create_customer", side_effect=fake_get_or_create_customer):
+                with patch("server.asaas_client.create_subscription_checkout", side_effect=fake_create_subscription_checkout):
+                    url = create_checkout_session(record, "gold", {"Host": "app.example"})
+
+        self.assertEqual(url, "https://asaas.example/checkout/abc")
+        self.assertEqual(captured["external_reference"], f"{record['id']}:gold")
+        self.assertEqual(captured["customer_external_reference"], record["id"])
+        self.assertIn("app.example", captured["success_url"])
+
+    def test_create_checkout_session_requires_asaas_configured(self):
+        record, _, _ = register_user("noasaas@test.local", "user-password")
+        with patch.dict(os.environ, {"ASAAS_API_KEY": ""}, clear=False):
+            with self.assertRaises(RuntimeError):
+                create_checkout_session(record, "gold", {"Host": "app.example"})
+
+    def test_webhook_signature_must_match_configured_token(self):
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": "shared-secret"}, clear=False):
+            self.assertTrue(verify_asaas_webhook({"asaas-access-token": "shared-secret"}))
+            self.assertFalse(verify_asaas_webhook({"asaas-access-token": "wrong"}))
+            self.assertFalse(verify_asaas_webhook({}))
+
+    def test_webhook_payment_confirmed_activates_plan_from_external_reference(self):
+        record, _, _ = register_user("webhook@test.local", "user-password")
+        handle_asaas_webhook_event({
+            "event": "PAYMENT_CONFIRMED",
+            "payment": {"externalReference": f"{record['id']}:silver", "customer": "cus_1"},
+        })
+        updated = get_user_by_id(record["id"])
+        self.assertEqual(updated["subscription_status"], "active")
+        self.assertEqual(updated["plan_id"], "silver")
+        self.assertEqual(updated["status"], "approved")
+
+    def test_webhook_falls_back_to_asaas_customer_id_for_renewals(self):
+        record, _, _ = register_user("renew@test.local", "user-password")
+        activate_subscription(record["id"], "gold", asaas_customer_id="cus_42")
+        handle_asaas_webhook_event({
+            "event": "PAYMENT_RECEIVED",
+            "payment": {"externalReference": "", "customer": "cus_42"},
+        })
+        updated = get_user_by_id(record["id"])
+        self.assertEqual(updated["subscription_status"], "active")
+        self.assertEqual(updated["plan_id"], "gold")
+
+    def test_webhook_overdue_and_cancel_events_update_status(self):
+        record, _, _ = register_user("overdue@test.local", "user-password")
+        activate_subscription(record["id"], "silver", asaas_customer_id="cus_7")
+        handle_asaas_webhook_event({"event": "PAYMENT_OVERDUE", "payment": {"customer": "cus_7"}})
+        self.assertEqual(get_user_by_id(record["id"])["subscription_status"], "overdue")
+        handle_asaas_webhook_event({"event": "SUBSCRIPTION_DELETED", "payment": {"customer": "cus_7"}})
+        cancelled = get_user_by_id(record["id"])
+        self.assertEqual(cancelled["subscription_status"], "cancelled")
+        self.assertIsNone(cancelled["plan_id"])
+
+    def test_webhook_unknown_user_is_ignored_without_error(self):
+        handle_asaas_webhook_event({"event": "PAYMENT_CONFIRMED", "payment": {"externalReference": "nao-existe:gold"}})
+        # não levanta exceção — apenas não encontra o usuário e ignora
 
 
 if __name__ == "__main__":
