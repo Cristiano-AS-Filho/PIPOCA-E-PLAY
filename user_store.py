@@ -713,6 +713,9 @@ def is_admin_user(email: str) -> bool:
 
 
 def _public_admin_user(user: dict) -> dict:
+    billing = user.get("billing") if isinstance(user.get("billing"), dict) else {}
+    credits = user.get("credits") if isinstance(user.get("credits"), dict) else {}
+    feedback = user.get("feedback") if isinstance(user.get("feedback"), list) else []
     return {
         "id": str(user.get("id", "")),
         "email": str(user.get("email", "")),
@@ -722,6 +725,12 @@ def _public_admin_user(user: dict) -> dict:
         "updated_at": user.get("updated_at"),
         "approved_at": user.get("approved_at"),
         "rejected_at": user.get("rejected_at"),
+        "plan": str(billing.get("plan", "")),
+        "subscription_status": str(billing.get("status", "none")),
+        "subscription_active": subscription_is_active(user),
+        "expires_at": billing.get("expires_at"),
+        "credits_used_today": int(credits.get("used", 0)) if credits.get("day") == brazil_day() else 0,
+        "feedback_count": len(feedback),
     }
 
 
@@ -742,6 +751,7 @@ def admin_summary() -> dict:
         "approved": sum(user.get("status") == "approved" for user in users),
         "rejected": sum(user.get("status") == "rejected" for user in users),
         "admins": sum(_user_role(user) == "admin" for user in users),
+        "subscribers": sum(subscription_is_active(user) for user in users),
     }
 
 
@@ -803,3 +813,359 @@ def delete_user(user_id: str) -> None:
         if len(remaining) == len(users):
             raise LookupError("Usuário não encontrado.")
         save_users(remaining)
+
+
+# ---------------------------------------------------------------------------
+# Assinatura, créditos diários e marcações do usuário
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta  # noqa: E402
+from plans import UNLIMITED, daily_credits, get_plan  # noqa: E402
+
+# O Brasil não adota horário de verão: o fuso de Brasília é UTC-3 fixo. Usar um
+# deslocamento fixo evita depender do banco de fusos do runtime serverless.
+BRAZIL_OFFSET = timedelta(hours=-3)
+MAX_FEEDBACK_ITEMS = 300
+FEEDBACK_OPINIONS = ("liked", "disliked")
+SUBSCRIPTION_STATUSES = ("none", "pending", "active", "past_due", "canceled")
+
+
+class CreditError(RuntimeError):
+    """Os créditos do dia acabaram."""
+
+
+class SubscriptionRequired(RuntimeError):
+    """A conta não tem uma assinatura ativa e paga."""
+
+
+def _now_dt():
+    return datetime.now(timezone.utc)
+
+
+def brazil_day(moment=None) -> str:
+    """Data corrente no fuso de Brasília, no formato AAAA-MM-DD."""
+    return ((moment or _now_dt()) + BRAZIL_OFFSET).strftime("%Y-%m-%d")
+
+
+def _parse_iso(value) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _normalize_title_key(title_pt: str, title_original: str, year=0) -> str:
+    base = (str(title_original or "").strip() or str(title_pt or "").strip()).lower()
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
+    return f"{base}:{int(year or 0)}" if base else ""
+
+
+def _billing(user: dict) -> dict:
+    billing = user.get("billing")
+    if not isinstance(billing, dict):
+        billing = {}
+        user["billing"] = billing
+    billing.setdefault("plan", "")
+    billing.setdefault("status", "none")
+    billing.setdefault("started_at", None)
+    billing.setdefault("expires_at", None)
+    billing.setdefault("asaas_customer_id", "")
+    billing.setdefault("asaas_subscription_id", "")
+    billing.setdefault("last_payment_id", "")
+    billing.setdefault("last_event", "")
+    billing.setdefault("checkout_url", "")
+    return billing
+
+
+def _credits(user: dict) -> dict:
+    credits = user.get("credits")
+    if not isinstance(credits, dict):
+        credits = {}
+        user["credits"] = credits
+    credits.setdefault("day", "")
+    credits.setdefault("used", 0)
+    return credits
+
+
+def _feedback(user: dict) -> list[dict]:
+    items = user.get("feedback")
+    if not isinstance(items, list):
+        items = []
+        user["feedback"] = items
+    return items
+
+
+def subscription_is_active(user: dict) -> bool:
+    billing = _billing(user)
+    if billing["status"] != "active":
+        return False
+    expires = _parse_iso(billing.get("expires_at"))
+    return bool(expires and expires > _now_dt())
+
+
+def _remaining_credits(user: dict) -> int:
+    """Quantos créditos ainda restam hoje. ``UNLIMITED`` quando o plano é ilimitado."""
+    billing = _billing(user)
+    allowance = daily_credits(billing.get("plan", ""))
+    if allowance == UNLIMITED:
+        return UNLIMITED
+    credits = _credits(user)
+    used = int(credits.get("used", 0)) if credits.get("day") == brazil_day() else 0
+    return max(allowance - used, 0)
+
+
+def account_snapshot(user: dict) -> dict:
+    """Retrato da conta usado pelo front-end: plano, créditos e assinatura."""
+    billing = _billing(user)
+    plan = get_plan(billing.get("plan", ""))
+    active = subscription_is_active(user)
+    remaining = _remaining_credits(user) if active else 0
+    allowance = daily_credits(billing.get("plan", "")) if active else 0
+    return {
+        "email": str(user.get("email", "")),
+        "status": str(user.get("status", "pending")),
+        "role": _user_role(user),
+        "plan": plan["id"] if plan else "",
+        "plan_name": plan["name"] if plan else "",
+        "subscription_status": billing.get("status", "none"),
+        "subscription_active": active,
+        "expires_at": billing.get("expires_at"),
+        "started_at": billing.get("started_at"),
+        "checkout_url": billing.get("checkout_url", "") if not active else "",
+        "unlimited": active and allowance == UNLIMITED,
+        "daily_credits": allowance,
+        "credits_remaining": remaining,
+        "credits_used_today": int(_credits(user).get("used", 0)) if _credits(user).get("day") == brazil_day() else 0,
+        "day": brazil_day(),
+        "feedback_count": len(_feedback(user)),
+    }
+
+
+def get_account(user_id: str) -> dict:
+    user = find_user_by_id(user_id)
+    if not user:
+        raise LookupError("Usuário não encontrado.")
+    return account_snapshot(user)
+
+
+def consume_credit(user_id: str) -> dict:
+    """Debita um crédito da conta. Levanta erro quando não há assinatura ou saldo."""
+    with _LOCK:
+        users = load_users()
+        target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
+        if not target:
+            raise LookupError("Usuário não encontrado.")
+        if not subscription_is_active(target):
+            raise SubscriptionRequired(
+                "Sua assinatura não está ativa. Escolha um plano e conclua o pagamento para liberar as indicações."
+            )
+        billing = _billing(target)
+        allowance = daily_credits(billing.get("plan", ""))
+        credits = _credits(target)
+        today = brazil_day()
+        if credits.get("day") != today:
+            credits["day"] = today
+            credits["used"] = 0
+        if allowance != UNLIMITED and int(credits.get("used", 0)) >= allowance:
+            raise CreditError(
+                f"Seus {allowance} crédito(s) de hoje acabaram. Eles voltam amanhã, ou você pode migrar de plano."
+            )
+        credits["used"] = int(credits.get("used", 0)) + 1
+        target["updated_at"] = _now()
+        save_users(users)
+        return account_snapshot(target)
+
+
+def refund_credit(user_id: str) -> None:
+    """Devolve o crédito quando a consulta falha antes de entregar resultado."""
+    with _LOCK:
+        users = load_users()
+        target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
+        if not target:
+            return
+        credits = _credits(target)
+        if credits.get("day") == brazil_day() and int(credits.get("used", 0)) > 0:
+            credits["used"] = int(credits["used"]) - 1
+            save_users(users)
+
+
+def start_checkout(user_id: str, plan_id: str, customer_id: str, subscription_id: str, checkout_url: str) -> dict:
+    """Guarda a referência da cobrança criada na Asaas, ainda sem liberar acesso."""
+    plan = get_plan(plan_id)
+    if not plan:
+        raise ValueError("Plano inválido.")
+
+    def apply(target: dict) -> None:
+        billing = _billing(target)
+        billing["plan"] = plan["id"]
+        billing["asaas_customer_id"] = customer_id or billing.get("asaas_customer_id", "")
+        billing["asaas_subscription_id"] = subscription_id or billing.get("asaas_subscription_id", "")
+        billing["checkout_url"] = checkout_url or ""
+        if billing.get("status") != "active":
+            billing["status"] = "pending"
+
+    _mutate(user_id, apply)
+    return get_account(user_id)
+
+
+def activate_subscription(user_id: str, plan_id: str = "", payment_id: str = "", event: str = "") -> dict:
+    """Confirma o pagamento e libera o ciclo de 30 dias."""
+
+    def apply(target: dict) -> None:
+        billing = _billing(target)
+        chosen = get_plan(plan_id) or get_plan(billing.get("plan", ""))
+        if not chosen:
+            raise ValueError("Plano inválido.")
+        now = _now_dt()
+        current = _parse_iso(billing.get("expires_at"))
+        base = current if current and current > now and billing.get("status") == "active" else now
+        billing["plan"] = chosen["id"]
+        billing["status"] = "active"
+        billing["started_at"] = billing.get("started_at") or now.isoformat(timespec="seconds")
+        billing["expires_at"] = (base + timedelta(days=int(chosen["cycle_days"]))).isoformat(timespec="seconds")
+        billing["last_payment_id"] = payment_id or billing.get("last_payment_id", "")
+        billing["last_event"] = event or billing.get("last_event", "")
+        billing["checkout_url"] = ""
+
+    _mutate(user_id, apply)
+    return get_account(user_id)
+
+
+def set_subscription_status(user_id: str, status: str, event: str = "") -> dict:
+    if status not in SUBSCRIPTION_STATUSES:
+        raise ValueError("Situação de assinatura inválida.")
+
+    def apply(target: dict) -> None:
+        billing = _billing(target)
+        billing["status"] = status
+        billing["last_event"] = event or billing.get("last_event", "")
+        if status in {"canceled", "none"}:
+            billing["expires_at"] = None
+
+    _mutate(user_id, apply)
+    return get_account(user_id)
+
+
+def find_user_by_billing(customer_id: str = "", subscription_id: str = "") -> dict | None:
+    """Localiza a conta pela referência da Asaas, usada pelo webhook."""
+    if not customer_id and not subscription_id:
+        return None
+    for user in load_users():
+        billing = user.get("billing") if isinstance(user.get("billing"), dict) else {}
+        if subscription_id and str(billing.get("asaas_subscription_id", "")) == str(subscription_id):
+            return user
+        if customer_id and str(billing.get("asaas_customer_id", "")) == str(customer_id):
+            return user
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Marcações "gostei / não gostei / já assisti"
+# ---------------------------------------------------------------------------
+
+
+def _public_feedback(item: dict) -> dict:
+    return {
+        "id": str(item.get("id", "")),
+        "title_pt": str(item.get("title_pt", "")),
+        "title_original": str(item.get("title_original", "")),
+        "year": int(item.get("year", 0) or 0),
+        "opinion": str(item.get("opinion", "")),
+        "watched": bool(item.get("watched", False)),
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+    }
+
+
+def list_feedback(user_id: str) -> list[dict]:
+    user = find_user_by_id(user_id)
+    if not user:
+        raise LookupError("Usuário não encontrado.")
+    items = sorted(_feedback(user), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return [_public_feedback(item) for item in items]
+
+
+def set_feedback(user_id: str, entry: dict) -> list[dict]:
+    """Cria ou atualiza a marcação de um título. Marcação vazia é removida."""
+    title_pt = str(entry.get("title_pt", "")).strip()[:160]
+    title_original = str(entry.get("title_original", "")).strip()[:160]
+    if not title_pt and not title_original:
+        raise ValueError("Informe o título que você quer marcar.")
+    try:
+        year = int(entry.get("year", 0) or 0)
+    except (TypeError, ValueError):
+        year = 0
+    opinion = str(entry.get("opinion", "") or "").strip().lower()
+    if opinion not in FEEDBACK_OPINIONS and opinion != "":
+        raise ValueError("Marcação inválida.")
+    watched = bool(entry.get("watched", False))
+    key = _normalize_title_key(title_pt, title_original, year)
+    if not key:
+        raise ValueError("Informe o título que você quer marcar.")
+
+    def apply(target: dict) -> None:
+        items = _feedback(target)
+        now = _now()
+        existing = next((item for item in items if item.get("key") == key), None)
+        if not opinion and not watched:
+            if existing:
+                items.remove(existing)
+            return
+        if existing:
+            existing.update(
+                {
+                    "title_pt": title_pt or existing.get("title_pt", ""),
+                    "title_original": title_original or existing.get("title_original", ""),
+                    "year": year or existing.get("year", 0),
+                    "opinion": opinion,
+                    "watched": watched,
+                    "updated_at": now,
+                }
+            )
+        else:
+            items.append(
+                {
+                    "id": secrets.token_urlsafe(12),
+                    "key": key,
+                    "title_pt": title_pt,
+                    "title_original": title_original,
+                    "year": year,
+                    "opinion": opinion,
+                    "watched": watched,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        if len(items) > MAX_FEEDBACK_ITEMS:
+            items.sort(key=lambda item: str(item.get("updated_at") or ""))
+            del items[: len(items) - MAX_FEEDBACK_ITEMS]
+
+    _mutate(user_id, apply)
+    return list_feedback(user_id)
+
+
+def remove_feedback(user_id: str, feedback_id: str) -> list[dict]:
+    """Apaga uma marcação para que o título volte a aparecer nas indicações."""
+    removed = {"done": False}
+
+    def apply(target: dict) -> None:
+        items = _feedback(target)
+        remaining = [item for item in items if str(item.get("id")) != str(feedback_id)]
+        removed["done"] = len(remaining) != len(items)
+        target["feedback"] = remaining
+
+    _mutate(user_id, apply)
+    if not removed["done"]:
+        raise LookupError("Marcação não encontrada.")
+    return list_feedback(user_id)
+
+
+def clear_feedback(user_id: str) -> list[dict]:
+    def apply(target: dict) -> None:
+        target["feedback"] = []
+
+    _mutate(user_id, apply)
+    return []

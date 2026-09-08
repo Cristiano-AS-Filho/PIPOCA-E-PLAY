@@ -18,7 +18,9 @@ from user_store import StorageError, find_user, is_admin_user, is_approved_user,
 
 
 SESSION_COOKIE = "pipoca_session"
-SESSION_TTL_SECONDS = 60 * 60 * 24
+# Teto absoluto da assinatura do cookie. O cookie em si é de sessão do
+# navegador (sem Max-Age), então sair da página já obriga um novo login.
+SESSION_TTL_SECONDS = 60 * 60 * 12
 
 
 def _is_production():
@@ -150,7 +152,8 @@ def session_cookie(session_value: str, secure: bool = False) -> str:
     morsel["httponly"] = True
     morsel["samesite"] = "Lax"
     morsel["path"] = "/"
-    morsel["max-age"] = str(SESSION_TTL_SECONDS)
+    # Sem Max-Age nem Expires: o navegador descarta o cookie ao fechar a aba,
+    # de modo que o cliente sempre faz um novo login ao voltar.
     if secure:
         morsel["secure"] = True
     return morsel.OutputString()

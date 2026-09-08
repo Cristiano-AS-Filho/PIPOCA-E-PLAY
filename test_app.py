@@ -14,12 +14,23 @@ os.environ["ENVIRONMENT"] = "test"
 os.environ["TMDB_API_KEY"] = ""
 os.environ["USER_STORE_FILE"] = str(TEST_STORE)
 
+import billing  # noqa: E402
 from auth import authenticate, create_session, read_session  # noqa: E402
+from plans import public_plans  # noqa: E402
+from recommender import build_feedback_section  # noqa: E402
 from metadata import NullMetadataProvider  # noqa: E402
 from server import buildRecommendationPrompt, clean_filters, validate_recommendation_payload  # noqa: E402
 import api_core  # noqa: E402
 from user_store import (  # noqa: E402
+    CreditError,
     StorageError,
+    SubscriptionRequired,
+    activate_subscription,
+    consume_credit,
+    get_account,
+    list_feedback,
+    remove_feedback,
+    set_feedback,
     admin_summary,
     admin_users,
     create_user,
@@ -91,7 +102,7 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertIsNone(authenticate("user@test.local", "user-password"))
         self.assertEqual(
             admin_summary(),
-            {"total": 1, "pending": 1, "approved": 0, "rejected": 0, "admins": 0},
+            {"total": 1, "pending": 1, "approved": 0, "rejected": 0, "admins": 0, "subscribers": 0},
         )
 
     def test_admin_can_approve_reject_and_delete_user(self):
@@ -446,6 +457,261 @@ class PipocaPlayTests(unittest.TestCase):
         metadata = NullMetadataProvider().lookup("Example")
         self.assertFalse(metadata["availability_verified"])
         self.assertEqual(metadata["availability"], [])
+
+    # -----------------------------------------------------------------
+    # Assinatura, créditos diários e marcações
+    # -----------------------------------------------------------------
+
+    def _client_session(self, plan=""):
+        """Cria um cliente aprovado e devolve (sessão, id da conta)."""
+        record = create_user("plan@test.local", "client-password")
+        if plan:
+            activate_subscription(record["id"], plan, "pay_test", "TEST")
+        return {"email": record["email"], "role": "user", "user_id": record["id"]}, record["id"]
+
+    def test_plans_catalog_has_the_three_published_prices(self):
+        catalog = {plan["id"]: plan for plan in public_plans()}
+        self.assertEqual(catalog["silver"]["price"], 15.00)
+        self.assertEqual(catalog["silver"]["daily_credits"], 2)
+        self.assertEqual(catalog["gold"]["price"], 25.00)
+        self.assertEqual(catalog["gold"]["daily_credits"], 5)
+        self.assertEqual(catalog["diamante"]["price"], 30.00)
+        self.assertTrue(catalog["diamante"]["unlimited"])
+
+    def test_recommendation_is_blocked_without_a_confirmed_payment(self):
+        session, _ = self._client_session()
+        status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 402)
+        self.assertEqual(payload["code"], "subscription_required")
+        self.assertEqual(len(payload["plans"]), 3)
+
+    def test_silver_plan_spends_two_daily_credits_and_then_stops(self):
+        _, user_id = self._client_session("silver")
+        self.assertEqual(consume_credit(user_id)["credits_remaining"], 1)
+        self.assertEqual(consume_credit(user_id)["credits_remaining"], 0)
+        with self.assertRaises(CreditError):
+            consume_credit(user_id)
+
+    def test_diamante_plan_never_runs_out_of_credits(self):
+        _, user_id = self._client_session("diamante")
+        for _ in range(12):
+            snapshot = consume_credit(user_id)
+        self.assertTrue(snapshot["unlimited"])
+        self.assertEqual(snapshot["credits_remaining"], -1)
+
+    def test_credits_reset_on_the_next_day_in_brasilia(self):
+        _, user_id = self._client_session("silver")
+        consume_credit(user_id)
+        consume_credit(user_id)
+        with patch("user_store.brazil_day", return_value="2999-01-01"):
+            self.assertEqual(consume_credit(user_id)["credits_remaining"], 1)
+
+    def test_expired_cycle_requires_a_new_payment(self):
+        _, user_id = self._client_session("gold")
+        past = "2020-01-01T00:00:00+00:00"
+        users = __import__("user_store").load_users()
+        for user in users:
+            if str(user["id"]) == user_id:
+                user["billing"]["expires_at"] = past
+        __import__("user_store").save_users(users)
+        with self.assertRaises(SubscriptionRequired):
+            consume_credit(user_id)
+
+    def test_marks_are_stored_per_user_and_removed_one_by_one(self):
+        session, user_id = self._client_session("gold")
+        set_feedback(user_id, {"title_pt": "Matrix", "title_original": "The Matrix", "year": 1999, "opinion": "liked", "watched": True})
+        set_feedback(user_id, {"title_pt": "Crepúsculo", "title_original": "Twilight", "year": 2008, "opinion": "disliked"})
+        self.assertEqual(len(list_feedback(user_id)), 2)
+
+        # Remarcar o mesmo título atualiza o registro em vez de duplicar.
+        set_feedback(user_id, {"title_pt": "Matrix", "title_original": "The Matrix", "year": 1999, "opinion": "disliked", "watched": True})
+        stored = {item["title_original"]: item for item in list_feedback(user_id)}
+        self.assertEqual(stored["The Matrix"]["opinion"], "disliked")
+
+        status, payload, _ = api_core.feedback_delete(session, {"id": stored["Twilight"]["id"]})
+        self.assertEqual(status, 200)
+        self.assertEqual([item["title_original"] for item in payload["feedback"]], ["The Matrix"])
+        with self.assertRaises(LookupError):
+            remove_feedback(user_id, "nao-existe")
+
+    def test_clearing_both_marks_removes_the_title_from_the_history(self):
+        _, user_id = self._client_session("gold")
+        set_feedback(user_id, {"title_pt": "Matrix", "title_original": "The Matrix", "year": 1999, "opinion": "liked"})
+        set_feedback(user_id, {"title_pt": "Matrix", "title_original": "The Matrix", "year": 1999, "opinion": "", "watched": False})
+        self.assertEqual(list_feedback(user_id), [])
+
+    def test_prompt_carries_the_user_marks_to_the_engine(self):
+        section = build_feedback_section([
+            {"title_pt": "Matrix", "title_original": "The Matrix", "year": 1999, "watched": True, "opinion": ""},
+            {"title_pt": "Crepúsculo", "title_original": "Twilight", "year": 2008, "opinion": "disliked", "watched": False},
+            {"title_pt": "Cidade de Deus", "title_original": "Cidade de Deus", "year": 2002, "opinion": "liked", "watched": False},
+        ])
+        self.assertIn("JÁ ASSISTIU", section)
+        self.assertIn("Matrix (The Matrix, 1999)", section)
+        self.assertIn("NÃO GOSTOU", section)
+        self.assertIn("Twilight", section)
+        self.assertIn("GOSTOU", section)
+        self.assertIn("Cidade de Deus (2002)", section)
+        self.assertEqual(build_feedback_section([]), "")
+
+    def test_recommendation_spends_a_credit_and_forwards_the_marks(self):
+        session, user_id = self._client_session("silver")
+        set_feedback(user_id, {"title_pt": "Matrix", "title_original": "The Matrix", "year": 1999, "watched": True})
+        seen = {}
+
+        def fake_call(filters, feedback=None):
+            seen["feedback"] = feedback
+            return json.dumps({"recommendations": []})
+
+        with patch("recommender.call_openai", fake_call):
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["account"]["credits_remaining"], 1)
+        self.assertEqual(seen["feedback"][0]["title_original"], "The Matrix")
+
+    def test_credit_comes_back_when_the_engine_fails(self):
+        session, user_id = self._client_session("silver")
+
+        def broken(filters, feedback=None):
+            raise RuntimeError("A consulta à OpenAI falhou.")
+
+        with patch("recommender.call_openai", broken):
+            status, _, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 502)
+        self.assertEqual(get_account(user_id)["credits_remaining"], 2)
+
+    def test_exhausted_credits_answer_with_the_dedicated_code(self):
+        session, user_id = self._client_session("silver")
+        consume_credit(user_id)
+        consume_credit(user_id)
+        status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 429)
+        self.assertEqual(payload["code"], "no_credits")
+
+    # -----------------------------------------------------------------
+    # Checkout Asaas
+    # -----------------------------------------------------------------
+
+    def test_checkout_creates_the_subscription_and_returns_the_invoice(self):
+        session, user_id = self._client_session()
+        calls = []
+
+        def fake_request(method, path, payload=None, params=None):
+            calls.append((method, path))
+            if path == "/customers" and method == "GET":
+                return {"data": []}
+            if path == "/customers":
+                return {"id": "cus_123"}
+            if path == "/subscriptions":
+                return {"id": "sub_123"}
+            if path == "/subscriptions/sub_123/payments":
+                return {"data": [{"id": "pay_1", "status": "PENDING", "invoiceUrl": "https://asaas.test/i/pay_1"}]}
+            return {}
+
+        with patch.dict(os.environ, {"ASAAS_API_KEY": "$aact_hmlg_test"}), patch("billing._request", fake_request):
+            status, payload, _ = api_core.billing_checkout(
+                session, {"plan": "gold", "name": "Cliente Teste", "document": "529.982.247-25"}
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["checkout_url"], "https://asaas.test/i/pay_1")
+        self.assertIn(("POST", "/subscriptions"), calls)
+        # A cobrança fica pendente: o acesso só abre com a confirmação da Asaas.
+        account = get_account(user_id)
+        self.assertFalse(account["subscription_active"])
+        self.assertEqual(account["subscription_status"], "pending")
+
+    def test_checkout_rejects_an_invalid_document(self):
+        session, _ = self._client_session()
+        with patch.dict(os.environ, {"ASAAS_API_KEY": "$aact_hmlg_test"}):
+            status, payload, _ = api_core.billing_checkout(
+                session, {"plan": "gold", "name": "Cliente Teste", "document": "111.111.111-11"}
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("CPF", payload["error"])
+
+    def test_webhook_confirms_the_payment_and_unlocks_the_platform(self):
+        session, user_id = self._client_session()
+        with patch.dict(os.environ, {"ASAAS_API_KEY": "$aact_hmlg_test"}), patch(
+            "billing._request",
+            lambda method, path, payload=None, params=None: {"data": []}
+            if (path == "/customers" and method == "GET")
+            else {"id": "cus_1"}
+            if path == "/customers"
+            else {"id": "sub_1"}
+            if path == "/subscriptions"
+            else {"data": [{"id": "pay_1", "status": "PENDING", "invoiceUrl": "https://asaas.test/i/1"}]},
+        ):
+            api_core.billing_checkout(session, {"plan": "silver", "name": "Cliente Teste", "document": "529.982.247-25"})
+
+        status, payload, _ = api_core.billing_webhook(
+            {
+                "event": "PAYMENT_CONFIRMED",
+                "payment": {"id": "pay_1", "customer": "cus_1", "subscription": "sub_1", "status": "CONFIRMED"},
+            },
+            token_header="",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["access"], "granted")
+        account = get_account(user_id)
+        self.assertTrue(account["subscription_active"])
+        self.assertEqual(account["plan"], "silver")
+        self.assertEqual(account["credits_remaining"], 2)
+
+    def test_webhook_rejects_a_wrong_token(self):
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": "segredo"}):
+            status, _, _ = api_core.billing_webhook({"event": "PAYMENT_CONFIRMED"}, token_header="errado")
+            self.assertEqual(status, 401)
+            ok_status, _, _ = api_core.billing_webhook({"event": "PAYMENT_CONFIRMED"}, token_header="segredo")
+            self.assertEqual(ok_status, 200)
+
+    def test_overdue_payment_suspends_the_access(self):
+        _, user_id = self._client_session("gold")
+        activate_subscription(user_id, "gold", "pay_9", "TEST")
+        users = __import__("user_store").load_users()
+        for user in users:
+            if str(user["id"]) == user_id:
+                user["billing"]["asaas_subscription_id"] = "sub_9"
+        __import__("user_store").save_users(users)
+        status, payload, _ = api_core.billing_webhook(
+            {"event": "PAYMENT_OVERDUE", "payment": {"id": "pay_9", "subscription": "sub_9", "status": "OVERDUE"}},
+            token_header="",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["access"], "past_due")
+        self.assertFalse(get_account(user_id)["subscription_active"])
+
+    def test_webhook_event_reader_understands_the_asaas_payload(self):
+        event = billing.read_webhook_event(
+            {"event": "PAYMENT_RECEIVED", "payment": {"id": "p", "customer": "c", "status": "RECEIVED"}}
+        )
+        self.assertTrue(event["grants_access"])
+        self.assertFalse(event["suspends_access"])
+        self.assertTrue(billing.read_webhook_event({"event": "SUBSCRIPTION_DELETED"})["suspends_access"])
+
+    def test_session_cookie_expires_when_the_browser_closes(self):
+        create_user("leave@test.local", "client-password")
+        _, _, headers = api_core.login({"email": "leave@test.local", "password": "client-password"}, secure=True)
+        cookie = headers["Set-Cookie"]
+        self.assertNotIn("Max-Age", cookie)
+        self.assertNotIn("Expires", cookie)
+
+    def test_admin_can_grant_and_revoke_a_plan_by_hand(self):
+        record = create_user("manual@test.local", "client-password")
+        admin = {"email": "admin@test.local", "role": "admin"}
+        status, payload, _ = api_core.admin_action(admin, {"action": "grant_plan", "user_id": record["id"], "plan": "diamante"})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["account"]["unlimited"])
+        status, payload, _ = api_core.admin_action(admin, {"action": "revoke_plan", "user_id": record["id"]})
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["account"]["subscription_active"])
+
+    def test_admin_listing_shows_the_subscription_of_each_client(self):
+        record = create_user("listed@test.local", "client-password")
+        activate_subscription(record["id"], "gold", "pay_x", "TEST")
+        listed = {user["email"]: user for user in admin_users()}["listed@test.local"]
+        self.assertEqual(listed["plan"], "gold")
+        self.assertTrue(listed["subscription_active"])
+        self.assertEqual(admin_summary()["subscribers"], 1)
 
 
 if __name__ == "__main__":

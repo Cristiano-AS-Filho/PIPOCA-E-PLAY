@@ -180,10 +180,13 @@
     display:flex;
     justify-content:space-between;
     align-items:center;
+    gap:8px;
+    flex-wrap:wrap;
     font-family:'IBM Plex Mono',monospace;
     font-size:11.5px;
     color:var(--cream-dim);
   }
+  .topnav > span:first-child{flex:none;}
   .topnav button{
     background:none;border:1px solid rgba(239,230,216,0.18);
     color:var(--cream-dim);
@@ -192,6 +195,7 @@
     font-family:inherit;
     font-size:11px;
     cursor:pointer;
+    white-space:nowrap;
     transition:border-color .15s, color .15s;
   }
   .topnav button:hover{border-color:var(--marquee);color:var(--marquee);}
@@ -740,6 +744,75 @@
     .status-actions{flex-direction:row;}
     .status-actions .cta{flex:1;}
   }
+
+  /* ---- senha com olho ---- */
+  .field .input-wrap{position:relative;display:flex;align-items:center;}
+  .field .input-wrap input{padding-right:46px;}
+  .peek{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:transparent;border:0;border-radius:6px;cursor:pointer;color:var(--cream-dim);padding:0;}
+  .peek:hover{color:var(--marquee);background:rgba(239,230,216,.06);}
+  .peek svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+
+  /* ---- créditos no topo ---- */
+  .credit-chip{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:var(--ink);background:var(--marquee);padding:6px 8px;border-radius:4px;white-space:nowrap;}
+  .credit-chip.empty{background:var(--velvet);color:var(--cream);}
+  .credit-chip.unlimited{background:#6fceb5;color:#132c26;}
+
+  /* ---- planos ---- */
+  .plans-shell{padding-top:26px;}
+  .plans-shell h2{font-family:'Bebas Neue',cursive;font-size:34px;letter-spacing:.5px;margin:0 0 6px;}
+  .plans-shell .plans-copy{font-size:13.5px;line-height:1.55;color:var(--cream-dim);margin:0 0 20px;}
+  .plan-grid{display:grid;gap:12px;}
+  .plan-card{background:var(--bg-elev);border:1px solid rgba(239,230,216,.13);border-radius:var(--radius);padding:18px;display:flex;flex-direction:column;gap:10px;}
+  .plan-card.featured{border-color:var(--marquee);box-shadow:0 12px 30px rgba(0,0,0,.22);}
+  .plan-card.current{border-color:#6fceb5;}
+  .plan-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
+  .plan-name{font-family:'Bebas Neue',cursive;font-size:26px;letter-spacing:.6px;line-height:1;}
+  .plan-flag{font:9px 'IBM Plex Mono',monospace;letter-spacing:.8px;text-transform:uppercase;padding:5px 7px;border-radius:4px;background:var(--marquee);color:var(--ink);white-space:nowrap;}
+  .plan-flag.current{background:#6fceb5;color:#132c26;}
+  .plan-price{font-family:'Bebas Neue',cursive;font-size:38px;color:var(--marquee);line-height:1;}
+  .plan-price small{font:11px 'IBM Plex Mono',monospace;color:var(--cream-dim);margin-left:6px;letter-spacing:.5px;}
+  .plan-headline{font-size:13.5px;color:var(--cream);font-weight:600;}
+  .plan-perks{list-style:none;margin:0;padding:0;display:grid;gap:6px;}
+  .plan-perks li{font-size:12.5px;color:var(--cream-dim);padding-left:18px;position:relative;line-height:1.45;}
+  .plan-perks li::before{content:"●";position:absolute;left:0;color:var(--marquee);font-size:9px;top:3px;}
+
+  /* ---- checkout ---- */
+  .checkout-card{background:rgba(23,27,36,.92);border:1px solid rgba(242,169,59,.28);border-radius:var(--radius);padding:20px 18px;margin-top:24px;}
+  .checkout-card h2{font-family:'Bebas Neue',cursive;font-size:30px;letter-spacing:.5px;margin:0 0 5px;}
+  .checkout-card p{font-size:13px;line-height:1.55;color:var(--cream-dim);margin:0 0 16px;}
+  .checkout-summary{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--bg);border:1px solid rgba(239,230,216,.14);border-radius:8px;padding:12px 13px;margin-bottom:16px;}
+  .checkout-summary strong{font-family:'Bebas Neue',cursive;font-size:22px;letter-spacing:.5px;}
+  .checkout-summary span{font-family:'IBM Plex Mono',monospace;font-size:14px;color:var(--marquee);}
+  .checkout-wait{display:flex;align-items:center;gap:10px;font:11px 'IBM Plex Mono',monospace;color:var(--cream-dim);margin-top:14px;line-height:1.5;}
+  .checkout-wait .dot{width:9px;height:9px;border-radius:50%;background:var(--marquee);flex:none;animation:pulse 1.4s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.25;}50%{opacity:1;}}
+  @media (prefers-reduced-motion: reduce){ .checkout-wait .dot{animation:none;opacity:.8;} }
+
+  /* ---- marcações no card ---- */
+  .mark-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px;}
+  .mark-btn{flex:1;min-width:86px;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid rgba(24,19,16,.22);background:rgba(24,19,16,.05);color:#2a211b;border-radius:7px;padding:9px 7px;font:11px 'IBM Plex Mono',monospace;cursor:pointer;transition:background .15s,border-color .15s;}
+  .mark-btn:hover{border-color:rgba(24,19,16,.5);}
+  .mark-btn.on.like{background:#2f7d63;border-color:#2f7d63;color:#f4efe6;}
+  .mark-btn.on.dislike{background:#a8452f;border-color:#a8452f;color:#f4efe6;}
+  .mark-btn.on.watched{background:#2b3a52;border-color:#2b3a52;color:#f4efe6;}
+  .mark-btn[disabled]{opacity:.55;cursor:progress;}
+  .mark-hint{font:10px 'IBM Plex Mono',monospace;color:#5d5147;margin:7px 0 14px;line-height:1.45;}
+
+  /* ---- histórico de marcações ---- */
+  .mark-item{background:var(--bg-elev);border:1px solid rgba(239,230,216,.12);border-radius:var(--radius);padding:13px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;}
+  .mark-item .mi-title{font-size:13.5px;font-weight:600;line-height:1.35;word-break:break-word;}
+  .mark-item .mi-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;}
+  .mi-tag{font:9px 'IBM Plex Mono',monospace;letter-spacing:.6px;text-transform:uppercase;padding:4px 6px;border-radius:4px;}
+  .mi-tag.like{background:rgba(111,206,181,.16);color:#8ee2cc;}
+  .mi-tag.dislike{background:rgba(196,85,61,.18);color:#e58a76;}
+  .mi-tag.watched{background:rgba(239,230,216,.12);color:var(--cream-dim);}
+  .mark-list{display:grid;gap:9px;margin-top:14px;}
+  .mark-remove{border:1px solid rgba(196,85,61,.42);background:transparent;color:#e58a76;border-radius:6px;padding:8px 10px;font:11px 'IBM Plex Mono',monospace;cursor:pointer;flex:none;}
+  .mark-remove:hover{background:rgba(196,85,61,.12);}
+  .section-copy{font-size:13px;color:var(--cream-dim);line-height:1.55;margin:0 0 6px;}
+  @media (min-width:560px){
+    .plan-grid{grid-template-columns:repeat(3,1fr);}
+  }
 </style>
 </head>
 <body>
@@ -824,7 +897,7 @@ try{
 }
 
 let state = {
-  screen: "landing", // landing | login | wizard | summary | loading | results | history | admin | error
+  screen: "landing", // landing | login | access-status | plans | checkout | wizard | summary | loading | results | history | marks | admin | error
   stepIndex: 0,
   filters: {},
   interpretation: "",
@@ -832,8 +905,247 @@ let state = {
   recommendations: [],
   errorMsg: "",
   historyList: null,
-  viewingHistoryItem: null
+  viewingHistoryItem: null,
+  historyIndex: -1
 };
+
+/* Conta do cliente: plano, assinatura e créditos do dia. */
+let account = null;
+let plansCatalog = [];
+let marks = [];          // marcações "gostei / não gostei / já assisti"
+let marksIndex = {};     // chave do título -> marcação
+let marksError = "";
+let checkout = { plan: "", url: "", error: "", submitting: false, polling: false, name: "", document: "" };
+let leavingInternally = false;
+
+function creditsLabel(){
+  if(!account) return "";
+  if(account.role === "admin") return "ADMIN";
+  if(!account.subscription_active) return "SEM PLANO";
+  if(account.unlimited) return "ILIMITADO";
+  return account.credits_remaining + "/" + account.daily_credits + " HOJE";
+}
+
+function hasActivePlan(){
+  return !!(account && (account.subscription_active || account.role === "admin"));
+}
+
+async function apiFetch(url, options){
+  const response = await fetch(url, Object.assign({ credentials: "same-origin", cache: "no-store" }, options || {}));
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok){
+    const error = new Error(data.error || "Não foi possível concluir a operação agora.");
+    error.code = data.code || "";
+    error.status = response.status;
+    error.payload = data;
+    throw error;
+  }
+  return data;
+}
+
+async function loadAccount(){
+  try{
+    const data = await apiFetch("/api/account");
+    account = data.account || null;
+    if(Array.isArray(data.plans) && data.plans.length) plansCatalog = data.plans;
+  }catch(e){
+    if(e.status === 401){ account = null; }
+  }
+  return account;
+}
+
+async function loadPlans(){
+  if(plansCatalog.length) return plansCatalog;
+  try{
+    const data = await apiFetch("/api/plans");
+    plansCatalog = data.plans || [];
+  }catch(e){ plansCatalog = []; }
+  return plansCatalog;
+}
+
+/* ---------- marcações ---------- */
+function markKey(item){
+  const base = String(item.title_original || "").trim() || String(item.title_pt || "").trim();
+  const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const year = parseInt(item.year, 10) || 0;
+  return slug ? slug + ":" + year : "";
+}
+
+function indexMarks(list){
+  marks = Array.isArray(list) ? list : [];
+  marksIndex = {};
+  marks.forEach(item => {
+    const key = markKey(item);
+    if(key) marksIndex[key] = item;
+  });
+}
+
+async function loadMarks(){
+  try{
+    const data = await apiFetch("/api/feedback");
+    indexMarks(data.feedback);
+    marksError = "";
+  }catch(e){
+    if(e.status !== 401) marksError = e.message;
+  }
+  return marks;
+}
+
+function markFor(rec){
+  return marksIndex[markKey(rec)] || null;
+}
+
+/* Alterna gostei / não gostei / já assisti e grava na conta do usuário. */
+async function toggleMark(rec, kind, buttons){
+  const current = markFor(rec) || { opinion: "", watched: false };
+  const next = {
+    title_pt: rec.title_pt || rec.title_original || "",
+    title_original: rec.title_original || "",
+    year: parseInt(rec.year, 10) || 0,
+    opinion: current.opinion || "",
+    watched: !!current.watched
+  };
+  if(kind === "watched") next.watched = !next.watched;
+  else next.opinion = current.opinion === kind ? "" : kind;
+
+  (buttons || []).forEach(button => { button.disabled = true; });
+  try{
+    const data = await apiFetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next)
+    });
+    indexMarks(data.feedback);
+    marksError = "";
+  }catch(e){
+    marksError = e.message;
+  }
+  render();
+}
+
+async function removeMark(id){
+  try{
+    const data = await apiFetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "remove", id })
+    });
+    indexMarks(data.feedback);
+    marksError = "";
+  }catch(e){
+    marksError = e.message;
+  }
+  render();
+}
+
+/* ---------- checkout Asaas ---------- */
+async function submitCheckout(planId, name, document_){
+  checkout.error = "";
+  checkout.submitting = true;
+  render();
+  try{
+    const data = await apiFetch("/api/billing/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan: planId, name: name, document: document_ })
+    });
+    checkout.url = data.checkout_url || "";
+    account = data.account || account;
+    checkout.submitting = false;
+    render();
+    if(checkout.url){
+      leavingInternally = true;
+      window.open(checkout.url, "_blank", "noopener");
+      window.setTimeout(() => { leavingInternally = false; }, 4000);
+      startBillingPolling();
+    }
+  }catch(e){
+    checkout.submitting = false;
+    checkout.error = e.message;
+    render();
+  }
+}
+
+let billingTimer = null;
+function startBillingPolling(){
+  if(billingTimer) window.clearTimeout(billingTimer);
+  checkout.polling = true;
+  const tick = async () => {
+    if(!sessionUser){ checkout.polling = false; return; }
+    try{
+      const data = await apiFetch("/api/billing/status");
+      account = data.account || account;
+      if(hasActivePlan()){
+        checkout.polling = false;
+        checkout.url = "";
+        billingTimer = null;
+        go("wizard");
+        return;
+      }
+    }catch(e){ /* segue tentando: o webhook também libera o acesso */ }
+    billingTimer = window.setTimeout(tick, 6000);
+  };
+  billingTimer = window.setTimeout(tick, 5000);
+}
+
+function stopBillingPolling(){
+  if(billingTimer) window.clearTimeout(billingTimer);
+  billingTimer = null;
+  checkout.polling = false;
+}
+
+/* ---------- navegação com o botão "voltar" nativo ---------- */
+const AUTH_SCREENS = ["wizard", "summary", "results", "history", "marks", "plans", "checkout", "admin"];
+
+function routeSnapshot(){
+  return {
+    screen: state.screen,
+    stepIndex: state.stepIndex,
+    historyIndex: state.historyIndex,
+    pipoca: true
+  };
+}
+
+function pushRoute(replace){
+  try{
+    window.history[replace ? "replaceState" : "pushState"](routeSnapshot(), "", window.location.href);
+  }catch(e){ /* navegadores sem History API seguem funcionando sem o voltar */ }
+}
+
+/* Toda navegação da plataforma passa por aqui: assim o botão voltar do
+   celular anda pelas telas em vez de sair do site. */
+function go(screen, mutate){
+  if(typeof mutate === "function") mutate();
+  state.screen = screen;
+  render();
+  pushRoute(false);
+}
+
+function applyRoute(snapshot){
+  const target = snapshot && snapshot.screen ? snapshot.screen : (sessionUser ? "wizard" : "landing");
+  state.stepIndex = snapshot && typeof snapshot.stepIndex === "number" ? snapshot.stepIndex : 0;
+  state.historyIndex = snapshot && typeof snapshot.historyIndex === "number" ? snapshot.historyIndex : -1;
+  state.viewingHistoryItem = state.historyIndex >= 0 && state.historyList ? state.historyList[state.historyIndex] : null;
+  let screen = target;
+  if(!sessionUser && AUTH_SCREENS.indexOf(screen) !== -1) screen = "landing";
+  if(sessionUser && !hasActivePlan() && ["wizard", "summary", "results"].indexOf(screen) !== -1) screen = "plans";
+  if(screen === "loading") screen = "summary";
+  state.screen = screen;
+  render();
+}
+
+window.addEventListener("popstate", event => {
+  applyRoute(event.state);
+});
+
+/* Sair da página encerra a sessão: ao voltar, o cliente faz um novo login. */
+window.addEventListener("pagehide", event => {
+  if(event.persisted || leavingInternally || !sessionUser) return;
+  try{
+    if(navigator.sendBeacon) navigator.sendBeacon("/api/auth/logout", new Blob([], { type: "text/plain" }));
+    else fetch("/api/auth/logout", { method: "POST", credentials: "same-origin", keepalive: true });
+  }catch(e){}
+});
 
 async function bootstrapAuth(){
   try{
@@ -841,7 +1153,7 @@ async function bootstrapAuth(){
     const data = await response.json();
     if(data.authenticated){
       sessionUser = data.user;
-      state.screen = sessionUser.role === "admin" ? "admin" : "wizard";
+      await enterPlatform(false);
     }else if(pendingAccess && pendingAccess.email && pendingAccess.token){
       state.screen = "access-status";
       checkPendingAccess(true);
@@ -850,7 +1162,27 @@ async function bootstrapAuth(){
     // A landing page continua disponível mesmo quando a API está temporariamente fora.
   }
   render();
+  pushRoute(true);
   if(sessionUser && sessionUser.role === "admin") await openAdmin();
+}
+
+/* Carrega plano, créditos e marcações e decide a primeira tela do cliente. */
+async function enterPlatform(shouldRender = true){
+  if(!sessionUser) return;
+  if(sessionUser.role === "admin"){
+    state.screen = "admin";
+    if(shouldRender) render();
+    return;
+  }
+  await Promise.all([loadAccount(), loadMarks(), loadPlans()]);
+  state.screen = hasActivePlan() ? "wizard" : "plans";
+  if(account && !hasActivePlan() && account.subscription_status === "pending" && account.checkout_url){
+    checkout.plan = account.plan || "";
+    checkout.url = account.checkout_url;
+    state.screen = "checkout";
+    startBillingPolling();
+  }
+  if(shouldRender) render();
 }
 
 function setPendingAccess(data){
@@ -897,11 +1229,13 @@ async function login(email, password){
     clearPendingAccess();
     sessionUser = data.user;
     if(sessionUser.role === "admin"){
+      leavingInternally = true;
       window.location.href = ADMIN_PANEL_URL;
       return;
     }
-    state.screen = "wizard";
+    await enterPlatform(false);
     render();
+    pushRoute(false);
   }catch(e){
     authError = e.message || "Não foi possível entrar agora.";
     render();
@@ -931,13 +1265,16 @@ async function register(email, password, confirmation){
 
 async function logout(){
   try{ await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); }catch(e){}
+  stopBillingPolling();
   sessionUser = null;
   adminStatus = null;
+  account = null;
+  indexMarks([]);
+  checkout = { plan: "", url: "", error: "", submitting: false, polling: false, name: "", document: "" };
   clearPendingAccess();
-  state.screen = "landing";
   state.stepIndex = 0;
   state.filters = {};
-  render();
+  go("landing");
 }
 
 async function openAdmin(){
@@ -947,12 +1284,10 @@ async function openAdmin(){
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || "Acesso negado.");
     adminStatus = data;
-    state.screen = "admin";
-    render();
+    go("admin");
   }catch(e){
     authError = e.message || "Não foi possível abrir o painel.";
-    state.screen = "wizard";
-    render();
+    go("wizard");
   }
 }
 
@@ -1092,16 +1427,12 @@ O array "recommendations" deve ter exatamente 3 itens, ordenados do maior para o
 }
 
 async function getRecommendations(filters){
-  const response = await fetch(RECOMMENDATION_ENDPOINT, {
+  const data = await apiFetch(RECOMMENDATION_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ filters })
   });
-  if(!response.ok){
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.error || "Falha ao consultar o motor de recomendação (HTTP " + response.status + ").");
-  }
-  const data = await response.json();
+  if(data.account) account = data.account;
   const text = data.text || "";
   const clean = text.replace(/```json/gi,"").replace(/```/g,"").trim();
   let parsed;
@@ -1245,6 +1576,9 @@ function render(){
   else if(state.screen === "login") app.appendChild(renderLogin());
   else if(state.screen === "access-status") app.appendChild(renderAccessStatus());
   else if(state.screen === "admin") app.appendChild(renderAdmin());
+  else if(state.screen === "plans") app.appendChild(renderPlans());
+  else if(state.screen === "checkout") app.appendChild(renderCheckout());
+  else if(state.screen === "marks") app.appendChild(renderMarks());
   else if(state.screen === "wizard") app.appendChild(renderWizard());
   else if(state.screen === "summary") app.appendChild(renderSummary());
   else if(state.screen === "loading") app.appendChild(renderLoading());
@@ -1270,41 +1604,67 @@ function renderTopnav(){
   right.style.display = "flex";
   right.style.gap = "8px";
   right.style.alignItems = "center";
+  right.style.flexWrap = "wrap";
+  right.style.justifyContent = "flex-end";
+  right.style.flex = "1";
 
   if(!sessionUser){
     const enterBtn = document.createElement("button");
     enterBtn.textContent = "Entrar";
-    enterBtn.onclick = () => { state.screen = "login"; render(); };
+    enterBtn.onclick = () => go("login");
     right.appendChild(enterBtn);
   }else{
-    const account = document.createElement("span");
-    account.className = "account-chip";
-    account.textContent = sessionUser.role === "admin" ? "ADMIN" : "USUÁRIO";
-    right.appendChild(account);
+    const chip = document.createElement("span");
+    chip.className = "account-chip";
+    chip.textContent = sessionUser.role === "admin" ? "ADMIN" : "USUÁRIO";
+    right.appendChild(chip);
+
+    if(sessionUser.role !== "admin" && account){
+      const credits = document.createElement("span");
+      credits.className = "credit-chip" +
+        (account.unlimited ? " unlimited" : (!account.subscription_active || account.credits_remaining <= 0 ? " empty" : ""));
+      credits.textContent = creditsLabel();
+      credits.title = account.subscription_active
+        ? "Créditos restantes hoje no plano " + (account.plan_name || "")
+        : "Escolha um plano para liberar as indicações";
+      credits.onclick = () => go("plans");
+      credits.style.cursor = "pointer";
+      right.appendChild(credits);
+    }
 
     if(sessionUser.role === "admin"){
       const adminBtn = document.createElement("button");
       adminBtn.textContent = "Painel admin";
-      adminBtn.onclick = () => { window.location.href = ADMIN_PANEL_URL; };
+      adminBtn.onclick = () => { leavingInternally = true; window.location.href = ADMIN_PANEL_URL; };
       right.appendChild(adminBtn);
     }else{
+      const marksBtn = document.createElement("button");
+      marksBtn.textContent = "Marcações";
+      marksBtn.onclick = async () => {
+        await loadMarks();
+        go("marks");
+      };
+      right.appendChild(marksBtn);
+
       const histBtn = document.createElement("button");
       histBtn.textContent = "Histórico";
       histBtn.onclick = async () => {
-        state.screen = "history";
         state.historyList = await loadHistory();
-        render();
+        go("history", () => { state.viewingHistoryItem = null; state.historyIndex = -1; });
       };
       right.appendChild(histBtn);
+
+      const planBtn = document.createElement("button");
+      planBtn.textContent = hasActivePlan() ? "Meu plano" : "Assinar";
+      planBtn.onclick = async () => { await loadPlans(); go("plans"); };
+      right.appendChild(planBtn);
     }
 
     const newBtn = document.createElement("button");
     newBtn.textContent = "Nova busca";
     newBtn.onclick = () => {
-      state.screen = "wizard";
-      state.stepIndex = 0;
-      state.filters = {};
-      render();
+      if(sessionUser.role !== "admin" && !hasActivePlan()){ go("plans"); return; }
+      go("wizard", () => { state.stepIndex = 0; state.filters = {}; });
     };
     right.appendChild(newBtn);
 
@@ -1335,7 +1695,7 @@ function renderLanding(){
   const enter = document.createElement("button");
   enter.className = "cta";
   enter.textContent = "Entrar e encontrar meu filme";
-  enter.onclick = () => { state.screen = "login"; render(); };
+  enter.onclick = () => go("login");
   const how = document.createElement("button");
   how.className = "cta secondary";
   how.textContent = "Como funciona";
@@ -1361,6 +1721,55 @@ function renderLanding(){
   wrap.appendChild(actions);
   wrap.appendChild(proof);
   return wrap;
+}
+
+const EYE_OPEN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 6.1A9.9 9.9 0 0 1 12 6c6.4 0 10 6 10 6a17.8 17.8 0 0 1-3.4 4M6.3 7.8A17.4 17.4 0 0 0 2 12s3.6 6 10 6a10 10 0 0 0 4.3-.9"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>';
+
+/* Campo de formulário. Campos de senha ganham o ícone de olho para o cliente
+   conferir o que digitou antes de enviar. */
+function buildField(labelText, type, name, placeholder, autocomplete, options){
+  const settings = options || {};
+  const field = document.createElement("div");
+  field.className = "field";
+  const label = document.createElement("label");
+  label.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = type;
+  input.name = name;
+  input.autocomplete = autocomplete || "off";
+  input.placeholder = placeholder || "";
+  input.required = settings.required !== false;
+  if(settings.inputmode) input.inputMode = settings.inputmode;
+  if(settings.maxlength) input.maxLength = settings.maxlength;
+  if(settings.value) input.value = settings.value;
+  field.appendChild(label);
+
+  if(type === "password"){
+    const wrap = document.createElement("div");
+    wrap.className = "input-wrap";
+    const peek = document.createElement("button");
+    peek.type = "button";
+    peek.className = "peek";
+    peek.innerHTML = EYE_OPEN_SVG;
+    peek.setAttribute("aria-label", "Mostrar a senha");
+    peek.title = "Mostrar a senha";
+    peek.onclick = () => {
+      const showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      peek.innerHTML = showing ? EYE_OPEN_SVG : EYE_OFF_SVG;
+      const message = showing ? "Mostrar a senha" : "Ocultar a senha";
+      peek.setAttribute("aria-label", message);
+      peek.title = message;
+      input.focus();
+    };
+    wrap.appendChild(input);
+    wrap.appendChild(peek);
+    field.appendChild(wrap);
+  }else{
+    field.appendChild(input);
+  }
+  return { field, input };
 }
 
 function renderLogin(){
@@ -1398,21 +1807,7 @@ function renderLogin(){
     wrap.appendChild(error);
   }
 
-  const makeField = (labelText, type, name, placeholder, autocomplete) => {
-    const field = document.createElement("div");
-    field.className = "field";
-    const label = document.createElement("label");
-    label.textContent = labelText;
-    const input = document.createElement("input");
-    input.type = type;
-    input.name = name;
-    input.autocomplete = autocomplete;
-    input.placeholder = placeholder;
-    input.required = true;
-    field.appendChild(label);
-    field.appendChild(input);
-    return { field, input };
-  };
+  const makeField = buildField;
 
   const form = document.createElement("form");
   const email = makeField("E-mail", "email", "email", "voce@exemplo.com", "email");
@@ -1446,7 +1841,7 @@ function renderLogin(){
   const back = document.createElement("button");
   back.className = "back-link";
   back.textContent = "← Voltar para a apresentação";
-  back.onclick = () => { authError = ""; state.screen = "landing"; render(); };
+  back.onclick = () => { authError = ""; go("landing"); };
   wrap.appendChild(back);
   return wrap;
 }
@@ -1486,19 +1881,19 @@ function renderAccessStatus(){
     const enter = document.createElement("button");
     enter.className = "cta small";
     enter.textContent = "Entrar na plataforma";
-    enter.onclick = () => { clearPendingAccess(); authMode = "login"; state.screen = "login"; render(); };
+    enter.onclick = () => { clearPendingAccess(); authMode = "login"; go("login"); };
     actions.appendChild(enter);
   }else{
     const retry = document.createElement("button");
     retry.className = "cta small";
     retry.textContent = "Fazer novo cadastro";
-    retry.onclick = () => { clearPendingAccess(); authMode = "register"; authError = ""; state.screen = "login"; render(); };
+    retry.onclick = () => { clearPendingAccess(); authMode = "register"; authError = ""; go("login"); };
     actions.appendChild(retry);
   }
   const back = document.createElement("button");
   back.className = "cta secondary small";
   back.textContent = "Voltar para a apresentação";
-  back.onclick = () => { state.screen = "landing"; render(); };
+  back.onclick = () => go("landing");
   actions.appendChild(back);
   wrap.appendChild(actions);
   return wrap;
@@ -1678,6 +2073,318 @@ function renderAdmin(){
   return wrap;
 }
 
+/* =========================================================
+   PLANOS, CHECKOUT E MARCAÇÕES
+   ========================================================= */
+function renderPlans(){
+  const wrap = document.createElement("section");
+  wrap.className = "plans-shell";
+
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = hasActivePlan() ? "Sua assinatura" : "Escolha o seu plano";
+  wrap.appendChild(kicker);
+
+  const title = document.createElement("h2");
+  title.textContent = hasActivePlan() ? "Seu plano no Pipoca & Play" : "Assine para liberar as indicações";
+  wrap.appendChild(title);
+
+  const copy = document.createElement("p");
+  copy.className = "plans-copy";
+  copy.textContent = hasActivePlan()
+    ? "Cada consulta de filme, série ou novela consome 1 crédito. Os créditos diários voltam todo dia à meia-noite."
+    : "1 crédito = 1 consulta de filme, série ou novela. O acesso é liberado assim que a Asaas confirmar o pagamento.";
+  wrap.appendChild(copy);
+
+  if(account && account.subscription_active){
+    const box = document.createElement("div");
+    box.className = "auth-success";
+    const expires = account.expires_at ? new Date(account.expires_at).toLocaleDateString("pt-BR") : "";
+    box.textContent = "Plano " + (account.plan_name || "") + " ativo. " +
+      (account.unlimited ? "Consultas ilimitadas" : "Créditos de hoje: " + account.credits_remaining + " de " + account.daily_credits) +
+      (expires ? ". Ciclo válido até " + expires + "." : ".");
+    wrap.appendChild(box);
+  }else if(account && account.subscription_status === "past_due"){
+    const box = document.createElement("div");
+    box.className = "auth-error";
+    box.textContent = "A última cobrança não foi confirmada pela Asaas. Refaça o pagamento para voltar a receber indicações.";
+    wrap.appendChild(box);
+  }
+
+  if(checkout.error){
+    const box = document.createElement("div");
+    box.className = "auth-error";
+    box.textContent = checkout.error;
+    wrap.appendChild(box);
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "plan-grid";
+  const catalog = plansCatalog.length ? plansCatalog : [];
+  if(!catalog.length){
+    const empty = document.createElement("div");
+    empty.className = "admin-empty";
+    empty.textContent = "Não consegui carregar os planos agora. Atualize a página em instantes.";
+    grid.appendChild(empty);
+  }
+  catalog.forEach(plan => {
+    const isCurrent = !!(account && account.plan === plan.id && account.subscription_active);
+    const card = document.createElement("div");
+    card.className = "plan-card" + (plan.id === "gold" ? " featured" : "") + (isCurrent ? " current" : "");
+
+    const top = document.createElement("div");
+    top.className = "plan-top";
+    const name = document.createElement("div");
+    name.className = "plan-name";
+    name.textContent = plan.name;
+    top.appendChild(name);
+    if(isCurrent || plan.id === "gold"){
+      const flag = document.createElement("span");
+      flag.className = "plan-flag" + (isCurrent ? " current" : "");
+      flag.textContent = isCurrent ? "Plano atual" : "Mais escolhido";
+      top.appendChild(flag);
+    }
+    card.appendChild(top);
+
+    const price = document.createElement("div");
+    price.className = "plan-price";
+    price.textContent = plan.price_label;
+    const per = document.createElement("small");
+    per.textContent = "/mês";
+    price.appendChild(per);
+    card.appendChild(price);
+
+    const headline = document.createElement("div");
+    headline.className = "plan-headline";
+    headline.textContent = plan.headline;
+    card.appendChild(headline);
+
+    const perks = document.createElement("ul");
+    perks.className = "plan-perks";
+    (plan.perks || []).forEach(perk => {
+      const li = document.createElement("li");
+      li.textContent = perk;
+      perks.appendChild(li);
+    });
+    card.appendChild(perks);
+
+    const action = document.createElement("button");
+    action.className = "cta small" + (plan.id === "gold" ? "" : " secondary");
+    action.textContent = isCurrent ? "Renovar assinatura" : "Assinar " + plan.name;
+    action.onclick = () => {
+      checkout.plan = plan.id;
+      checkout.url = "";
+      checkout.error = "";
+      go("checkout");
+    };
+    card.appendChild(action);
+    grid.appendChild(card);
+  });
+  wrap.appendChild(grid);
+
+  const note = document.createElement("p");
+  note.className = "auth-footnote";
+  note.textContent = "Pagamento processado pela Asaas (Pix, boleto ou cartão). As indicações são liberadas na confirmação do pagamento.";
+  wrap.appendChild(note);
+  return wrap;
+}
+
+function renderCheckout(){
+  const wrap = document.createElement("section");
+  wrap.className = "checkout-card";
+  const plan = (plansCatalog || []).find(item => item.id === checkout.plan) || null;
+
+  const kicker = document.createElement("div");
+  kicker.className = "landing-kicker";
+  kicker.textContent = "Checkout seguro · Asaas";
+  wrap.appendChild(kicker);
+
+  const title = document.createElement("h2");
+  title.textContent = "Confirmar assinatura";
+  wrap.appendChild(title);
+
+  const copy = document.createElement("p");
+  copy.textContent = "Informe os dados do titular para emitir a cobrança. Você escolhe Pix, boleto ou cartão na tela da Asaas.";
+  wrap.appendChild(copy);
+
+  if(plan){
+    const summary = document.createElement("div");
+    summary.className = "checkout-summary";
+    const left = document.createElement("strong");
+    left.textContent = "Plano " + plan.name;
+    const right = document.createElement("span");
+    right.textContent = plan.price_label + "/mês";
+    summary.appendChild(left);
+    summary.appendChild(right);
+    wrap.appendChild(summary);
+  }
+
+  if(checkout.error){
+    const box = document.createElement("div");
+    box.className = "auth-error";
+    box.textContent = checkout.error;
+    wrap.appendChild(box);
+  }
+
+  if(checkout.url){
+    const success = document.createElement("div");
+    success.className = "auth-success";
+    success.textContent = "Cobrança criada. Conclua o pagamento na página da Asaas — assim que ele for confirmado, a plataforma libera suas indicações automaticamente.";
+    wrap.appendChild(success);
+
+    const open = document.createElement("a");
+    open.className = "cta";
+    open.style.display = "block";
+    open.style.textAlign = "center";
+    open.style.textDecoration = "none";
+    open.href = checkout.url;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.textContent = "Abrir a página de pagamento";
+    open.onclick = () => {
+      leavingInternally = true;
+      window.setTimeout(() => { leavingInternally = false; }, 4000);
+      startBillingPolling();
+    };
+    wrap.appendChild(open);
+
+    const wait = document.createElement("div");
+    wait.className = "checkout-wait";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const text = document.createElement("span");
+    text.textContent = "Aguardando a confirmação do pagamento pela Asaas. Pode deixar esta tela aberta.";
+    wait.appendChild(dot);
+    wait.appendChild(text);
+    wrap.appendChild(wait);
+
+    const check = document.createElement("button");
+    check.className = "cta secondary small";
+    check.style.marginTop = "12px";
+    check.textContent = "Já paguei, verificar agora";
+    check.onclick = async () => {
+      check.disabled = true;
+      check.textContent = "Verificando…";
+      try{
+        const data = await apiFetch("/api/billing/status");
+        account = data.account || account;
+        if(hasActivePlan()){ stopBillingPolling(); checkout.url = ""; go("wizard"); return; }
+        checkout.error = "A Asaas ainda não confirmou este pagamento. Se você acabou de pagar, aguarde alguns instantes.";
+      }catch(e){
+        checkout.error = e.message;
+      }
+      render();
+    };
+    wrap.appendChild(check);
+  }else{
+    const form = document.createElement("form");
+    const name = buildField("Nome completo do titular", "text", "name", "Como consta no CPF", "name", { value: checkout.name });
+    const document_ = buildField("CPF ou CNPJ do titular", "text", "document", "000.000.000-00", "off", { inputmode: "numeric", maxlength: 18, value: checkout.document });
+    form.appendChild(name.field);
+    form.appendChild(document_.field);
+
+    const submit = document.createElement("button");
+    submit.className = "cta";
+    submit.type = "submit";
+    submit.disabled = !!checkout.submitting;
+    submit.textContent = checkout.submitting ? "Gerando cobrança…" : "Gerar cobrança e pagar";
+    form.appendChild(submit);
+    form.onsubmit = event => {
+      event.preventDefault();
+      checkout.name = name.input.value;
+      checkout.document = document_.input.value;
+      submitCheckout(checkout.plan, name.input.value, document_.input.value);
+    };
+    wrap.appendChild(form);
+  }
+
+  const back = document.createElement("button");
+  back.className = "back-link";
+  back.style.display = "block";
+  back.textContent = "← Ver todos os planos";
+  back.onclick = () => { checkout.error = ""; go("plans"); };
+  wrap.appendChild(back);
+  return wrap;
+}
+
+function renderMarks(){
+  const wrap = document.createElement("div");
+  const header = document.createElement("div");
+  header.className = "results-header";
+  header.textContent = "Minhas marcações";
+  wrap.appendChild(header);
+
+  const copy = document.createElement("p");
+  copy.className = "section-copy";
+  copy.textContent = "Tudo o que você marcou como gostei, não gostei ou já assisti entra no pedido enviado ao motor de recomendação. Remova uma marcação para o título voltar a aparecer nas próximas indicações.";
+  wrap.appendChild(copy);
+
+  if(marksError){
+    const error = document.createElement("div");
+    error.className = "auth-error";
+    error.textContent = marksError;
+    wrap.appendChild(error);
+  }
+
+  if(!marks.length){
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "Você ainda não marcou nenhum título. Use os botões nos cards de indicação.";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  const list = document.createElement("div");
+  list.className = "mark-list";
+  marks.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "mark-item";
+
+    const info = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "mi-title";
+    title.textContent = (item.title_pt || item.title_original) + (item.year ? " (" + item.year + ")" : "");
+    info.appendChild(title);
+
+    const tags = document.createElement("div");
+    tags.className = "mi-tags";
+    if(item.opinion === "liked"){
+      const tag = document.createElement("span");
+      tag.className = "mi-tag like";
+      tag.textContent = "Gostei";
+      tags.appendChild(tag);
+    }
+    if(item.opinion === "disliked"){
+      const tag = document.createElement("span");
+      tag.className = "mi-tag dislike";
+      tag.textContent = "Não gostei";
+      tags.appendChild(tag);
+    }
+    if(item.watched){
+      const tag = document.createElement("span");
+      tag.className = "mi-tag watched";
+      tag.textContent = "Já assisti";
+      tags.appendChild(tag);
+    }
+    info.appendChild(tags);
+    row.appendChild(info);
+
+    const remove = document.createElement("button");
+    remove.className = "mark-remove";
+    remove.textContent = "Remover";
+    remove.title = "Remover esta marcação";
+    remove.onclick = () => {
+      remove.disabled = true;
+      remove.textContent = "Removendo…";
+      removeMark(item.id);
+    };
+    row.appendChild(remove);
+    list.appendChild(row);
+  });
+  wrap.appendChild(list);
+  return wrap;
+}
+
 function renderMarquee(){
   const wrap = document.createElement("div");
   wrap.className = "marquee";
@@ -1737,11 +2444,10 @@ function renderWizard(){
     b.onclick = () => {
       state.filters[step.key] = opt;
       if(state.stepIndex < STEPS.length - 1){
-        state.stepIndex += 1;
+        go("wizard", () => { state.stepIndex += 1; });
       }else{
-        state.screen = "summary";
+        go("summary");
       }
-      render();
     };
     opts.appendChild(b);
   });
@@ -1754,7 +2460,7 @@ function renderWizard(){
     const back = document.createElement("button");
     back.className = "back-link";
     back.textContent = "← Voltar";
-    back.onclick = () => { state.stepIndex -= 1; render(); };
+    back.onclick = () => window.history.back();
     wrap.appendChild(back);
   }
 
@@ -1790,7 +2496,7 @@ function renderSummary(){
   back.className = "back-link";
   back.textContent = "← Ajustar respostas";
   back.style.display = "block";
-  back.onclick = () => { state.screen = "wizard"; state.stepIndex = STEPS.length - 1; render(); };
+  back.onclick = () => window.history.back();
 
   wrap.appendChild(eyebrow);
   wrap.appendChild(q);
@@ -1817,15 +2523,22 @@ function renderError(){
   const box = document.createElement("div");
   box.className = "error-box";
   box.textContent = state.errorMsg || "Algo deu errado.";
+
+  const outOfCredits = !!(account && account.subscription_active && !account.unlimited && account.credits_remaining <= 0);
   const retry = document.createElement("button");
   retry.className = "cta small";
-  retry.textContent = "Tentar de novo";
-  retry.onclick = () => runSearch();
+  if(outOfCredits || (account && !hasActivePlan())){
+    retry.textContent = outOfCredits ? "Ver planos com mais créditos" : "Escolher um plano";
+    retry.onclick = async () => { await loadPlans(); go("plans"); };
+  }else{
+    retry.textContent = "Tentar de novo";
+    retry.onclick = () => runSearch();
+  }
   const back = document.createElement("button");
   back.className = "back-link";
   back.textContent = "← Ajustar respostas";
   back.style.display = "block";
-  back.onclick = () => { state.screen = "summary"; render(); };
+  back.onclick = () => go("summary");
   wrap.appendChild(box);
   wrap.appendChild(retry);
   wrap.appendChild(back);
@@ -1833,6 +2546,11 @@ function renderError(){
 }
 
 async function runSearch(){
+  if(sessionUser && sessionUser.role !== "admin" && !hasActivePlan()){
+    await loadPlans();
+    go("plans");
+    return;
+  }
   state.screen = "loading";
   render();
   try{
@@ -1852,8 +2570,7 @@ async function runSearch(){
     state.interpretation = result.interpretation || "";
     state.bestChoice = result.best_choice || null;
     state.recommendations = result.recommendations;
-    state.screen = "results";
-    render();
+    go("results");
 
     const record = {
       filters: { ...state.filters },
@@ -1865,9 +2582,28 @@ async function runSearch(){
     };
     saveToHistory(record);
   }catch(e){
+    if(e.code === "subscription_required"){
+      if(Array.isArray(e.payload && e.payload.plans)) plansCatalog = e.payload.plans;
+      await loadAccount();
+      checkout.error = e.message;
+      go("plans");
+      return;
+    }
+    if(e.code === "no_credits"){
+      if(e.payload && e.payload.account) account = e.payload.account;
+      state.errorMsg = e.message;
+      go("error");
+      return;
+    }
+    if(e.status === 401){
+      sessionUser = null;
+      account = null;
+      authError = "Sua sessão expirou. Entre novamente para continuar.";
+      go("login");
+      return;
+    }
     state.errorMsg = e.message || "Não consegui buscar recomendações agora.";
-    state.screen = "error";
-    render();
+    go("error");
   }
 }
 
@@ -1879,7 +2615,13 @@ function renderResults(){
   h.textContent = "Encontramos 3 opções pra você";
   const sub = document.createElement("div");
   sub.className = "results-sub";
-  sub.textContent = "ROTEIRO Nº " + PROMPT_VERSION.toUpperCase() + " · MOTOR: CHATGPT";
+  let subText = "ROTEIRO Nº " + PROMPT_VERSION.toUpperCase() + " · MOTOR: CHATGPT";
+  if(account && account.subscription_active){
+    subText += " · " + (account.unlimited
+      ? "PLANO " + String(account.plan_name || "").toUpperCase() + ": CONSULTAS ILIMITADAS"
+      : "RESTAM " + account.credits_remaining + " DE " + account.daily_credits + " CRÉDITOS HOJE");
+  }
+  sub.textContent = subText;
   wrap.appendChild(h);
   wrap.appendChild(sub);
 
@@ -2099,6 +2841,34 @@ function renderTicket(rec){
     body.appendChild(unavailable);
   }
 
+  /* marcações do usuário: alimentam o prompt das próximas indicações */
+  if(sessionUser && sessionUser.role !== "admin"){
+    const mark = markFor(rec) || { opinion: "", watched: false };
+    const markRow = document.createElement("div");
+    markRow.className = "mark-row";
+    const buttons = [];
+    [
+      ["liked", "like", "👍 Gostei", mark.opinion === "liked"],
+      ["disliked", "dislike", "👎 Não gostei", mark.opinion === "disliked"],
+      ["watched", "watched", "✔ Já assisti", !!mark.watched]
+    ].forEach(([kind, variant, label, isOn]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "mark-btn " + variant + (isOn ? " on" : "");
+      button.textContent = label;
+      button.setAttribute("aria-pressed", isOn ? "true" : "false");
+      button.onclick = () => toggleMark(rec, kind, buttons);
+      buttons.push(button);
+      markRow.appendChild(button);
+    });
+    body.appendChild(markRow);
+
+    const markHint = document.createElement("div");
+    markHint.className = "mark-hint";
+    markHint.textContent = "Suas marcações entram no próximo pedido: já assisti sai das indicações, gostei e não gostei ajustam o estilo.";
+    body.appendChild(markHint);
+  }
+
   /* verification links */
   const linksLabel = document.createElement("div");
   linksLabel.className = "label";
@@ -2144,7 +2914,7 @@ function renderHistory(){
     back.textContent = "← Todas as buscas";
     back.style.display = "block";
     back.style.marginBottom = "14px";
-    back.onclick = () => { state.viewingHistoryItem = null; render(); };
+    back.onclick = () => window.history.back();
     wrap.appendChild(back);
 
     if(item.interpretation){
@@ -2184,7 +2954,7 @@ function renderHistory(){
     return wrap;
   }
 
-  state.historyList.forEach(item => {
+  state.historyList.forEach((item, index) => {
     const el = document.createElement("div");
     el.className = "hist-item";
     const hd = document.createElement("div");
@@ -2197,7 +2967,7 @@ function renderHistory(){
     ht.textContent = (item.filters.genre || "") + " · " + (item.filters.mood || "");
     el.appendChild(hd);
     el.appendChild(ht);
-    el.onclick = () => { state.viewingHistoryItem = item; render(); };
+    el.onclick = () => go("history", () => { state.viewingHistoryItem = item; state.historyIndex = index; });
     wrap.appendChild(el);
   });
 

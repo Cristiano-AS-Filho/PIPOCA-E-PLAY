@@ -45,3 +45,23 @@ A camada de armazenamento passou a detectar quatro backends, nesta ordem: `postg
 O acesso administrativo ganhou página dedicada em `/admin`, com login próprio, contadores, busca, filtro por situação e as ações de liberar, rejeitar, voltar para pendente, redefinir senha, promover, rebaixar, excluir e criar acesso já liberado. Além do administrador raiz definido por `ADMIN_EMAIL`/`ADMIN_PASSWORD`, contas gravadas na base podem receber o papel `admin` e entrar pelo mesmo painel. O administrador logado é impedido, no backend e na interface, de retirar o próprio acesso. O painel exibe um bloco de diagnóstico com o backend em uso e as variáveis encontradas, e mostra o passo a passo da Vercel quando nenhum banco está conectado.
 
 As rotas de autenticação e administração passaram a compartilhar `api_core.py`, chamado tanto por `server.py` quanto pelas funções em `api/`, eliminando a duplicação que fazia o servidor local e o runtime serverless divergirem. A suíte `test_app.py` subiu de 11 para 27 testes, cobrindo o backend Postgres com driver falso, a recusa de gravação em modo serverless, o ciclo completo de ações administrativas, a proteção da própria conta, o payload de `/api/health` e as respostas de login.
+
+## Rodada 2 — assinatura, créditos, marcações e checkout
+
+### Diagnóstico
+
+O deploy publicado (commit `919e061`) tinha landing page, cadastro com aprovação, painel `/admin` e o motor de sete filtros, mas **nenhuma** das funcionalidades de monetização e personalização pedidas: não havia catálogo de planos, contagem de créditos, marcações do usuário, checkout, integração com a Asaas, controle do botão voltar, encerramento de sessão ao sair da página nem exibição da senha digitada. O código também não continha qualquer referência à Asaas — a integração precisou ser escrita do zero.
+
+### Correções aplicadas
+
+Foram criados `plans.py` (catálogo Silver/Gold/Diamante), `billing.py` (cliente da API Asaas, validação de CPF/CNPJ, assinatura mensal, URL de fatura e leitura do webhook) e `recommender.py` (motor extraído de `server.py`, agora compartilhado sem divergência entre o servidor local e as funções serverless). O `user_store.py` ganhou assinatura, ciclo de 30 dias, créditos diários no fuso de Brasília e as marcações por título; o `api_core.py` ganhou as rotas de conta, planos, marcações, checkout, conferência de pagamento, webhook e a rota de recomendação com débito de crédito e devolução em caso de falha do motor.
+
+Na interface, o cliente sem assinatura cai na vitrine de planos, paga pela Asaas e só recebe indicações após a confirmação; cada card traz *gostei*, *não gostei* e *já assisti*, gravados na conta e injetados no prompt; a tela **Marcações** permite remover item por item; a navegação usa a History API para o botão voltar nativo; a sessão virou cookie de sessão do navegador com logout no `pagehide`; e os campos de senha ganharam o ícone de olho.
+
+### Validação
+
+`python3 -m unittest test_app` — 51 testes, todos verdes, incluindo consumo e reposição de créditos por plano, bloqueio sem pagamento, webhook com e sem token válido, suspensão por inadimplência e remoção individual de marcações.
+
+Fluxo HTTP completo executado contra o servidor real com Asaas e OpenAI simulados: cadastro → aprovação pelo admin → login → bloqueio sem plano → checkout → webhook de confirmação → duas consultas do plano Silver → bloqueio por falta de crédito → marcação enviada ao prompt → remoção da marcação → sessão encerrada ao sair.
+
+Interface validada em Chromium (390×844, sem erros de JavaScript no console): olho da senha, vitrine com os três preços, checkout com recusa de CPF inválido, espera pela confirmação, liberação após o webhook, contador de créditos no topo, marcação nos cards, histórico de marcações, aviso de limite diário, remoção individual e retorno pelo botão voltar. Recarregar a página desconecta o cliente e exige novo login, como especificado.
