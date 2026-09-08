@@ -13,6 +13,7 @@ from http import HTTPStatus
 from auth import (
     admin_email,
     authenticate,
+    auth_secret,
     clear_session_cookie,
     config_status,
     create_session,
@@ -116,6 +117,16 @@ def login(body, secure: bool):
     password = _text(body, "password")
     if not email or not password:
         return HTTPStatus.BAD_REQUEST, {"error": "Informe e-mail e senha."}, None
+    if not auth_secret():
+        return (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "error": "O login está indisponível porque este deploy não tem AUTH_SECRET configurado. "
+                "Defina a variável de ambiente AUTH_SECRET (um valor longo e aleatório) nas configurações "
+                "do projeto e faça um novo deploy."
+            },
+            None,
+        )
     try:
         account = find_user(email)
     except StorageError as error:

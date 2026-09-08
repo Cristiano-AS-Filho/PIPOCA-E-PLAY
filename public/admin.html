@@ -44,6 +44,11 @@
   }
   input:focus,select:focus{outline:none;border-color:var(--marquee);}
   .field{margin-bottom:13px;}
+  .field .input-wrap{position:relative;}
+  .field .input-wrap input{padding-right:42px;}
+  .field .toggle-visibility{position:absolute;top:50%;right:4px;transform:translateY(-50%);width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:none;border:none;border-radius:6px;color:var(--cream-dim);cursor:pointer;padding:0;}
+  .field .toggle-visibility:hover{color:var(--cream);background:rgba(239,230,216,.08);}
+  .field .toggle-visibility svg{width:17px;height:17px;pointer-events:none;}
   .row{display:grid;gap:12px;}
   @media(min-width:640px){ .row.cols-2{grid-template-columns:1fr 1fr;} .row.cols-3{grid-template-columns:1fr 1fr auto;} }
 
@@ -122,7 +127,12 @@
         </div>
         <div class="field">
           <label for="login-password">Senha</label>
-          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+          <div class="input-wrap">
+            <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+            <button type="button" class="toggle-visibility" data-toggle-for="login-password" aria-label="Mostrar senha">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
         </div>
       </div>
       <button type="submit" id="login-submit">Entrar no painel</button>
@@ -216,6 +226,19 @@ let summary = null;
 let config = null;
 
 const $ = (id) => document.getElementById(id);
+
+const EYE_OFF_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a19.9 19.9 0 0 1 4.22-5.22M9.9 4.24A10.4 10.4 0 0 1 12 4c7 0 11 7 11 7a19.9 19.9 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
+document.querySelectorAll(".toggle-visibility[data-toggle-for]").forEach((toggle) => {
+  const input = $(toggle.getAttribute("data-toggle-for"));
+  if(!input) return;
+  const eyeIcon = toggle.innerHTML;
+  toggle.addEventListener("click", () => {
+    const willShow = input.type === "password";
+    input.type = willShow ? "text" : "password";
+    toggle.innerHTML = willShow ? EYE_OFF_ICON : eyeIcon;
+    toggle.setAttribute("aria-label", willShow ? "Ocultar senha" : "Mostrar senha");
+  });
+});
 
 function feedback(kind, title, message, steps){
   const box = $("feedback");

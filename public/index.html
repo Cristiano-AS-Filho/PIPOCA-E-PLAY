@@ -686,6 +686,11 @@
   .field label{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1px;color:var(--marquee);text-transform:uppercase;}
   .field input{width:100%;border:1px solid rgba(239,230,216,.18);background:var(--bg);color:var(--cream);border-radius:8px;padding:12px 13px;font:14px 'Inter',sans-serif;outline:none;}
   .field input:focus{border-color:var(--marquee);box-shadow:0 0 0 3px rgba(242,169,59,.12);}
+  .field .input-wrap{position:relative;}
+  .field .input-wrap input{padding-right:42px;}
+  .field .toggle-visibility{position:absolute;top:50%;right:4px;transform:translateY(-50%);width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:none;border:none;border-radius:6px;color:var(--cream-dim);cursor:pointer;padding:0;}
+  .field .toggle-visibility:hover{color:var(--cream);background:rgba(239,230,216,.08);}
+  .field .toggle-visibility svg{width:18px;height:18px;pointer-events:none;}
   .auth-error{background:rgba(196,85,61,.12);border:1px solid rgba(196,85,61,.42);border-radius:8px;color:var(--cream);font-size:13px;line-height:1.45;padding:11px 12px;margin-bottom:14px;}
   .auth-footnote{font-family:'IBM Plex Mono',monospace!important;font-size:10px!important;color:var(--cream-dim)!important;margin-top:16px!important;opacity:.72;}
   .admin-shell{padding-top:28px;}
@@ -1398,19 +1403,39 @@ function renderLogin(){
     wrap.appendChild(error);
   }
 
+  const EYE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a19.9 19.9 0 0 1 4.22-5.22M9.9 4.24A10.4 10.4 0 0 1 12 4c7 0 11 7 11 7a19.9 19.9 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
+
   const makeField = (labelText, type, name, placeholder, autocomplete) => {
     const field = document.createElement("div");
     field.className = "field";
     const label = document.createElement("label");
     label.textContent = labelText;
+    const inputWrap = document.createElement("div");
+    inputWrap.className = "input-wrap";
     const input = document.createElement("input");
     input.type = type;
     input.name = name;
     input.autocomplete = autocomplete;
     input.placeholder = placeholder;
     input.required = true;
+    inputWrap.appendChild(input);
     field.appendChild(label);
-    field.appendChild(input);
+    if(type === "password"){
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "toggle-visibility";
+      toggle.setAttribute("aria-label", "Mostrar senha");
+      toggle.innerHTML = EYE_ICON;
+      toggle.onclick = () => {
+        const willShow = input.type === "password";
+        input.type = willShow ? "text" : "password";
+        toggle.innerHTML = willShow ? EYE_OFF_ICON : EYE_ICON;
+        toggle.setAttribute("aria-label", willShow ? "Ocultar senha" : "Mostrar senha");
+      };
+      inputWrap.appendChild(toggle);
+    }
+    field.appendChild(inputWrap);
     return { field, input };
   };
 
