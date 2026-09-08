@@ -411,6 +411,7 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["admin_panel"], "/admin")
         self.assertTrue(payload["admin_credentials_configured"])
+        self.assertTrue(payload["auth_secret_configured"])
         self.assertEqual(payload["storage"]["mode"], "arquivo-local")
         serialized = json.dumps(payload)
         self.assertNotIn("admin-password", serialized)
@@ -423,6 +424,14 @@ class PipocaPlayTests(unittest.TestCase):
             )
             self.assertEqual(status, 503)
             self.assertIn("ADMIN_PASSWORD", payload["error"])
+
+    def test_login_explains_a_missing_auth_secret_instead_of_saying_invalid_credentials(self):
+        with patch.dict(os.environ, {"AUTH_SECRET": "", "ENVIRONMENT": "production"}, clear=False):
+            status, payload, _ = api_core.login(
+                {"email": "admin@test.local", "password": "admin-password"}, secure=True
+            )
+            self.assertEqual(status, 503)
+            self.assertIn("AUTH_SECRET", payload["error"])
 
     def test_login_sets_an_httponly_session_cookie(self):
         create_user("client@test.local", "client-password")

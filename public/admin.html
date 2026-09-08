@@ -466,6 +466,19 @@ function showLogin(message){
 async function loadHealth(){
   const result = await api("/api/health");
   if(result.ok && result.data.storage) storageBanner(result.data.storage);
+  if(result.ok && result.data.auth_secret_configured === false){
+    const box = $("feedback");
+    const div = document.createElement("div");
+    div.className = "banner warn";
+    const strong = document.createElement("strong");
+    strong.textContent = "Chave de sessão (AUTH_SECRET) não configurada";
+    div.appendChild(strong);
+    div.appendChild(document.createTextNode(
+      "Defina AUTH_SECRET nas variáveis de ambiente do projeto na Vercel e faça um novo deploy. " +
+      "Sem isso, nenhum login é aceito, mesmo com e-mail e senha corretos."
+    ));
+    box.appendChild(div);
+  }
   if(result.ok && result.data.admin_credentials_configured === false){
     const box = $("feedback");
     const div = document.createElement("div");

@@ -13,6 +13,7 @@ from http import HTTPStatus
 from auth import (
     admin_email,
     authenticate,
+    auth_secret,
     clear_session_cookie,
     config_status,
     create_session,
@@ -74,6 +75,7 @@ def health():
             "postgres_dsn_preview": storage.get("postgres_dsn_preview"),
         },
         "admin_credentials_configured": root_admin_configured(),
+        "auth_secret_configured": bool(auth_secret()),
         "admin_panel": "/admin",
     }
     return HTTPStatus.OK, payload, None
@@ -130,6 +132,15 @@ def login(body, secure: bool):
         return (
             HTTPStatus.FORBIDDEN,
             {"error": "Seu pedido de acesso foi rejeitado. Você pode realizar um novo cadastro."},
+            None,
+        )
+    if not auth_secret():
+        return (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "error": "A chave de sessão (AUTH_SECRET) não está configurada neste deploy. "
+                "Defina a variável de ambiente AUTH_SECRET no projeto e faça um novo deploy."
+            },
             None,
         )
     user = authenticate(email, password)
