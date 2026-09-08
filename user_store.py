@@ -20,11 +20,14 @@ import os
 import re
 import secrets
 import threading
+import unicodedata
 import urllib.error
 import urllib.request
 from urllib.parse import quote, urlencode, urlparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from plans import CYCLE_DAYS, PLAN_CATALOG
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -48,8 +51,34 @@ class StorageError(RuntimeError):
     """Indica que a base de contas não pôde ser lida ou gravada."""
 
 
+class SubscriptionError(RuntimeError):
+    """Erro relacionado a assinatura ou créditos diários."""
+
+
+class NoActiveSubscriptionError(SubscriptionError):
+    """O usuário não tem nenhuma assinatura paga ativa no momento."""
+
+
+class OutOfCreditsError(SubscriptionError):
+    """O usuário já usou todos os créditos diários do plano atual."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _today_br_date() -> str:
+    """Data corrente no horário de Brasília (UTC-3, sem horário de verão desde 2019)."""
+    return (datetime.now(timezone.utc) - timedelta(hours=3)).date().isoformat()
+
+
+def _parse_iso(value) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _is_serverless() -> bool:
@@ -649,6 +678,10 @@ def register_user(email: str, password: str, confirmation: str | None = None) ->
             "updated_at": now,
             "approved_at": None,
             "rejected_at": None,
+            "plan": existing.get("plan") if existing else None,
+            "subscription": existing.get("subscription") if existing else _default_subscription(),
+            "credits": existing.get("credits") if existing else _default_credits(),
+            "marks": existing.get("marks") if existing else {},
         }
         if existing:
             users = [record if user.get("id") == existing.get("id") else user for user in users]
@@ -681,6 +714,10 @@ def create_user(email: str, password: str, status: str = "approved", role: str =
             "updated_at": now,
             "approved_at": now if status == "approved" else None,
             "rejected_at": now if status == "rejected" else None,
+            "plan": None,
+            "subscription": _default_subscription(),
+            "credits": _default_credits(),
+            "marks": {},
         }
         users.append(record)
         save_users(users)
@@ -712,6 +749,20 @@ def is_admin_user(email: str) -> bool:
     return bool(user and user.get("status") == "approved" and _user_role(user) == "admin")
 
 
+def _default_subscription() -> dict:
+    return {
+        "status": "inactive",
+        "asaas_customer_id": None,
+        "asaas_subscription_id": None,
+        "current_period_end": None,
+        "updated_at": None,
+    }
+
+
+def _default_credits() -> dict:
+    return {"date": None, "remaining": 0}
+
+
 def _public_admin_user(user: dict) -> dict:
     return {
         "id": str(user.get("id", "")),
@@ -722,6 +773,8 @@ def _public_admin_user(user: dict) -> dict:
         "updated_at": user.get("updated_at"),
         "approved_at": user.get("approved_at"),
         "rejected_at": user.get("rejected_at"),
+        "plan": user.get("plan"),
+        "subscription_status": (user.get("subscription") or _default_subscription()).get("status", "inactive"),
     }
 
 
@@ -803,3 +856,264 @@ def delete_user(user_id: str) -> None:
         if len(remaining) == len(users):
             raise LookupError("Usuário não encontrado.")
         save_users(remaining)
+
+
+# ---------------------------------------------------------------------------
+# Assinatura e créditos diários (ASAAS)
+# ---------------------------------------------------------------------------
+
+
+def find_user_by_asaas_customer(customer_id: str, users: list[dict] | None = None) -> dict | None:
+    records = users if users is not None else load_users()
+    return next(
+        (u for u in records if (u.get("subscription") or {}).get("asaas_customer_id") == customer_id),
+        None,
+    )
+
+
+def find_user_by_asaas_subscription(subscription_id: str, users: list[dict] | None = None) -> dict | None:
+    records = users if users is not None else load_users()
+    return next(
+        (u for u in records if (u.get("subscription") or {}).get("asaas_subscription_id") == subscription_id),
+        None,
+    )
+
+
+def set_checkout_pending(user_id: str, plan_id: str, customer_id: str, subscription_id: str) -> dict:
+    """Registra a assinatura recém-criada no ASAAS, ainda aguardando a confirmação do pagamento."""
+
+    def apply(target: dict) -> None:
+        target["plan"] = plan_id
+        subscription = dict(target.get("subscription") or _default_subscription())
+        subscription["asaas_customer_id"] = customer_id
+        subscription["asaas_subscription_id"] = subscription_id
+        subscription["status"] = "pending_payment"
+        subscription["updated_at"] = _now()
+        target["subscription"] = subscription
+
+    return _mutate(user_id, apply)
+
+
+def activate_subscription(user_id: str, plan_id: str | None = None) -> dict:
+    """Chamado pelo webhook do ASAAS quando um pagamento é confirmado: libera o ciclo de 30 dias e os créditos de hoje."""
+
+    def apply(target: dict) -> None:
+        if plan_id:
+            target["plan"] = plan_id
+        subscription = dict(target.get("subscription") or _default_subscription())
+        subscription["status"] = "active"
+        period_end = datetime.now(timezone.utc) + timedelta(days=CYCLE_DAYS)
+        subscription["current_period_end"] = period_end.isoformat(timespec="seconds")
+        subscription["updated_at"] = _now()
+        target["subscription"] = subscription
+
+        plan = PLAN_CATALOG.get(target.get("plan") or "")
+        credits = dict(target.get("credits") or _default_credits())
+        credits["date"] = _today_br_date()
+        credits["remaining"] = plan["credits_per_day"] if plan and plan["credits_per_day"] is not None else 0
+        target["credits"] = credits
+
+    return _mutate(user_id, apply)
+
+
+def deactivate_subscription(user_id: str, status: str = "past_due") -> dict:
+    """Usado quando o ASAAS avisa que um pagamento falhou ou a assinatura foi cancelada."""
+
+    def apply(target: dict) -> None:
+        subscription = dict(target.get("subscription") or _default_subscription())
+        subscription["status"] = status
+        subscription["updated_at"] = _now()
+        target["subscription"] = subscription
+
+    return _mutate(user_id, apply)
+
+
+def _credit_view(user: dict) -> dict:
+    plan_id = user.get("plan")
+    plan = PLAN_CATALOG.get(plan_id) if plan_id else None
+    subscription = user.get("subscription") or _default_subscription()
+    period_end = _parse_iso(subscription.get("current_period_end"))
+    active = subscription.get("status") == "active" and period_end is not None and period_end > datetime.now(timezone.utc)
+    unlimited = bool(plan and plan.get("credits_per_day") is None)
+
+    credits = user.get("credits") or _default_credits()
+    today = _today_br_date()
+    if credits.get("date") == today:
+        remaining = credits.get("remaining", 0)
+    else:
+        remaining = plan["credits_per_day"] if plan and plan.get("credits_per_day") is not None else 0
+
+    return {
+        "plan": plan_id,
+        "plan_name": plan["name"] if plan else None,
+        "subscription_status": subscription.get("status", "inactive"),
+        "active": active,
+        "current_period_end": subscription.get("current_period_end"),
+        "unlimited": unlimited,
+        "credits_remaining": None if unlimited else max(0, remaining) if active else 0,
+        "credits_per_day": plan["credits_per_day"] if plan else None,
+    }
+
+
+def subscription_status(user_id: str) -> dict:
+    """Consulta somente leitura do plano/créditos atuais, para a tela de assinatura do cliente."""
+    user = find_user_by_id(user_id)
+    if not user:
+        raise LookupError("Usuário não encontrado.")
+    return _credit_view(user)
+
+
+def try_consume_credit(user_id: str) -> dict:
+    """Debita 1 crédito diário do plano ativo. Levanta erro quando não há assinatura ativa ou os créditos acabaram."""
+    with _LOCK:
+        users = load_users()
+        target = next((u for u in users if str(u.get("id")) == str(user_id)), None)
+        if not target:
+            raise LookupError("Usuário não encontrado.")
+
+        plan_id = target.get("plan")
+        plan = PLAN_CATALOG.get(plan_id) if plan_id else None
+        subscription = target.get("subscription") or _default_subscription()
+        period_end = _parse_iso(subscription.get("current_period_end"))
+        active = subscription.get("status") == "active" and period_end is not None and period_end > datetime.now(timezone.utc)
+        if not plan or not active:
+            raise NoActiveSubscriptionError(
+                "Você ainda não tem uma assinatura ativa. Escolha um plano para liberar as recomendações."
+            )
+
+        credits = dict(target.get("credits") or _default_credits())
+        today = _today_br_date()
+        if credits.get("date") != today:
+            credits["date"] = today
+            credits["remaining"] = plan["credits_per_day"] if plan["credits_per_day"] is not None else 0
+
+        unlimited = plan["credits_per_day"] is None
+        if not unlimited:
+            if credits.get("remaining", 0) <= 0:
+                target["credits"] = credits
+                save_users(users)
+                raise OutOfCreditsError(
+                    "Você atingiu o limite diário do seu plano. Os créditos renovam à meia-noite (horário de Brasília)."
+                )
+            credits["remaining"] -= 1
+
+        target["credits"] = credits
+        target["updated_at"] = _now()
+        save_users(users)
+        return _credit_view(target)
+
+
+def refund_credit(user_id: str) -> None:
+    """Devolve 1 crédito quando a geração falha depois de já ter sido debitado."""
+    with _LOCK:
+        users = load_users()
+        target = next((u for u in users if str(u.get("id")) == str(user_id)), None)
+        if not target:
+            return
+        plan = PLAN_CATALOG.get(target.get("plan") or "")
+        if not plan or plan.get("credits_per_day") is None:
+            return
+        credits = dict(target.get("credits") or _default_credits())
+        if credits.get("date") == _today_br_date():
+            credits["remaining"] = min(plan["credits_per_day"], credits.get("remaining", 0) + 1)
+            target["credits"] = credits
+            save_users(users)
+
+
+# ---------------------------------------------------------------------------
+# Marcações do usuário: gostei / não gostei / já assisti
+# ---------------------------------------------------------------------------
+
+
+def _slugify(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+    return normalized or "titulo"
+
+
+def mark_id_for(title_original: str, title_pt: str, year) -> str:
+    slug = _slugify(title_original or title_pt or "")
+    try:
+        year_part = str(int(year)) if year else "0"
+    except (TypeError, ValueError):
+        year_part = "0"
+    return f"{slug}-{year_part}"
+
+
+_UNSET = object()  # distingue "não mudar este campo" de "limpar para null"
+
+
+def list_marks(user_id: str) -> list[dict]:
+    user = find_user_by_id(user_id)
+    if not user:
+        raise LookupError("Usuário não encontrado.")
+    marks = user.get("marks") or {}
+    return sorted(marks.values(), key=lambda mark: mark.get("updated_at", ""), reverse=True)
+
+
+def upsert_mark(
+    user_id: str,
+    *,
+    title_original: str,
+    title_pt: str,
+    year,
+    liked=_UNSET,
+    watched=_UNSET,
+) -> dict:
+    """``liked``/``watched`` usam ``_UNSET`` como padrão para diferenciar "não
+    mudar este campo" (omitido) de "limpar para neutro" (``None`` explícito)."""
+    if liked is not _UNSET and liked is not None and not isinstance(liked, bool):
+        raise ValueError("Marcação de gostei/não gostei inválida.")
+    if watched is not _UNSET and watched is not None and not isinstance(watched, bool):
+        raise ValueError("Marcação de já assistido inválida.")
+
+    title_original = (title_original or "").strip()[:200]
+    title_pt = (title_pt or "").strip()[:200]
+    if not title_original and not title_pt:
+        raise ValueError("Informe o título do conteúdo a marcar.")
+    try:
+        year_int = int(year) if year else 0
+    except (TypeError, ValueError):
+        year_int = 0
+
+    mark_id = mark_id_for(title_original, title_pt, year_int)
+    with _LOCK:
+        users = load_users()
+        target = next((u for u in users if str(u.get("id")) == str(user_id)), None)
+        if not target:
+            raise LookupError("Usuário não encontrado.")
+
+        marks = dict(target.get("marks") or {})
+        existing = marks.get(mark_id, {})
+        now = _now()
+        record = {
+            "id": mark_id,
+            "title_original": title_original or existing.get("title_original", ""),
+            "title_pt": title_pt or existing.get("title_pt", ""),
+            "year": year_int or existing.get("year", 0),
+            "liked": existing.get("liked") if liked is _UNSET else liked,
+            "watched": existing.get("watched", False) if watched is _UNSET else bool(watched),
+            "created_at": existing.get("created_at", now),
+            "updated_at": now,
+        }
+        marks[mark_id] = record
+        target["marks"] = marks
+        target["updated_at"] = now
+        save_users(users)
+        return record
+
+
+def remove_mark(user_id: str, mark_id: str) -> None:
+    with _LOCK:
+        users = load_users()
+        target = next((u for u in users if str(u.get("id")) == str(user_id)), None)
+        if not target:
+            raise LookupError("Usuário não encontrado.")
+        marks = dict(target.get("marks") or {})
+        if mark_id not in marks:
+            raise LookupError("Marcação não encontrada.")
+        del marks[mark_id]
+        target["marks"] = marks
+        target["updated_at"] = _now()
+        save_users(users)

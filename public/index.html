@@ -666,6 +666,119 @@
     font-size:13.5px;
   }
 
+  /* ---------- marcações (gostei / não gostei / já assisti) ---------- */
+  .mark-row{
+    display:flex;gap:8px;flex-wrap:wrap;
+    margin:14px 0 4px;
+  }
+  .mark-btn{
+    flex:1;
+    min-width:0;
+    background:var(--bg-elev);
+    border:1px solid rgba(239,230,216,0.14);
+    color:var(--cream-dim);
+    padding:9px 8px;
+    border-radius:20px;
+    font-family:'Inter',sans-serif;
+    font-size:12px;
+    font-weight:600;
+    cursor:pointer;
+    transition:border-color .15s, background .15s, color .15s;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .mark-btn:hover{border-color:var(--marquee);}
+  .mark-btn.active.like{background:rgba(60,140,122,0.18);border-color:var(--teal);color:#bfe9dd;}
+  .mark-btn.active.dislike{background:rgba(196,85,61,0.18);border-color:var(--danger);color:#f2c9bd;}
+  .mark-btn.active.watched{background:rgba(242,169,59,0.18);border-color:var(--marquee);color:var(--marquee);}
+
+  .marks-item{
+    background:var(--bg-elev);
+    border:1px solid rgba(239,230,216,0.1);
+    border-radius:var(--radius);
+    padding:13px 15px;
+    margin-bottom:10px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+  }
+  .marks-item .mi-title{font-size:13.5px;font-weight:600;}
+  .marks-item .mi-tags{
+    margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;
+  }
+  .marks-item .mi-tag{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10px;
+    padding:3px 7px;
+    border-radius:10px;
+    background:rgba(239,230,216,0.08);
+    color:var(--cream-dim);
+  }
+  .marks-remove{
+    background:none;
+    border:1px solid rgba(196,85,61,0.4);
+    color:#e08a72;
+    padding:7px 11px;
+    border-radius:16px;
+    font-family:'Inter',sans-serif;
+    font-size:11.5px;
+    cursor:pointer;
+    flex-shrink:0;
+  }
+  .marks-remove:hover{background:rgba(196,85,61,0.14);}
+
+  /* ---------- planos e assinatura ---------- */
+  .sub-banner{
+    background:var(--bg-elev);
+    border:1px solid rgba(242,169,59,0.28);
+    border-radius:var(--radius);
+    padding:14px 16px;
+    margin-bottom:18px;
+    font-size:13px;
+    color:var(--cream-dim);
+    line-height:1.5;
+  }
+  .sub-banner strong{color:var(--marquee);}
+  .plan-grid{
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+    margin-top:16px;
+  }
+  .plan-card{
+    background:var(--bg-elev);
+    border:1px solid rgba(239,230,216,0.14);
+    border-radius:var(--radius);
+    padding:18px 16px;
+  }
+  .plan-card.current{border-color:var(--teal);background:rgba(60,140,122,0.08);}
+  .plan-card .pc-name{
+    font-family:'Bebas Neue',cursive;
+    font-size:26px;
+    letter-spacing:.5px;
+    color:var(--cream);
+  }
+  .plan-card .pc-price{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:20px;
+    color:var(--marquee);
+    margin:4px 0 8px;
+  }
+  .plan-card .pc-price span{font-size:12px;color:var(--cream-dim);}
+  .plan-card .pc-desc{font-size:13px;color:var(--cream-dim);margin-bottom:14px;}
+  .plan-card .pc-current-tag{
+    display:inline-block;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;
+    color:var(--teal);
+    border:1px solid var(--teal);
+    padding:4px 9px;
+    border-radius:12px;
+    margin-bottom:10px;
+  }
+
   .footer-space{flex:1;}
 
   /* ---------- landing / auth / admin ---------- */
@@ -811,12 +924,16 @@ const LOADING_MESSAGES = [
 
 let sessionUser = null;
 let authError = "";
+let checkoutError = "";
 let adminStatus = null;
 const ADMIN_PANEL_URL = "/admin";
 let authMode = "login";
 let accessStatus = null;
 let pendingStatusTimer = null;
 let pendingAccess = null;
+let subscriptionStatus = null;
+let plansCatalog = [];
+let userMarksById = {};
 try{
   pendingAccess = JSON.parse(window.localStorage.getItem("pipoca_pending_access") || "null");
 }catch(e){
@@ -824,7 +941,7 @@ try{
 }
 
 let state = {
-  screen: "landing", // landing | login | wizard | summary | loading | results | history | admin | error
+  screen: "landing", // landing | login | wizard | summary | loading | results | history | plans | marks | admin | error
   stepIndex: 0,
   filters: {},
   interpretation: "",
@@ -835,13 +952,44 @@ let state = {
   viewingHistoryItem: null
 };
 
+async function loadSubscriptionStatus(){
+  try{
+    const response = await fetch("/api/payments/status", { credentials: "same-origin", cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if(response.ok){
+      subscriptionStatus = data.subscription || null;
+      plansCatalog = data.plans || [];
+    }
+  }catch(e){ /* a tela de planos mostra o estado vazio se isso falhar */ }
+}
+
+async function loadMarks(){
+  try{
+    const response = await fetch("/api/marks", { credentials: "same-origin", cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if(response.ok){
+      userMarksById = {};
+      (data.marks || []).forEach(mark => { userMarksById[mark.id] = mark; });
+    }
+  }catch(e){ /* os botões de marcação simplesmente começam sem estado prévio */ }
+}
+
+function screenAfterLogin(){
+  return (subscriptionStatus && subscriptionStatus.active) ? "wizard" : "plans";
+}
+
 async function bootstrapAuth(){
   try{
     const response = await fetch("/api/auth/me", { credentials: "same-origin" });
     const data = await response.json();
     if(data.authenticated){
       sessionUser = data.user;
-      state.screen = sessionUser.role === "admin" ? "admin" : "wizard";
+      if(sessionUser.role === "admin"){
+        state.screen = "admin";
+      }else{
+        await Promise.all([loadSubscriptionStatus(), loadMarks()]);
+        state.screen = screenAfterLogin();
+      }
     }else if(pendingAccess && pendingAccess.email && pendingAccess.token){
       state.screen = "access-status";
       checkPendingAccess(true);
@@ -900,7 +1048,8 @@ async function login(email, password){
       window.location.href = ADMIN_PANEL_URL;
       return;
     }
-    state.screen = "wizard";
+    await Promise.all([loadSubscriptionStatus(), loadMarks()]);
+    state.screen = screenAfterLogin();
     render();
   }catch(e){
     authError = e.message || "Não foi possível entrar agora.";
@@ -933,6 +1082,9 @@ async function logout(){
   try{ await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); }catch(e){}
   sessionUser = null;
   adminStatus = null;
+  subscriptionStatus = null;
+  plansCatalog = [];
+  userMarksById = {};
   clearPendingAccess();
   state.screen = "landing";
   state.stepIndex = 0;
@@ -974,6 +1126,90 @@ async function adminAction(userId, action){
     authError = e.message || "Não foi possível atualizar o cadastro.";
     render();
   }
+}
+
+/* =========================================================
+   PLANOS, CHECKOUT (ASAAS) E CRÉDITOS DIÁRIOS
+   ========================================================= */
+async function startCheckout(planId){
+  checkoutError = "";
+  render();
+  try{
+    const response = await fetch("/api/payments/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ plan: planId })
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || "Não foi possível iniciar o pagamento agora.");
+    if(data.checkout_url){
+      window.location.href = data.checkout_url;
+      return;
+    }
+    throw new Error("O link de pagamento não veio na resposta.");
+  }catch(e){
+    checkoutError = e.message || "Não foi possível iniciar o pagamento agora.";
+    render();
+  }
+}
+
+async function refreshAfterPayment(){
+  checkoutError = "";
+  await loadSubscriptionStatus();
+  if(subscriptionStatus && subscriptionStatus.active){
+    state.screen = "wizard";
+  }
+  render();
+}
+
+/* =========================================================
+   MARCAÇÕES: GOSTEI / NÃO GOSTEI / JÁ ASSISTI
+   ========================================================= */
+async function setMark(rec, changes){
+  try{
+    const response = await fetch("/api/marks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        action: "set",
+        title_original: rec.title_original || "",
+        title_pt: rec.title_pt || "",
+        year: rec.year || 0,
+        ...changes
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if(response.ok && data.mark){
+      userMarksById[data.mark.id] = data.mark;
+      render();
+    }
+  }catch(e){ /* ação silenciosa: o botão simplesmente não muda de estado */ }
+}
+
+async function removeMark(markId){
+  try{
+    const response = await fetch("/api/marks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ action: "remove", id: markId })
+    });
+    const data = await response.json().catch(() => ({}));
+    if(response.ok){
+      delete userMarksById[markId];
+      state.marksHistory = data.marks || (state.marksHistory || []).filter(m => m.id !== markId);
+      render();
+    }
+  }catch(e){ /* ação silenciosa */ }
+}
+
+function markKeyFor(rec){
+  const base = (rec.title_original || rec.title_pt || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const slug = base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "titulo";
+  const year = rec.year ? String(parseInt(rec.year, 10)) : "0";
+  return slug + "-" + year;
 }
 
 /* =========================================================
@@ -1095,13 +1331,16 @@ async function getRecommendations(filters){
   const response = await fetch(RECOMMENDATION_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     body: JSON.stringify({ filters })
   });
+  const data = await response.json().catch(() => ({}));
   if(!response.ok){
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.error || "Falha ao consultar o motor de recomendação (HTTP " + response.status + ").");
+    const err = new Error(data.error || "Falha ao consultar o motor de recomendação (HTTP " + response.status + ").");
+    err.status = response.status;
+    err.code = data.code || null;
+    throw err;
   }
-  const data = await response.json();
   const text = data.text || "";
   const clean = text.replace(/```json/gi,"").replace(/```/g,"").trim();
   let parsed;
@@ -1113,6 +1352,7 @@ async function getRecommendations(filters){
   if(!parsed.recommendations || !Array.isArray(parsed.recommendations) || parsed.recommendations.length === 0){
     throw new Error("O motor de recomendação não retornou resultados válidos.");
   }
+  parsed.credits = data.credits || null;
   return parsed;
 }
 
@@ -1245,6 +1485,8 @@ function render(){
   else if(state.screen === "login") app.appendChild(renderLogin());
   else if(state.screen === "access-status") app.appendChild(renderAccessStatus());
   else if(state.screen === "admin") app.appendChild(renderAdmin());
+  else if(state.screen === "plans") app.appendChild(renderPlans());
+  else if(state.screen === "marks") app.appendChild(renderMarksHistory());
   else if(state.screen === "wizard") app.appendChild(renderWizard());
   else if(state.screen === "summary") app.appendChild(renderSummary());
   else if(state.screen === "loading") app.appendChild(renderLoading());
@@ -1257,6 +1499,55 @@ function render(){
   app.appendChild(spacer);
 
   syncPopcorn();
+  syncHistoryEntry();
+}
+
+/* =========================================================
+   NAVEGAÇÃO — botão "voltar" nativo do celular
+   Cada tela vira uma entrada no histórico do navegador; o
+   evento popstate restaura a tela anterior sem sair do app.
+   ========================================================= */
+let suppressHistoryPush = false;
+
+function historySnapshot(){
+  return { screen: state.screen, stepIndex: state.stepIndex };
+}
+
+function syncHistoryEntry(){
+  if(suppressHistoryPush) return;
+  const current = window.history.state;
+  const next = historySnapshot();
+  if(!current || current.screen !== next.screen || current.stepIndex !== next.stepIndex){
+    window.history.pushState(next, "");
+  }
+}
+
+function initHistoryNavigation(){
+  window.history.replaceState(historySnapshot(), "");
+  window.addEventListener("popstate", (event) => {
+    const snapshot = event.state;
+    if(!snapshot) return;
+    suppressHistoryPush = true;
+    state.screen = snapshot.screen || "landing";
+    state.stepIndex = snapshot.stepIndex || 0;
+    render();
+    suppressHistoryPush = false;
+    if(state.screen === "history" && !state.historyList){
+      loadHistory().then(items => { state.historyList = items; render(); });
+    }
+  });
+}
+
+/* =========================================================
+   LOGOUT FORÇADO AO SAIR DA PÁGINA
+   Ao navegar para fora, fechar a aba ou fechar o app, a sessão
+   é encerrada no servidor: da próxima vez é preciso logar de novo.
+   ========================================================= */
+function initForcedLogoutOnLeave(){
+  window.addEventListener("pagehide", () => {
+    if(!sessionUser) return;
+    try{ navigator.sendBeacon("/api/auth/logout"); }catch(e){}
+  });
 }
 
 function renderTopnav(){
@@ -1270,6 +1561,8 @@ function renderTopnav(){
   right.style.display = "flex";
   right.style.gap = "8px";
   right.style.alignItems = "center";
+  right.style.flexWrap = "wrap";
+  right.style.justifyContent = "flex-end";
 
   if(!sessionUser){
     const enterBtn = document.createElement("button");
@@ -1288,6 +1581,23 @@ function renderTopnav(){
       adminBtn.onclick = () => { window.location.href = ADMIN_PANEL_URL; };
       right.appendChild(adminBtn);
     }else{
+      const planBtn = document.createElement("button");
+      const creditsText = subscriptionStatus && subscriptionStatus.active
+        ? (subscriptionStatus.unlimited ? " (ilimitado)" : " (" + (subscriptionStatus.credits_remaining ?? 0) + " hoje)")
+        : "";
+      planBtn.textContent = "Assinatura" + creditsText;
+      planBtn.onclick = () => { state.screen = "plans"; render(); };
+      right.appendChild(planBtn);
+
+      const marksBtn = document.createElement("button");
+      marksBtn.textContent = "Minhas marcações";
+      marksBtn.onclick = async () => {
+        await loadMarks();
+        state.screen = "marks";
+        render();
+      };
+      right.appendChild(marksBtn);
+
       const histBtn = document.createElement("button");
       histBtn.textContent = "Histórico";
       histBtn.onclick = async () => {
@@ -1296,17 +1606,17 @@ function renderTopnav(){
         render();
       };
       right.appendChild(histBtn);
-    }
 
-    const newBtn = document.createElement("button");
-    newBtn.textContent = "Nova busca";
-    newBtn.onclick = () => {
-      state.screen = "wizard";
-      state.stepIndex = 0;
-      state.filters = {};
-      render();
-    };
-    right.appendChild(newBtn);
+      const newBtn = document.createElement("button");
+      newBtn.textContent = "Nova busca";
+      newBtn.onclick = () => {
+        state.screen = (subscriptionStatus && subscriptionStatus.active) ? "wizard" : "plans";
+        state.stepIndex = 0;
+        state.filters = {};
+        render();
+      };
+      right.appendChild(newBtn);
+    }
 
     const logoutBtn = document.createElement("button");
     logoutBtn.textContent = "Sair";
@@ -1678,6 +1988,155 @@ function renderAdmin(){
   return wrap;
 }
 
+function renderPlans(){
+  const wrap = document.createElement("div");
+  const h = document.createElement("div");
+  h.className = "results-header";
+  h.textContent = "Escolha seu plano";
+  const sub = document.createElement("div");
+  sub.className = "results-sub";
+  sub.textContent = "1 CRÉDITO = 1 CONSULTA DE FILME, SÉRIE OU NOVELA";
+  wrap.appendChild(h);
+  wrap.appendChild(sub);
+
+  if(subscriptionStatus && subscriptionStatus.plan){
+    const banner = document.createElement("div");
+    banner.className = "sub-banner";
+    if(subscriptionStatus.active){
+      const creditsText = subscriptionStatus.unlimited
+        ? "créditos ilimitados neste ciclo"
+        : (subscriptionStatus.credits_remaining ?? 0) + " crédito(s) restante(s) hoje";
+      banner.innerHTML = "Plano atual: <strong>" + escapeHtml(subscriptionStatus.plan_name || "") + "</strong> · " + escapeHtml(creditsText);
+    }else if(subscriptionStatus.subscription_status === "pending_payment"){
+      banner.textContent = "Recebemos o seu pedido de assinatura e estamos aguardando a confirmação do pagamento pelo ASAAS.";
+    }else{
+      banner.textContent = "Sua assinatura está inativa. Escolha um plano abaixo para liberar as recomendações.";
+    }
+    wrap.appendChild(banner);
+  }else{
+    const banner = document.createElement("div");
+    banner.className = "sub-banner";
+    banner.textContent = "Você ainda não tem um plano ativo. Escolha um plano para liberar as recomendações.";
+    wrap.appendChild(banner);
+  }
+
+  if(subscriptionStatus && subscriptionStatus.subscription_status === "pending_payment"){
+    const refresh = document.createElement("button");
+    refresh.className = "cta small";
+    refresh.textContent = "Já paguei, verificar agora";
+    refresh.onclick = () => refreshAfterPayment();
+    wrap.appendChild(refresh);
+  }
+
+  if(checkoutError){
+    const error = document.createElement("div");
+    error.className = "auth-error";
+    error.textContent = checkoutError;
+    wrap.appendChild(error);
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "plan-grid";
+  plansCatalog.forEach(plan => {
+    const card = document.createElement("div");
+    const isCurrent = !!(subscriptionStatus && subscriptionStatus.active && subscriptionStatus.plan === plan.id);
+    card.className = "plan-card" + (isCurrent ? " current" : "");
+    if(isCurrent){
+      const tag = document.createElement("span");
+      tag.className = "pc-current-tag";
+      tag.textContent = "SEU PLANO ATUAL";
+      card.appendChild(tag);
+    }
+    const name = document.createElement("div");
+    name.className = "pc-name";
+    name.textContent = plan.name;
+    const price = document.createElement("div");
+    price.className = "pc-price";
+    price.innerHTML = escapeHtml(plan.price_display) + " <span>/mês</span>";
+    const desc = document.createElement("div");
+    desc.className = "pc-desc";
+    desc.textContent = plan.description;
+    const cta = document.createElement("button");
+    cta.className = "cta small";
+    cta.textContent = isCurrent ? "Plano ativo" : "Assinar " + plan.name;
+    cta.disabled = isCurrent;
+    cta.onclick = () => startCheckout(plan.id);
+    card.appendChild(name);
+    card.appendChild(price);
+    card.appendChild(desc);
+    card.appendChild(cta);
+    grid.appendChild(card);
+  });
+  wrap.appendChild(grid);
+
+  if(subscriptionStatus && subscriptionStatus.active){
+    const back = document.createElement("button");
+    back.className = "back-link";
+    back.textContent = "← Voltar para a busca";
+    back.style.display = "block";
+    back.onclick = () => { state.screen = "wizard"; render(); };
+    wrap.appendChild(back);
+  }
+
+  return wrap;
+}
+
+function renderMarksHistory(){
+  const wrap = document.createElement("div");
+  const h = document.createElement("div");
+  h.className = "results-header";
+  h.textContent = "Minhas marcações";
+  const sub = document.createElement("div");
+  sub.className = "results-sub";
+  sub.textContent = "REMOVA UM ITEM PARA QUE ELE VOLTE A APARECER NAS PRÓXIMAS INDICAÇÕES";
+  wrap.appendChild(h);
+  wrap.appendChild(sub);
+
+  const marks = Object.values(userMarksById).sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+  if(marks.length === 0){
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "Você ainda não marcou nenhum título como gostei, não gostei ou já assisti.";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  marks.forEach(mark => {
+    const item = document.createElement("div");
+    item.className = "marks-item";
+
+    const info = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "mi-title";
+    title.textContent = (mark.title_pt || mark.title_original) + (mark.year ? " (" + mark.year + ")" : "");
+    info.appendChild(title);
+
+    const tags = document.createElement("div");
+    tags.className = "mi-tags";
+    if(mark.liked === true){
+      const t = document.createElement("span"); t.className = "mi-tag"; t.textContent = "👍 Gostei"; tags.appendChild(t);
+    }
+    if(mark.liked === false){
+      const t = document.createElement("span"); t.className = "mi-tag"; t.textContent = "👎 Não gostei"; tags.appendChild(t);
+    }
+    if(mark.watched){
+      const t = document.createElement("span"); t.className = "mi-tag"; t.textContent = "✅ Já assisti"; tags.appendChild(t);
+    }
+    info.appendChild(tags);
+
+    const remove = document.createElement("button");
+    remove.className = "marks-remove";
+    remove.textContent = "Remover";
+    remove.onclick = () => removeMark(mark.id);
+
+    item.appendChild(info);
+    item.appendChild(remove);
+    wrap.appendChild(item);
+  });
+
+  return wrap;
+}
+
 function renderMarquee(){
   const wrap = document.createElement("div");
   wrap.className = "marquee";
@@ -1852,6 +2311,7 @@ async function runSearch(){
     state.interpretation = result.interpretation || "";
     state.bestChoice = result.best_choice || null;
     state.recommendations = result.recommendations;
+    if(result.credits) subscriptionStatus = { ...subscriptionStatus, ...result.credits };
     state.screen = "results";
     render();
 
@@ -1865,6 +2325,13 @@ async function runSearch(){
     };
     saveToHistory(record);
   }catch(e){
+    if(e.status === 402){
+      checkoutError = e.message || "";
+      await loadSubscriptionStatus();
+      state.screen = "plans";
+      render();
+      return;
+    }
     state.errorMsg = e.message || "Não consegui buscar recomendações agora.";
     state.screen = "error";
     render();
@@ -2123,6 +2590,41 @@ function renderTicket(rec){
   });
   body.appendChild(links);
 
+  const markLabel = document.createElement("div");
+  markLabel.className = "label";
+  markLabel.textContent = "SUAS MARCAÇÕES";
+  body.appendChild(markLabel);
+
+  const markId = markKeyFor(rec);
+  const existingMark = userMarksById[markId];
+  const markRow = document.createElement("div");
+  markRow.className = "mark-row";
+
+  const likeBtn = document.createElement("button");
+  likeBtn.className = "mark-btn like" + (existingMark && existingMark.liked === true ? " active" : "");
+  likeBtn.textContent = "👍 Gostei";
+  likeBtn.onclick = () => setMark(rec, { liked: existingMark && existingMark.liked === true ? null : true });
+
+  const dislikeBtn = document.createElement("button");
+  dislikeBtn.className = "mark-btn dislike" + (existingMark && existingMark.liked === false ? " active" : "");
+  dislikeBtn.textContent = "👎 Não gostei";
+  dislikeBtn.onclick = () => setMark(rec, { liked: existingMark && existingMark.liked === false ? null : false });
+
+  const watchedBtn = document.createElement("button");
+  watchedBtn.className = "mark-btn watched" + (existingMark && existingMark.watched ? " active" : "");
+  watchedBtn.textContent = "✅ Já assisti";
+  watchedBtn.onclick = () => setMark(rec, { watched: !(existingMark && existingMark.watched) });
+
+  markRow.appendChild(likeBtn);
+  markRow.appendChild(dislikeBtn);
+  markRow.appendChild(watchedBtn);
+  body.appendChild(markRow);
+
+  const markHint = document.createElement("p");
+  markHint.className = "disclaimer";
+  markHint.textContent = "Títulos marcados não se repetem nas próximas indicações. Remova a marcação em \"Minhas marcações\" para que ele volte a aparecer.";
+  body.appendChild(markHint);
+
   t.appendChild(banner);
   t.appendChild(head);
   t.appendChild(tear);
@@ -2212,6 +2714,8 @@ function escapeHtml(str){
     .replace(/>/g,"&gt;");
 }
 
+initHistoryNavigation();
+initForcedLogoutOnLeave();
 render();
 bootstrapAuth();
 </script>

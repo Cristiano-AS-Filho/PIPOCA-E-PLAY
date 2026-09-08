@@ -1,14 +1,32 @@
 # Pipoca & Play
 
-**Pipoca & Play** é uma plataforma SaaS de recomendação personalizada de filmes. O cliente cria seu acesso com e-mail e senha, aguarda a validação do administrador e, depois da liberação, responde aos sete filtros do MVP para receber exatamente três opções ordenadas por compatibilidade, com explicação curta e histórico local da sessão.
+**Pipoca & Play** é uma plataforma SaaS de recomendação personalizada de filmes. O cliente cria seu acesso com e-mail e senha, aguarda a validação do administrador, assina um dos três planos pagos e, depois da confirmação do pagamento, responde aos sete filtros do MVP para receber exatamente três opções ordenadas por compatibilidade, com explicação curta e histórico local da sessão.
 
 ## Funcionalidades disponíveis
 
-A experiência pública começa em uma **landing page** responsiva, com apresentação do produto e CTA de entrada. A autenticação usa sessão por cookie `HttpOnly`, `SameSite=Lax`, assinatura HMAC e expiração automática. O cadastro exige senha individual com hash PBKDF2, começa com status `pending` e pode ser acompanhado automaticamente pelo cliente. O papel `admin` abre um painel restrito para listar pedidos, aceitar, rejeitar ou excluir usuários.
+A experiência pública começa em uma **landing page** responsiva, com apresentação do produto e CTA de entrada. A autenticação usa sessão por cookie `HttpOnly`, `SameSite=Lax`, assinatura HMAC e expiração automática — e a sessão é encerrada ativamente sempre que o cliente sai da página (fecha a aba, navega para fora ou fecha o app), então o próximo acesso sempre exige um novo login. O cadastro exige senha individual com hash PBKDF2, começa com status `pending` e pode ser acompanhado automaticamente pelo cliente. O papel `admin` abre um painel restrito para listar pedidos, aceitar, rejeitar ou excluir usuários.
+
+Dentro do app, o cliente pode usar o botão **voltar nativo do navegador/celular** para retroceder entre as telas (login, cada pergunta do wizard, resumo, resultados, planos, histórico) sem sair da plataforma — cada tela é uma entrada do histórico do navegador.
 
 A lógica oficial dos sete filtros foi preservada: gênero principal, humor/vibe do dia, tempo disponível, época do filme, plataforma de streaming, companhia e popularidade/estilo. O backend valida o JSON da IA e exige três recomendações ordenadas. A pontuação exibida é um **match próprio do sistema**, não uma nota de IMDb ou crítica.
 
 O enriquecimento factual é separado da IA. Quando `TMDB_API_KEY` está configurada, o adaptador consulta posters, backdrops, duração, gêneros e disponibilidade no Brasil. Sem essa chave, o sistema informa explicitamente que a disponibilidade não foi confirmada e oferece links de conferência no JustWatch, IMDb e Letterboxd; o modelo nunca é tratado como banco de dados.
+
+Em cada card de recomendação o cliente marca **"Gostei"**, **"Não gostei"** e **"Já assisti"**. Essas marcações ficam salvas por conta (não em `localStorage`), aparecem em **"Minhas marcações"** — onde dá para remover cada uma individualmente, o que faz o título voltar a poder ser recomendado — e são enviadas como contexto no prompt da próxima consulta à IA, para não repetir títulos já vistos/marcados e calibrar o gosto pelos que o cliente gostou ou não gostou.
+
+## Planos, créditos diários e checkout (ASAAS)
+
+O acesso ao motor de recomendação é pago por assinatura mensal via **ASAAS** (checkout hospedado: cartão, PIX ou boleto na própria página do ASAAS). 1 crédito equivale a 1 consulta de filme, série ou novela.
+
+| Plano | Preço/mês | Créditos por dia |
+| --- | --- | --- |
+| Silver | R$ 15,00 | 2 (não acumulam; renovam à meia-noite de Brasília) |
+| Gold | R$ 25,00 | 5 (não acumulam; renovam à meia-noite de Brasília) |
+| Diamante | R$ 30,00 | Ilimitados durante o ciclo de 30 dias da assinatura |
+
+O cliente escolhe um plano na tela **Assinatura**, é redirecionado ao checkout hospedado pelo ASAAS e, assim que o ASAAS confirma o pagamento (webhook `PAYMENT_CONFIRMED`/`PAYMENT_RECEIVED`), a plataforma libera o ciclo de 30 dias e os créditos do dia — só então os resultados ficam disponíveis. Um pagamento em atraso, estornado ou uma assinatura cancelada bloqueia novamente o acesso. Sem assinatura ativa ou com os créditos do dia esgotados, `POST /api/recommend` responde `402 Payment Required` e o app volta para a tela de planos.
+
+Catálogo de planos e preços vivem em `plans.py`; o cliente da API do ASAAS está em `asaas.py`.
 
 ## Painel do administrador (`/admin`)
 
@@ -81,9 +99,14 @@ Os testes rodam com `python3 -m unittest test_app`.
 | `/api/auth/status` | GET | token do pedido | Acompanhamento do cadastro |
 | `/api/admin/status` | GET | admin | Configuração, contadores e lista de contas |
 | `/api/admin/users` | GET/POST | admin | Ações administrativas |
-| `/api/recommend` | POST | usuário autenticado | Motor de recomendação |
+| `/api/recommend` | POST | usuário com assinatura ativa | Motor de recomendação (consome 1 crédito diário) |
+| `/api/payments/plans` | GET | público | Catálogo de planos e preços |
+| `/api/payments/status` | GET | usuário autenticado | Plano, status da assinatura e créditos restantes hoje |
+| `/api/payments/checkout` | POST | usuário autenticado | Cria a assinatura no ASAAS e devolve o link de pagamento |
+| `/api/payments/webhook` | POST | público (token do ASAAS) | Confirmação/cancelamento de pagamento pelo ASAAS |
+| `/api/marks` | GET/POST | usuário autenticado | Lista, cria/atualiza ou remove marcações de gostei/não gostei/já assisti |
 
-As ações aceitas em `POST /api/admin/users` são `approve`, `reject`, `pending`, `delete`, `promote`, `demote`, `set_password` e `create`.
+As ações aceitas em `POST /api/admin/users` são `approve`, `reject`, `pending`, `delete`, `promote`, `demote`, `set_password` e `create`. Em `POST /api/marks`, a ação `set` cria/atualiza uma marcação (`title_original`, `title_pt`, `year`, `liked` e/ou `watched`) e `remove` apaga uma marcação pelo `id`.
 
 ## Publicação na Vercel
 
@@ -103,8 +126,11 @@ O arquivo `vercel.json` e as funções em `api/` deixam o repositório pronto pa
 | `USER_STORE_FILE` | Local | Caminho do JSON local; não persiste em produção serverless. |
 | `USER_STORE_MODE` | Não | Força um backend específico; use apenas para depurar. |
 | `TMDB_API_KEY` | Não | Habilita enriquecimento de catálogo e disponibilidade no Brasil. |
+| `ASAAS_API_KEY` | Para checkout | Chave de API do ASAAS (sandbox ou produção). Sem ela, `/api/payments/checkout` responde 503. |
+| `ASAAS_ENV` | Não | `sandbox` (padrão) ou `production`. |
+| `ASAAS_WEBHOOK_TOKEN` | Para checkout | Token que o ASAAS envia no header `asaas-access-token` do webhook; configure o mesmo valor no painel do ASAAS ao cadastrar `https://SEU-DOMINIO/api/payments/webhook`. |
 | `ENVIRONMENT=production` | Recomendada | Desativa credenciais padrão de desenvolvimento e ativa cookies seguros. |
 
-O cadastro de clientes segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão e usar o motor de recomendação, e toda rota administrativa exige uma sessão com papel `admin`. Depois do deploy, confira `GET /api/health`: se `storage.persistent` vier `false`, o banco ainda não está conectado. Recuperação de senha pelo próprio cliente, e-mail transacional e auditoria de ações administrativas permanecem como evoluções futuras.
+O cadastro de clientes segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão, e toda rota administrativa exige uma sessão com papel `admin`. Usar o motor de recomendação exige, além da conta aprovada, uma assinatura paga ativa com crédito diário disponível (veja "Planos, créditos diários e checkout"). Depois do deploy, confira `GET /api/health`: se `storage.persistent` vier `false`, o banco ainda não está conectado. Recuperação de senha pelo próprio cliente, e-mail transacional e auditoria de ações administrativas permanecem como evoluções futuras.
 
 Não coloque chaves no HTML, no Git ou em mensagens de erro. Se uma chave tiver sido exposta anteriormente, revogue-a no respectivo provedor antes de publicar.

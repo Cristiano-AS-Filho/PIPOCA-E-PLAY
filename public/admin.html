@@ -352,6 +352,16 @@ function renderRows(){
     const email = document.createElement("td");
     email.className = "mono";
     email.textContent = user.email;
+    if(user.plan){
+      const planNote = document.createElement("div");
+      planNote.style.fontSize = "10.5px";
+      planNote.style.marginTop = "3px";
+      planNote.style.color = user.subscription_status === "active" ? "var(--teal, #3C8C7A)" : "var(--cream-dim)";
+      const planLabel = { silver: "Silver", gold: "Gold", diamond: "Diamante" }[user.plan] || user.plan;
+      const subLabel = { active: "ativa", pending_payment: "aguardando pagamento", past_due: "pagamento em atraso", canceled: "cancelada", inactive: "inativa" }[user.subscription_status] || user.subscription_status;
+      planNote.textContent = "Plano " + planLabel + " · " + subLabel;
+      email.appendChild(planNote);
+    }
     tr.appendChild(email);
 
     const status = document.createElement("td");

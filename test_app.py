@@ -18,19 +18,34 @@ from auth import authenticate, create_session, read_session  # noqa: E402
 from metadata import NullMetadataProvider  # noqa: E402
 from server import buildRecommendationPrompt, clean_filters, validate_recommendation_payload  # noqa: E402
 import api_core  # noqa: E402
+import asaas  # noqa: E402
+from plans import PLAN_CATALOG  # noqa: E402
 from user_store import (  # noqa: E402
+    NoActiveSubscriptionError,
+    OutOfCreditsError,
     StorageError,
+    activate_subscription,
     admin_summary,
     admin_users,
     create_user,
+    deactivate_subscription,
     delete_user,
+    find_user_by_asaas_customer,
+    find_user_by_asaas_subscription,
     get_status_by_token,
+    list_marks,
+    refund_credit,
     register_user,
+    remove_mark,
+    set_checkout_pending,
     set_user_password,
     storage_diagnostics,
     storage_mode,
+    subscription_status,
+    try_consume_credit,
     update_user_role,
     update_user_status,
+    upsert_mark,
 )
 
 
@@ -446,6 +461,206 @@ class PipocaPlayTests(unittest.TestCase):
         metadata = NullMetadataProvider().lookup("Example")
         self.assertFalse(metadata["availability_verified"])
         self.assertEqual(metadata["availability"], [])
+
+    # ------------------------------------------------------------------
+    # Assinaturas e créditos diários
+    # ------------------------------------------------------------------
+
+    def test_recommend_is_blocked_without_an_active_subscription(self):
+        created = create_user("noplan@test.local", "noplan-password")
+        with self.assertRaises(NoActiveSubscriptionError):
+            try_consume_credit(created["id"])
+
+    def test_new_user_has_no_plan_and_recommend_route_returns_402(self):
+        created = create_user("silver@test.local", "silver-password")
+        session = {"email": "silver@test.local", "role": "user", "user_id": created["id"]}
+        status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 402)
+        self.assertEqual(payload["code"], "no_subscription")
+
+    def test_activating_silver_grants_two_daily_credits_that_do_not_carry_over(self):
+        created = create_user("silver2@test.local", "silver-password")
+        activate_subscription(created["id"], plan_id="silver")
+        status = subscription_status(created["id"])
+        self.assertTrue(status["active"])
+        self.assertEqual(status["credits_remaining"], 2)
+
+        first = try_consume_credit(created["id"])
+        self.assertEqual(first["credits_remaining"], 1)
+        second = try_consume_credit(created["id"])
+        self.assertEqual(second["credits_remaining"], 0)
+        with self.assertRaises(OutOfCreditsError):
+            try_consume_credit(created["id"])
+
+        refund_credit(created["id"])
+        self.assertEqual(subscription_status(created["id"])["credits_remaining"], 1)
+
+    def test_diamond_plan_is_unlimited(self):
+        created = create_user("diamond@test.local", "diamond-password")
+        activate_subscription(created["id"], plan_id="diamond")
+        status = subscription_status(created["id"])
+        self.assertTrue(status["unlimited"])
+        self.assertIsNone(status["credits_remaining"])
+        for _ in range(10):
+            view = try_consume_credit(created["id"])
+            self.assertTrue(view["unlimited"])
+
+    def test_recommend_route_consumes_a_credit_and_calls_the_engine(self):
+        created = create_user("gold@test.local", "gold-password")
+        activate_subscription(created["id"], plan_id="gold")
+        session = {"email": "gold@test.local", "role": "user", "user_id": created["id"]}
+        with patch("api_core.call_openai", return_value='{"ok":true}') as fake_call:
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["credits"]["credits_remaining"], 4)
+        fake_call.assert_called_once()
+
+    def test_recommend_route_refunds_the_credit_when_the_engine_fails(self):
+        created = create_user("gold2@test.local", "gold-password")
+        activate_subscription(created["id"], plan_id="gold")
+        session = {"email": "gold2@test.local", "role": "user", "user_id": created["id"]}
+        with patch("api_core.call_openai", side_effect=RuntimeError("falhou")):
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 502)
+        self.assertEqual(subscription_status(created["id"])["credits_remaining"], 5)
+
+    def test_checkout_pending_then_webhook_activates_the_matching_user(self):
+        created = create_user("webhook@test.local", "webhook-password")
+        set_checkout_pending(created["id"], "silver", "cus_123", "sub_456")
+        self.assertEqual(find_user_by_asaas_customer("cus_123")["id"], created["id"])
+        self.assertEqual(find_user_by_asaas_subscription("sub_456")["id"], created["id"])
+
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": "hook-secret"}, clear=False):
+            status, payload, _ = api_core.payment_webhook(
+                {"asaas-access-token": "wrong"},
+                {"event": "PAYMENT_CONFIRMED", "payment": {"subscription": "sub_456", "customer": "cus_123"}},
+            )
+            self.assertEqual(status, 401)
+
+            status, payload, _ = api_core.payment_webhook(
+                {"asaas-access-token": "hook-secret"},
+                {"event": "PAYMENT_CONFIRMED", "payment": {"subscription": "sub_456", "customer": "cus_123"}},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["matched"])
+
+        status = subscription_status(created["id"])
+        self.assertEqual(status["subscription_status"], "active")
+        self.assertEqual(status["plan"], "silver")
+
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": "hook-secret"}, clear=False):
+            api_core.payment_webhook(
+                {"asaas-access-token": "hook-secret"},
+                {"event": "PAYMENT_OVERDUE", "payment": {"subscription": "sub_456", "customer": "cus_123"}},
+            )
+        self.assertEqual(subscription_status(created["id"])["subscription_status"], "past_due")
+        self.assertFalse(subscription_status(created["id"])["active"])
+
+    # ------------------------------------------------------------------
+    # Marcações: gostei / não gostei / já assisti
+    # ------------------------------------------------------------------
+
+    def test_mark_lifecycle_set_list_and_remove(self):
+        created = create_user("marks@test.local", "marks-password")
+        record = upsert_mark(
+            created["id"], title_original="Interstellar", title_pt="Interestelar", year=2014, liked=True
+        )
+        self.assertEqual(record["liked"], True)
+        self.assertEqual(record["watched"], False)
+
+        updated = upsert_mark(created["id"], title_original="Interstellar", title_pt="", year=2014, watched=True)
+        self.assertEqual(updated["id"], record["id"])
+        self.assertEqual(updated["liked"], True)
+        self.assertEqual(updated["watched"], True)
+
+        marks = list_marks(created["id"])
+        self.assertEqual(len(marks), 1)
+
+        remove_mark(created["id"], record["id"])
+        self.assertEqual(list_marks(created["id"]), [])
+        with self.assertRaises(LookupError):
+            remove_mark(created["id"], record["id"])
+
+    def test_marks_action_route_can_toggle_liked_back_to_neutral(self):
+        created = create_user("toggle@test.local", "toggle-password")
+        session = {"email": created["email"], "role": "user", "user_id": created["id"]}
+        status, payload, _ = api_core.marks_action(
+            session, {"action": "set", "title_original": "Dune", "year": 2021, "liked": True}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["mark"]["liked"], True)
+
+        status, payload, _ = api_core.marks_action(
+            session, {"action": "set", "title_original": "Dune", "year": 2021, "watched": True}
+        )
+        self.assertEqual(payload["mark"]["liked"], True, "omitir 'liked' não deve apagar o valor salvo")
+        self.assertEqual(payload["mark"]["watched"], True)
+
+        status, payload, _ = api_core.marks_action(
+            session, {"action": "set", "title_original": "Dune", "year": 2021, "liked": None}
+        )
+        self.assertIsNone(payload["mark"]["liked"], "'liked: null' explícito deve limpar a marcação")
+        self.assertEqual(payload["mark"]["watched"], True, "watched não deve ser afetado")
+
+    def test_marks_action_route_requires_a_session(self):
+        status, _, _ = api_core.marks_action(None, {"action": "set"})
+        self.assertEqual(status, 401)
+        status, _, _ = api_core.marks_list(None)
+        self.assertEqual(status, 401)
+
+    def test_marks_are_injected_into_the_recommendation_prompt(self):
+        marks = [
+            {"title_pt": "Interestelar", "title_original": "Interstellar", "year": 2014, "liked": True, "watched": True},
+            {"title_pt": "Filme Ruim", "title_original": "", "year": 0, "liked": False, "watched": False},
+        ]
+        context = api_core.build_marks_context(marks)
+        self.assertIn("Interestelar", context)
+        self.assertIn("Filme Ruim", context)
+        prompt = buildRecommendationPrompt(FILTERS, context)
+        self.assertIn("NÃO repita", prompt)
+
+    # ------------------------------------------------------------------
+    # Planos e checkout
+    # ------------------------------------------------------------------
+
+    def test_public_plans_match_the_requested_pricing(self):
+        plans = {plan["id"]: plan for plan in api_core.list_plans_route()[1]["plans"]}
+        self.assertEqual(plans["silver"]["price_cents"], 1_500)
+        self.assertEqual(plans["silver"]["credits_per_day"], 2)
+        self.assertEqual(plans["gold"]["price_cents"], 2_500)
+        self.assertEqual(plans["gold"]["credits_per_day"], 5)
+        self.assertEqual(plans["diamond"]["price_cents"], 3_000)
+        self.assertTrue(plans["diamond"]["unlimited"])
+
+    def test_checkout_requires_a_session_and_a_valid_plan(self):
+        status, _, _ = api_core.create_checkout(None, {"plan": "silver"})
+        self.assertEqual(status, 401)
+        created = create_user("checkout@test.local", "checkout-password")
+        session = {"email": created["email"], "role": "user", "user_id": created["id"]}
+        status, payload, _ = api_core.create_checkout(session, {"plan": "nao-existe"})
+        self.assertEqual(status, 400)
+
+    def test_checkout_reports_when_asaas_is_not_configured(self):
+        created = create_user("checkout2@test.local", "checkout-password")
+        session = {"email": created["email"], "role": "user", "user_id": created["id"]}
+        with patch.dict(os.environ, {"ASAAS_API_KEY": ""}, clear=False):
+            status, payload, _ = api_core.create_checkout(session, {"plan": "silver"})
+        self.assertEqual(status, 503)
+        self.assertIn("ASAAS_API_KEY", payload["error"])
+
+    def test_checkout_creates_customer_and_subscription_via_asaas(self):
+        created = create_user("checkout3@test.local", "checkout-password")
+        session = {"email": created["email"], "role": "user", "user_id": created["id"]}
+        with patch.dict(os.environ, {"ASAAS_API_KEY": "test-key"}, clear=False):
+            with patch("asaas.ensure_customer", return_value={"id": "cus_1"}) as ensure_mock, \
+                 patch("asaas.create_subscription", return_value={"id": "sub_1"}) as sub_mock, \
+                 patch("asaas.get_first_payment_checkout_url", return_value="https://sandbox.asaas.com/i/abc"):
+                status, payload, _ = api_core.create_checkout(session, {"plan": "gold"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["checkout_url"], "https://sandbox.asaas.com/i/abc")
+        ensure_mock.assert_called_once_with(created["email"])
+        sub_mock.assert_called_once_with("cus_1", "gold", created["id"])
+        self.assertEqual(subscription_status(created["id"])["subscription_status"], "pending_payment")
 
 
 if __name__ == "__main__":
