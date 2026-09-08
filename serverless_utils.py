@@ -3,6 +3,11 @@
 import json
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+# Nome do parâmetro que os rewrites do vercel.json usam para dizer qual rota do
+# grupo foi pedida. Ver a seção "rewrites" em vercel.json.
+ROUTE_PARAM = "__route"
 
 
 def project_root_on_path():
@@ -45,3 +50,24 @@ def read_json_or_empty(handler, max_length=8_192):
     except (ValueError, json.JSONDecodeError):
         return {}
     return body if isinstance(body, dict) else {}
+
+
+def route_action(handler, allowed, default=""):
+    """Descobre qual rota do grupo foi pedida em uma função consolidada.
+
+    A Vercel limita o número de funções por deploy, então rotas irmãs
+    (`/api/auth/*`, `/api/admin/*`, `/api/billing/*`) moram em uma função só e
+    o `vercel.json` reescreve o caminho para `?__route=<ação>`.
+
+    O segmento do caminho tem prioridade sobre o parâmetro, de modo que quando
+    o caminho original chega intacto ele manda. O retorno é sempre um valor de
+    `allowed`, nunca texto arbitrário vindo da requisição.
+    """
+    parsed = urlparse(handler.path)
+    segment = parsed.path.rstrip("/").rsplit("/", 1)[-1].lower()
+    if segment in allowed:
+        return segment
+    for value in parse_qs(parsed.query).get(ROUTE_PARAM, []):
+        if value.lower() in allowed:
+            return value.lower()
+    return default

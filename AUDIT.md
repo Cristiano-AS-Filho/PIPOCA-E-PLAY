@@ -69,3 +69,14 @@ A suíte subiu de 30 para 53 testes, cobrindo os preços e créditos dos três p
 O caminho HTTP do ASAAS foi exercitado contra um stub da API que valida o cabeçalho `access_token`: criação de cliente, criação de assinatura, cobrança pendente que mantém o acesso fechado e cobrança confirmada que o abre, com os cinco créditos diários do plano Gold se esgotando na sexta consulta.
 
 A interface foi verificada em navegador (Chromium, viewport de 412 px). Um cliente sem plano cai na tela de planos com os três preços e os créditos anunciados; o checkout abre e o botão voltar nativo retorna aos planos. Um cliente com plano pago abre direto no primeiro filtro, com o chip “5/5 HOJE” no topo; o botão voltar percorre os filtros para trás e o avançar refaz o caminho. A tela de marcações lista a marcação existente e a remoção individual esvazia a lista. Nos cards, os três botões marcam e desmarcam corretamente, “gostei” e “já assisti” convivem, “não gostei” substitui “gostei”, e o estado gravado no servidor confere. Ao sair da página e voltar, a plataforma abre deslogada na landing.
+
+## Correção do deploy na Vercel
+
+O redeploy passou a falhar com “The deployment failed because of a project or build error”. Os catorze módulos em `api/` importam sem erro quando carregados isoladamente, então não era falha de código: as cinco rotas novas levaram o projeto de nove para catorze funções, acima do teto de doze funções por deploy do plano Hobby.
+
+As rotas irmãs foram agrupadas: `api/auth.py` responde por login, logout, me, register e status; `api/admin.py` por status e users; `api/billing.py` por plans, status, checkout e webhook. Os arquivos individuais foram removidos e o `vercel.json` ganhou `rewrites` que levam `/api/<grupo>/<ação>` até a função do grupo com a ação em `?__route=`. As URLs públicas continuam iguais, e o projeto caiu de catorze para seis funções.
+
+O `route_action` de `serverless_utils.py` resolve a ação lendo primeiro o segmento do caminho e só depois o parâmetro do rewrite, e só devolve valores de uma lista fechada — nunca texto arbitrário da requisição. Assim a função responde certo tanto se a Vercel preservar o caminho original quanto se entregar apenas o caminho reescrito.
+
+A suíte subiu para 71 testes. Os novos exercitam cada rota agrupada nas duas formas de caminho, a recusa de método errado e de ação inexistente, o webhook com e sem o token correto, e duas travas de regressão: a contagem de funções em `api/` não pode passar de doze, e toda rota `/api/...` chamada pelo frontend precisa ter função própria ou rewrite.
+

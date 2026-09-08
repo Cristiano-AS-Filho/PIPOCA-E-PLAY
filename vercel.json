@@ -6,5 +6,10 @@
       "excludeFiles": "{__pycache__/**,**/*.pyc,.env,public/**}",
       "maxDuration": 15
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/api/auth/:action", "destination": "/api/auth?__route=:action" },
+    { "source": "/api/admin/:action", "destination": "/api/admin?__route=:action" },
+    { "source": "/api/billing/:action", "destination": "/api/billing?__route=:action" }
+  ]
 }

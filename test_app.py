@@ -1,5 +1,8 @@
+import importlib.util
+import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -680,6 +683,204 @@ class SessionCookieTests(unittest.TestCase):
         self.assertNotIn("Expires", cookie)
         self.assertIn("HttpOnly", cookie)
         self.assertIn("Secure", cookie)
+
+
+class ServerlessRoutingTests(unittest.TestCase):
+    """As funções consolidadas em api/ e os rewrites que as alimentam.
+
+    A Vercel limita o número de funções por deploy, então rotas irmãs dividem
+    uma função só. Estes testes garantem que cada rota pública continua
+    respondendo, tanto se o caminho original chegar intacto quanto se o rewrite
+    entregar a ação em `?__route=`.
+    """
+
+    ROOT = Path(__file__).resolve().parent
+    # Limite do plano Hobby da Vercel; estourá-lo quebra o deploy inteiro.
+    MAX_FUNCTIONS = 12
+
+    def setUp(self):
+        TEST_STORE.unlink(missing_ok=True)
+
+    def tearDown(self):
+        TEST_STORE.unlink(missing_ok=True)
+
+    # -- utilidades ------------------------------------------------------
+
+    @staticmethod
+    def load(module_name):
+        path = ServerlessRoutingTests.ROOT / "api" / f"{module_name}.py"
+        spec = importlib.util.spec_from_file_location(f"_api_{module_name}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.handler
+
+    def call(self, module_name, method, path, body=None, cookie=None, extra_headers=None):
+        handler_class = self.load(module_name)
+        instance = handler_class.__new__(handler_class)
+        instance.path = path
+        raw = json.dumps(body).encode("utf-8") if body is not None else b""
+        headers = {"Content-Length": str(len(raw))}
+        if cookie:
+            headers["Cookie"] = cookie
+        headers.update(extra_headers or {})
+        instance.headers = headers
+        instance.rfile = io.BytesIO(raw)
+        instance.wfile = io.BytesIO()
+        captured = {}
+        instance.send_response = lambda code, *rest: captured.__setitem__("status", int(code))
+        instance.send_header = lambda key, value: None
+        instance.end_headers = lambda: None
+        getattr(instance, "do_" + method)()
+        written = instance.wfile.getvalue().decode("utf-8")
+        return captured["status"], (json.loads(written) if written else {})
+
+    def both_paths(self, group, action, query=""):
+        """O caminho original e o caminho reescrito pelo vercel.json."""
+        return [f"/api/{group}/{action}{query}", f"/api/{group}?__route={action}{query.replace('?', '&', 1)}"]
+
+    # -- limites do deploy -----------------------------------------------
+
+    def test_deployment_stays_under_the_vercel_function_limit(self):
+        functions = sorted(p.relative_to(self.ROOT).as_posix() for p in (self.ROOT / "api").rglob("*.py"))
+        self.assertLessEqual(
+            len(functions),
+            self.MAX_FUNCTIONS,
+            f"{len(functions)} funções em api/ — o deploy falha acima de {self.MAX_FUNCTIONS}: {functions}",
+        )
+
+    def test_every_grouped_route_has_a_rewrite(self):
+        config = json.loads((self.ROOT / "vercel.json").read_text(encoding="utf-8"))
+        sources = {rule["source"] for rule in config.get("rewrites", [])}
+        for group in ("auth", "admin", "billing"):
+            self.assertIn(f"/api/{group}/:action", sources)
+            self.assertTrue((self.ROOT / "api" / f"{group}.py").exists())
+
+    def test_rewrites_cover_every_route_the_frontend_calls(self):
+        config = json.loads((self.ROOT / "vercel.json").read_text(encoding="utf-8"))
+        rewritten = {rule["source"].rsplit("/", 1)[0] for rule in config.get("rewrites", [])}
+        pages = (self.ROOT / "public" / "index.html").read_text(encoding="utf-8")
+        pages += (self.ROOT / "public" / "admin.html").read_text(encoding="utf-8")
+        called = set(re.findall(r'"(/api/[a-z/]+)', pages))
+        self.assertTrue(called, "nenhuma chamada de API encontrada no frontend")
+        for route in called:
+            group = route.rsplit("/", 1)[0]
+            served_by_own_file = (self.ROOT / "api" / (route[len("/api/"):] + ".py")).exists()
+            self.assertTrue(
+                served_by_own_file or group in rewritten,
+                f"{route} não tem função própria nem rewrite",
+            )
+
+    # -- /api/auth -------------------------------------------------------
+
+    def test_auth_me_answers_on_both_paths(self):
+        for path in self.both_paths("auth", "me"):
+            status, payload = self.call("auth", "GET", path)
+            self.assertEqual(status, 200, path)
+            self.assertFalse(payload["authenticated"], path)
+
+    def test_auth_login_answers_on_both_paths(self):
+        record, _, _ = register_user("rota@test.local", "rota-password")
+        update_user_status(record["id"], "approved")
+        for path in self.both_paths("auth", "login"):
+            status, payload = self.call(
+                "auth", "POST", path, {"email": "rota@test.local", "password": "rota-password"}
+            )
+            self.assertEqual(status, 200, path)
+            self.assertTrue(payload["authenticated"], path)
+
+    def test_auth_register_and_status_answer_on_both_paths(self):
+        for index, path in enumerate(self.both_paths("auth", "register")):
+            status, payload = self.call(
+                "auth", "POST", path, {"email": f"novo{index}@test.local", "password": "nova-senha"}
+            )
+            self.assertEqual(status, 201, path)
+            token = payload["token"]
+            query = f"?email=novo{index}@test.local&token={token}"
+            status, payload = self.call("auth", "GET", f"/api/auth/status{query}")
+            self.assertEqual((status, payload["status"]), (200, "pending"))
+
+    def test_auth_logout_clears_the_cookie_on_both_paths(self):
+        for path in self.both_paths("auth", "logout"):
+            status, payload = self.call("auth", "POST", path)
+            self.assertEqual(status, 200, path)
+            self.assertFalse(payload["authenticated"], path)
+
+    def test_auth_rejects_the_wrong_method_and_unknown_actions(self):
+        self.assertEqual(self.call("auth", "GET", "/api/auth/login")[0], 405)
+        self.assertEqual(self.call("auth", "POST", "/api/auth/me")[0], 405)
+        self.assertEqual(self.call("auth", "GET", "/api/auth?__route=inventada")[0], 404)
+
+    # -- /api/admin ------------------------------------------------------
+
+    def test_admin_requires_an_admin_session_on_both_paths(self):
+        for group in ("status", "users"):
+            for path in self.both_paths("admin", group):
+                self.assertEqual(self.call("admin", "GET", path)[0], 403, path)
+
+    def test_admin_overview_and_action_work_for_an_admin(self):
+        record, _, _ = register_user("alvo@test.local", "alvo-password")
+        cookie = "pipoca_session=" + create_session("admin@test.local", "admin", None)
+        status, payload = self.call("admin", "GET", "/api/admin?__route=status", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["summary"]["pending"], 1)
+        status, payload = self.call(
+            "admin", "POST", "/api/admin?__route=users",
+            {"action": "approve", "user_id": record["id"]}, cookie=cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["user"]["status"], "approved")
+
+    def test_admin_status_does_not_accept_post(self):
+        self.assertEqual(self.call("admin", "POST", "/api/admin/status")[0], 405)
+
+    # -- /api/billing ----------------------------------------------------
+
+    def test_billing_plans_answer_on_both_paths(self):
+        for path in self.both_paths("billing", "plans"):
+            status, payload = self.call("billing", "GET", path)
+            self.assertEqual(status, 200, path)
+            self.assertEqual([plan["id"] for plan in payload["plans"]], ["silver", "gold", "diamante"])
+
+    def test_billing_status_requires_a_session_on_both_paths(self):
+        for path in self.both_paths("billing", "status"):
+            self.assertEqual(self.call("billing", "GET", path)[0], 401, path)
+
+    def test_billing_status_reports_the_subscription_without_touching_asaas(self):
+        record, _, _ = register_user("assina@test.local", "assina-password")
+        update_user_status(record["id"], "approved")
+        start, end = billing.cycle_bounds()
+        save_subscription("assina@test.local", {"plan": "silver", "status": "active",
+                                                "cycle_start": start, "cycle_end": end})
+        cookie = "pipoca_session=" + create_session("assina@test.local", "user", record["id"])
+        status, payload = self.call("billing", "GET", "/api/billing?__route=status&sync=0", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["subscription"]["active"])
+        self.assertEqual(payload["subscription"]["credits_remaining"], 2)
+
+    def test_billing_checkout_requires_a_session_on_both_paths(self):
+        for path in self.both_paths("billing", "checkout"):
+            self.assertEqual(self.call("billing", "POST", path, {"plan": "gold"})[0], 401, path)
+
+    def test_billing_webhook_refuses_a_wrong_token_on_both_paths(self):
+        event = {"payment": {"id": "p", "status": "CONFIRMED"}}
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": "token-certo"}):
+            for path in self.both_paths("billing", "webhook"):
+                self.assertEqual(self.call("billing", "POST", path, event)[0], 401, path)
+                status, _ = self.call("billing", "POST", path, event,
+                                      extra_headers={"asaas-access-token": "token-certo"})
+                self.assertEqual(status, 200, path)
+
+    def test_billing_rejects_the_wrong_method(self):
+        self.assertEqual(self.call("billing", "POST", "/api/billing/plans")[0], 405)
+        self.assertEqual(self.call("billing", "GET", "/api/billing/checkout")[0], 405)
+
+    # -- funções que continuam com arquivo próprio -----------------------
+
+    def test_standalone_functions_still_answer(self):
+        self.assertEqual(self.call("health", "GET", "/api/health")[0], 200)
+        self.assertEqual(self.call("marks", "GET", "/api/marks")[0], 401)
+        self.assertEqual(self.call("recommend", "POST", "/api/recommend", {})[0], 401)
+        self.assertEqual(self.call("recommend", "GET", "/api/recommend")[0], 405)
 
 
 if __name__ == "__main__":

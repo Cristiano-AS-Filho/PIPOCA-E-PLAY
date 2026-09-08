@@ -125,7 +125,9 @@ Em `POST /api/marks`, `action: "save"` grava a marcação de uma obra (`title_or
 
 ## Publicação na Vercel
 
-O arquivo `vercel.json` e as funções em `api/` deixam o repositório pronto para a Vercel. Em **Project Settings → Environment Variables**, configure, por ambiente:
+O arquivo `vercel.json` e as funções em `api/` deixam o repositório pronto para a Vercel.
+
+**A Vercel limita o número de funções por deploy** — 12 no plano Hobby — e estourar esse teto faz o build inteiro falhar com “The deployment failed because of a project or build error”. Por isso as rotas irmãs dividem a mesma função: `api/auth.py` atende todo o `/api/auth/*`, `api/admin.py` todo o `/api/admin/*` e `api/billing.py` todo o `/api/billing/*`. Os `rewrites` do `vercel.json` levam `/api/<grupo>/<ação>` até a função do grupo, passando a ação em `?__route=`; as URLs públicas não mudam. Com `api/health.py`, `api/marks.py` e `api/recommend.py`, o projeto usa **6 funções**. Ao criar uma rota nova, prefira acrescentar uma ação a um grupo existente em vez de um arquivo novo — há um teste que falha se a contagem passar de 12. Em **Project Settings → Environment Variables**, configure, por ambiente:
 
 | Variável | Obrigatória | Uso |
 | --- | --- | --- |
