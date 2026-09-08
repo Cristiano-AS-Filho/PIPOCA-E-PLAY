@@ -247,6 +247,16 @@ class PipocaPlayTests(unittest.TestCase):
                 self.assertEqual(json.loads(stored["pipoca-play:users"])[0]["email"], "pg@test.local")
                 self.assertIn("CREATE", statements)
 
+    def test_health_reveals_the_postgres_source_and_a_password_free_preview(self):
+        dsn = "postgresql://postgres.abc:senha-secreta@ep-example.neon.tech/neondb?sslmode=require"
+        with patch.dict(os.environ, {"DATABASE_URL": dsn}, clear=False):
+            status, payload, _ = api_core.health()
+            self.assertEqual(payload["storage"]["postgres_source_env_var"], "DATABASE_URL")
+            preview = payload["storage"]["postgres_dsn_preview"]
+            self.assertNotIn("senha-secreta", preview)
+            self.assertIn("ep-example.neon.tech", preview)
+            self.assertIn("sslmode=require", preview)
+
     def test_postgres_connect_failure_reports_a_safe_technical_detail(self):
         class FakeDriver:
             @staticmethod

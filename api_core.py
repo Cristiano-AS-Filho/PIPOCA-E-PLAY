@@ -70,6 +70,8 @@ def health():
             "available": storage["available"],
             "error": storage["error"],
             "setup_hint": storage["setup_hint"],
+            "postgres_source_env_var": storage.get("postgres_source_env_var"),
+            "postgres_dsn_preview": storage.get("postgres_dsn_preview"),
         },
         "admin_credentials_configured": root_admin_configured(),
         "admin_panel": "/admin",

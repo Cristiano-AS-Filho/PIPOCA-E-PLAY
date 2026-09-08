@@ -282,6 +282,12 @@ function renderDiagnostics(){
     ["ADMIN_EMAIL/ADMIN_PASSWORD", config && config.admin_credentials_configured ? "configurados" : "não configurados"],
     ["Administradores na base", config ? String(config.stored_admin_count) : "—"]
   ];
+  if(storage && storage.postgres_source_env_var){
+    rows.push(["Variável do Postgres em uso", storage.postgres_source_env_var]);
+  }
+  if(storage && storage.postgres_dsn_preview){
+    rows.push(["Prévia da conexão (sem senha)", storage.postgres_dsn_preview]);
+  }
   const grid = document.createElement("div");
   grid.className = "stats";
   grid.style.gridTemplateColumns = "repeat(auto-fit,minmax(190px,1fr))";

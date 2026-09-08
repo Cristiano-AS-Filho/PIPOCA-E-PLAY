@@ -129,12 +129,37 @@ POSTGRES_ENV_VARS = (
 )
 
 
-def _postgres_dsn() -> str | None:
+def _postgres_dsn_source() -> tuple[str, str] | None:
+    """Retorna (nome_da_variável, valor) da primeira URL de Postgres válida encontrada."""
     for name in POSTGRES_ENV_VARS:
         value = os.environ.get(name, "").strip()
         if value.startswith("postgres://") or value.startswith("postgresql://"):
-            return value
+            return name, value
     return None
+
+
+def _postgres_dsn() -> str | None:
+    found = _postgres_dsn_source()
+    return found[1] if found else None
+
+
+def _redact_dsn(dsn: str) -> str:
+    """Prévia seguro da string de conexão: sem senha, com host/porta/base/parâmetros visíveis."""
+    try:
+        parsed = urlparse(dsn.replace("postgres://", "postgresql://", 1))
+    except ValueError:
+        return "(não foi possível interpretar a URL)"
+    userinfo = parsed.username or ""
+    if parsed.password:
+        userinfo += ":***"
+    netloc = userinfo + "@" if userinfo else ""
+    netloc += parsed.hostname or ""
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    preview = f"{parsed.scheme}://{netloc}{parsed.path}"
+    if parsed.query:
+        preview += f"?{parsed.query}"
+    return preview
 
 
 def _kv_credentials() -> tuple[str, str] | None:
@@ -202,13 +227,14 @@ def storage_is_persistent() -> bool:
 def storage_diagnostics(probe: bool = False) -> dict:
     """Resumo do armazenamento para o painel administrativo e para /api/health."""
     mode = storage_mode()
+    postgres_source = _postgres_dsn_source()
     diagnostics = {
         "mode": mode,
         "label": STORAGE_LABELS.get(mode, mode),
         "persistent": storage_is_persistent(),
         "serverless": _is_serverless(),
         "available": {
-            "postgres": bool(_postgres_dsn()),
+            "postgres": bool(postgres_source),
             "vercel-blob": _blob_is_configured(),
             "redis-rest": bool(_kv_credentials()),
         },
@@ -216,6 +242,9 @@ def storage_diagnostics(probe: bool = False) -> dict:
         "healthy": None,
         "error": None,
     }
+    if postgres_source:
+        diagnostics["postgres_source_env_var"] = postgres_source[0]
+        diagnostics["postgres_dsn_preview"] = _redact_dsn(postgres_source[1])
     if not diagnostics["persistent"]:
         diagnostics["error"] = (
             "Nenhum armazenamento persistente está conectado a este deploy. " + SETUP_HINT
