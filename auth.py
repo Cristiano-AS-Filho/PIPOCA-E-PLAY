@@ -144,13 +144,17 @@ def authenticate(email: str, password: str):
 
 
 def session_cookie(session_value: str, secure: bool = False) -> str:
+    """Cookie de sessão do navegador: sem Max-Age/Expires, some ao fechar a aba/app.
+
+    O prazo de 24h em SESSION_TTL_SECONDS continua valendo como limite máximo,
+    verificado no payload assinado por `read_session`.
+    """
     jar = cookies.SimpleCookie()
     jar[SESSION_COOKIE] = session_value
     morsel = jar[SESSION_COOKIE]
     morsel["httponly"] = True
     morsel["samesite"] = "Lax"
     morsel["path"] = "/"
-    morsel["max-age"] = str(SESSION_TTL_SECONDS)
     if secure:
         morsel["secure"] = True
     return morsel.OutputString()

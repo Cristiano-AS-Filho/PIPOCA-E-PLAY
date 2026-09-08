@@ -649,6 +649,13 @@ def register_user(email: str, password: str, confirmation: str | None = None) ->
             "updated_at": now,
             "approved_at": None,
             "rejected_at": None,
+            "plan": existing.get("plan", "none") if existing else "none",
+            "plan_status": existing.get("plan_status", "inactive") if existing else "inactive",
+            "asaas_customer_id": existing.get("asaas_customer_id", "") if existing else "",
+            "asaas_subscription_id": existing.get("asaas_subscription_id", "") if existing else "",
+            "credits_used_today": existing.get("credits_used_today", 0) if existing else 0,
+            "credits_reset_date": existing.get("credits_reset_date", "") if existing else "",
+            "reactions": existing.get("reactions", []) if existing else [],
         }
         if existing:
             users = [record if user.get("id") == existing.get("id") else user for user in users]
@@ -681,6 +688,13 @@ def create_user(email: str, password: str, status: str = "approved", role: str =
             "updated_at": now,
             "approved_at": now if status == "approved" else None,
             "rejected_at": now if status == "rejected" else None,
+            "plan": "none",
+            "plan_status": "inactive",
+            "asaas_customer_id": "",
+            "asaas_subscription_id": "",
+            "credits_used_today": 0,
+            "credits_reset_date": "",
+            "reactions": [],
         }
         users.append(record)
         save_users(users)
@@ -745,7 +759,7 @@ def admin_summary() -> dict:
     }
 
 
-def _mutate(user_id: str, apply) -> dict:
+def _mutate_raw(user_id: str, apply) -> dict:
     with _LOCK:
         users = load_users()
         target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
@@ -754,7 +768,11 @@ def _mutate(user_id: str, apply) -> dict:
         apply(target)
         target["updated_at"] = _now()
         save_users(users)
-        return _public_admin_user(target)
+        return target
+
+
+def _mutate(user_id: str, apply) -> dict:
+    return _public_admin_user(_mutate_raw(user_id, apply))
 
 
 def update_user_status(user_id: str, status: str) -> dict:
@@ -803,3 +821,183 @@ def delete_user(user_id: str) -> None:
         if len(remaining) == len(users):
             raise LookupError("Usuário não encontrado.")
         save_users(remaining)
+
+
+# ---------------------------------------------------------------------------
+# Planos e créditos diários
+# ---------------------------------------------------------------------------
+
+PLAN_CATALOG = {
+    "silver": {"label": "Silver", "price": 15.0, "daily_credits": 2},
+    "gold": {"label": "Gold", "price": 25.0, "daily_credits": 5},
+    "diamond": {"label": "Diamante", "price": 30.0, "daily_credits": None},
+}
+
+
+def plan_catalog_public() -> list[dict]:
+    return [
+        {"id": plan_id, "label": info["label"], "price": info["price"], "daily_credits": info["daily_credits"]}
+        for plan_id, info in PLAN_CATALOG.items()
+    ]
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _reset_credits_if_needed(target: dict) -> None:
+    today = _today()
+    if target.get("credits_reset_date") != today:
+        target["credits_reset_date"] = today
+        target["credits_used_today"] = 0
+
+
+def _billing_view(user: dict) -> dict:
+    plan = user.get("plan") or "none"
+    catalog = PLAN_CATALOG.get(plan)
+    daily_limit = catalog["daily_credits"] if catalog else 0
+    unlimited = bool(catalog) and daily_limit is None
+    used = int(user.get("credits_used_today", 0))
+    return {
+        "plan": plan,
+        "plan_label": catalog["label"] if catalog else "Nenhum",
+        "plan_status": user.get("plan_status", "inactive"),
+        "daily_limit": daily_limit,
+        "unlimited": unlimited,
+        "used_today": used,
+        "remaining_today": None if unlimited else max((daily_limit or 0) - used, 0),
+    }
+
+
+def get_billing_status(user_id: str) -> dict:
+    def apply(target: dict) -> None:
+        _reset_credits_if_needed(target)
+
+    return _billing_view(_mutate_raw(user_id, apply))
+
+
+def consume_credit(user_id: str) -> dict:
+    """Debita 1 crédito do plano ativo do usuário; levanta PermissionError se não puder."""
+
+    def apply(target: dict) -> None:
+        plan = target.get("plan") or "none"
+        catalog = PLAN_CATALOG.get(plan)
+        if not catalog or target.get("plan_status") != "active":
+            raise PermissionError("Assine um plano para receber recomendações.")
+        _reset_credits_if_needed(target)
+        limit = catalog["daily_credits"]
+        if limit is not None:
+            used = int(target.get("credits_used_today", 0))
+            if used >= limit:
+                raise PermissionError("Seus créditos diários acabaram. Eles renovam amanhã.")
+            target["credits_used_today"] = used + 1
+
+    return _billing_view(_mutate_raw(user_id, apply))
+
+
+def refund_credit(user_id: str) -> None:
+    """Devolve 1 crédito quando a consulta falha depois de já ter sido debitada."""
+
+    def apply(target: dict) -> None:
+        catalog = PLAN_CATALOG.get(target.get("plan") or "none")
+        if catalog and catalog["daily_credits"] is not None:
+            target["credits_used_today"] = max(int(target.get("credits_used_today", 0)) - 1, 0)
+
+    _mutate_raw(user_id, apply)
+
+
+def set_billing_plan(
+    user_id: str,
+    *,
+    plan: str | None = None,
+    plan_status: str | None = None,
+    asaas_customer_id: str | None = None,
+    asaas_subscription_id: str | None = None,
+) -> dict:
+    def apply(target: dict) -> None:
+        if plan is not None:
+            target["plan"] = plan
+        if plan_status is not None:
+            target["plan_status"] = plan_status
+            if plan_status == "active":
+                target["credits_used_today"] = 0
+                target["credits_reset_date"] = _today()
+        if asaas_customer_id is not None:
+            target["asaas_customer_id"] = asaas_customer_id
+        if asaas_subscription_id is not None:
+            target["asaas_subscription_id"] = asaas_subscription_id
+
+    return _billing_view(_mutate_raw(user_id, apply))
+
+
+def find_user_by_asaas_customer(customer_id: str) -> dict | None:
+    return next((user for user in load_users() if user.get("asaas_customer_id") == customer_id), None)
+
+
+def find_user_by_asaas_subscription(subscription_id: str) -> dict | None:
+    return next((user for user in load_users() if user.get("asaas_subscription_id") == subscription_id), None)
+
+
+# ---------------------------------------------------------------------------
+# Marcações do usuário (gostei / não gostei / já assisti)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_title(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def reaction_key(title_original, year) -> str:
+    try:
+        year_int = int(year) if year else 0
+    except (TypeError, ValueError):
+        year_int = 0
+    return f"{_normalize_title(title_original)}|{year_int}"
+
+
+def list_reactions(user_id: str) -> list[dict]:
+    user = find_user_by_id(user_id)
+    if not user:
+        raise LookupError("Usuário não encontrado.")
+    return sorted(user.get("reactions", []), key=lambda item: item.get("updated_at", ""), reverse=True)
+
+
+def upsert_reaction(user_id: str, title_original, title_pt, year, liked, watched: bool) -> dict:
+    key = reaction_key(title_original, year)
+    try:
+        year_int = int(year) if year else 0
+    except (TypeError, ValueError):
+        year_int = 0
+
+    def apply(target: dict) -> None:
+        reactions = target.setdefault("reactions", [])
+        now = _now()
+        existing = next((item for item in reactions if item.get("key") == key), None)
+        record = {
+            "key": key,
+            "title_original": str(title_original or "")[:200],
+            "title_pt": str(title_pt or "")[:200],
+            "year": year_int,
+            "liked": liked,
+            "watched": bool(watched),
+            "created_at": existing.get("created_at", now) if existing else now,
+            "updated_at": now,
+        }
+        if existing:
+            reactions[reactions.index(existing)] = record
+        else:
+            reactions.append(record)
+
+    target = _mutate_raw(user_id, apply)
+    return next(item for item in target["reactions"] if item["key"] == key)
+
+
+def delete_reaction(user_id: str, key: str) -> None:
+    def apply(target: dict) -> None:
+        reactions = target.get("reactions", [])
+        remaining = [item for item in reactions if item.get("key") != key]
+        if len(remaining) == len(reactions):
+            raise LookupError("Marcação não encontrada.")
+        target["reactions"] = remaining
+
+    _mutate_raw(user_id, apply)

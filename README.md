@@ -4,7 +4,7 @@
 
 ## Funcionalidades disponíveis
 
-A experiência pública começa em uma **landing page** responsiva, com apresentação do produto e CTA de entrada. A autenticação usa sessão por cookie `HttpOnly`, `SameSite=Lax`, assinatura HMAC e expiração automática. O cadastro exige senha individual com hash PBKDF2, começa com status `pending` e pode ser acompanhado automaticamente pelo cliente. O papel `admin` abre um painel restrito para listar pedidos, aceitar, rejeitar ou excluir usuários.
+A experiência pública começa em uma **landing page** responsiva, com apresentação do produto e CTA de entrada. A autenticação usa sessão por cookie `HttpOnly`, `SameSite=Lax`, assinatura HMAC e sem `Max-Age`: é um cookie de sessão do navegador, então fechar a aba ou o app encerra a sessão e a próxima visita exige login de novo (o prazo de 24h assinado no token continua valendo como limite máximo). O cadastro exige senha individual com hash PBKDF2, começa com status `pending` e pode ser acompanhado automaticamente pelo cliente. O papel `admin` abre um painel restrito para listar pedidos, aceitar, rejeitar ou excluir usuários. A navegação da plataforma usa o histórico do navegador, então o botão **voltar** nativo (inclusive o gesto/botão do Android) volta uma etapa do questionário ou uma tela por vez, em vez de sair do app.
 
 A lógica oficial dos sete filtros foi preservada: gênero principal, humor/vibe do dia, tempo disponível, época do filme, plataforma de streaming, companhia e popularidade/estilo. O backend valida o JSON da IA e exige três recomendações ordenadas. A pontuação exibida é um **match próprio do sistema**, não uma nota de IMDb ou crítica.
 
@@ -81,9 +81,36 @@ Os testes rodam com `python3 -m unittest test_app`.
 | `/api/auth/status` | GET | token do pedido | Acompanhamento do cadastro |
 | `/api/admin/status` | GET | admin | Configuração, contadores e lista de contas |
 | `/api/admin/users` | GET/POST | admin | Ações administrativas |
-| `/api/recommend` | POST | usuário autenticado | Motor de recomendação |
+| `/api/recommend` | POST | usuário autenticado com plano ativo (admin sempre libera) | Motor de recomendação, debita 1 crédito |
+| `/api/billing/status` | GET | usuário autenticado | Plano atual, créditos do dia e catálogo de planos |
+| `/api/billing/checkout` | POST | cliente autenticado | Cria assinatura no ASAAS e devolve o link de pagamento |
+| `/api/billing/webhook` | POST | ASAAS (token de acesso) | Ativa/suspende o plano conforme o pagamento |
+| `/api/preferences` | GET/POST | cliente autenticado | Lista, marca (`gostei`/`não gostei`/`já assisti`) e remove marcações |
 
 As ações aceitas em `POST /api/admin/users` são `approve`, `reject`, `pending`, `delete`, `promote`, `demote`, `set_password` e `create`.
+
+## Créditos, planos e marcações
+
+O acesso ao motor de recomendação é por crédito: 1 crédito = 1 consulta (filme, série ou novela). Os planos são mensais, recorrentes via ASAAS:
+
+| Plano | Preço/mês | Créditos por dia |
+| --- | --- | --- |
+| Silver | R$ 15,00 | 2 |
+| Gold | R$ 25,00 | 5 |
+| Diamante | R$ 30,00 | Ilimitado |
+
+Os créditos usados no dia zeram automaticamente à meia-noite UTC. Sem plano ativo (ou com pagamento em atraso/cancelado), `POST /api/recommend` responde `402 Payment Required` e a interface leva o cliente para a tela **Assinatura**. Contas com papel `admin` nunca consomem créditos.
+
+Em cada card de recomendação o cliente pode marcar **gostei**, **não gostei** e **já assisti**; essas marcações ficam salvas por usuário e são citadas no prompt enviado à OpenAI (para não repetir título já visto/rejeitado e favorecer estilos parecidos aos que o cliente gostou). A tela **Minhas marcações** lista tudo e permite remover uma marcação individualmente — o título volta a poder aparecer em buscas futuras assim que é removido.
+
+## Pagamento via ASAAS
+
+1. Crie uma conta no [ASAAS](https://www.asaas.com/) (sandbox para testar, produção para cobrar de verdade) e gere uma API key em **Integrações → API**.
+2. Configure `ASAAS_API_KEY` e `ASAAS_ENV` (`sandbox` ou `production`) nas variáveis de ambiente do projeto.
+3. Em **Integrações → Webhooks** no painel do ASAAS, cadastre a URL `https://SEU-DOMINIO/api/billing/webhook`, ative os eventos de pagamento (`PAYMENT_CONFIRMED`, `PAYMENT_RECEIVED`, `PAYMENT_OVERDUE`, `PAYMENT_REFUNDED`, ao menos) e defina um "Token de acesso".
+4. Copie esse mesmo token para `ASAAS_WEBHOOK_TOKEN` no projeto — sem ele o webhook ainda funciona, mas sem validar a origem da notificação.
+
+O fluxo: o cliente escolhe um plano, informa nome e CPF/CNPJ e é redirecionado para a fatura do ASAAS. Enquanto o pagamento não é confirmado, o plano fica como `pending` e o motor de recomendação continua bloqueado; a confirmação (via webhook) libera os créditos automaticamente.
 
 ## Publicação na Vercel
 
@@ -104,6 +131,9 @@ O arquivo `vercel.json` e as funções em `api/` deixam o repositório pronto pa
 | `USER_STORE_MODE` | Não | Força um backend específico; use apenas para depurar. |
 | `TMDB_API_KEY` | Não | Habilita enriquecimento de catálogo e disponibilidade no Brasil. |
 | `ENVIRONMENT=production` | Recomendada | Desativa credenciais padrão de desenvolvimento e ativa cookies seguros. |
+| `ASAAS_API_KEY` | Para cobrar planos | Chave de API do ASAAS (assinaturas Silver/Gold/Diamante). |
+| `ASAAS_ENV` | Não (padrão `sandbox`) | `sandbox` para testes ou `production` para cobrança real. |
+| `ASAAS_WEBHOOK_TOKEN` | Recomendada | Token de acesso configurado no webhook do ASAAS, valida a notificação de pagamento. |
 
 O cadastro de clientes segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão e usar o motor de recomendação, e toda rota administrativa exige uma sessão com papel `admin`. Depois do deploy, confira `GET /api/health`: se `storage.persistent` vier `false`, o banco ainda não está conectado. Recuperação de senha pelo próprio cliente, e-mail transacional e auditoria de ações administrativas permanecem como evoluções futuras.
 

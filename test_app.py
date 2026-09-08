@@ -16,21 +16,29 @@ os.environ["USER_STORE_FILE"] = str(TEST_STORE)
 
 from auth import authenticate, create_session, read_session  # noqa: E402
 from metadata import NullMetadataProvider  # noqa: E402
-from server import buildRecommendationPrompt, clean_filters, validate_recommendation_payload  # noqa: E402
 import api_core  # noqa: E402
+from api_core import buildRecommendationPrompt, clean_filters, validate_recommendation_payload  # noqa: E402
 from user_store import (  # noqa: E402
+    PLAN_CATALOG,
     StorageError,
     admin_summary,
     admin_users,
+    consume_credit,
     create_user,
+    delete_reaction,
     delete_user,
+    get_billing_status,
     get_status_by_token,
+    list_reactions,
+    refund_credit,
     register_user,
+    set_billing_plan,
     set_user_password,
     storage_diagnostics,
     storage_mode,
     update_user_role,
     update_user_status,
+    upsert_reaction,
 )
 
 
@@ -443,6 +451,15 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertIn("HttpOnly", headers["Set-Cookie"])
         self.assertIn("Secure", headers["Set-Cookie"])
 
+    def test_login_cookie_has_no_max_age_so_it_dies_with_the_browser_session(self):
+        create_user("client@test.local", "client-password")
+        status, payload, headers = api_core.login(
+            {"email": "client@test.local", "password": "client-password"}, secure=True
+        )
+        self.assertEqual(status, 200)
+        self.assertNotIn("Max-Age", headers["Set-Cookie"])
+        self.assertNotIn("expires", headers["Set-Cookie"].lower())
+
     def test_pending_account_cannot_log_in_through_the_route(self):
         register_user("wait@test.local", "wait-password")
         status, payload, _ = api_core.login(
@@ -455,6 +472,165 @@ class PipocaPlayTests(unittest.TestCase):
         metadata = NullMetadataProvider().lookup("Example")
         self.assertFalse(metadata["availability_verified"])
         self.assertEqual(metadata["availability"], [])
+
+    # ------------------------------------------------------------------
+    # Planos e créditos diários
+    # ------------------------------------------------------------------
+
+    def test_daily_credit_limit_is_enforced_per_plan(self):
+        created = create_user("silver@test.local", "silver-password")
+        set_billing_plan(created["id"], plan="silver", plan_status="active")
+        consume_credit(created["id"])
+        status = consume_credit(created["id"])
+        self.assertEqual(status["remaining_today"], 0)
+        with self.assertRaises(PermissionError):
+            consume_credit(created["id"])
+
+    def test_credits_reset_on_a_new_day(self):
+        created = create_user("reset@test.local", "reset-password")
+        set_billing_plan(created["id"], plan="gold", plan_status="active")
+        for _ in range(PLAN_CATALOG["gold"]["daily_credits"]):
+            consume_credit(created["id"])
+        with self.assertRaises(PermissionError):
+            consume_credit(created["id"])
+        with patch("user_store._today", return_value="2999-01-01"):
+            status = get_billing_status(created["id"])
+        self.assertEqual(status["used_today"], 0)
+        self.assertEqual(status["remaining_today"], PLAN_CATALOG["gold"]["daily_credits"])
+
+    def test_diamond_plan_has_unlimited_credits(self):
+        created = create_user("diamond@test.local", "diamond-password")
+        set_billing_plan(created["id"], plan="diamond", plan_status="active")
+        for _ in range(20):
+            status = consume_credit(created["id"])
+        self.assertTrue(status["unlimited"])
+        self.assertIsNone(status["remaining_today"])
+
+    def test_refund_credit_gives_back_a_failed_attempt(self):
+        created = create_user("refund@test.local", "refund-password")
+        set_billing_plan(created["id"], plan="silver", plan_status="active")
+        consume_credit(created["id"])
+        refund_credit(created["id"])
+        status = get_billing_status(created["id"])
+        self.assertEqual(status["used_today"], 0)
+
+    # ------------------------------------------------------------------
+    # Motor de recomendação: gate de créditos e injeção de preferências
+    # ------------------------------------------------------------------
+
+    def test_recommend_blocks_a_user_without_an_active_plan(self):
+        created = create_user("noplan@test.local", "noplan-password")
+        session = {"email": "noplan@test.local", "role": "user", "user_id": created["id"]}
+        status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 402)
+        self.assertIn("plano", payload["error"])
+
+    def test_recommend_consumes_one_credit_and_returns_openai_text(self):
+        created = create_user("payer@test.local", "payer-password")
+        set_billing_plan(created["id"], plan="silver", plan_status="active")
+        session = {"email": "payer@test.local", "role": "user", "user_id": created["id"]}
+        with patch("api_core.call_openai", return_value='{"ok":true}') as mocked:
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["text"], '{"ok":true}')
+        mocked.assert_called_once()
+        self.assertEqual(get_billing_status(created["id"])["used_today"], 1)
+
+    def test_recommend_refunds_the_credit_when_openai_fails(self):
+        created = create_user("failer@test.local", "failer-password")
+        set_billing_plan(created["id"], plan="silver", plan_status="active")
+        session = {"email": "failer@test.local", "role": "user", "user_id": created["id"]}
+        with patch("api_core.call_openai", side_effect=RuntimeError("falhou")):
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 502)
+        self.assertEqual(get_billing_status(created["id"])["used_today"], 0)
+
+    def test_admin_session_bypasses_credits_entirely(self):
+        session = {"email": "admin@test.local", "role": "admin"}
+        with patch("api_core.call_openai", return_value='{"ok":true}'):
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 200)
+
+    def test_preferences_prompt_block_lists_watched_and_liked_titles(self):
+        created = create_user("prefs@test.local", "prefs-password")
+        upsert_reaction(created["id"], "Filme Visto", "Filme Visto", 2020, None, True)
+        upsert_reaction(created["id"], "Filme Amado", "Filme Amado", 2019, True, False)
+        upsert_reaction(created["id"], "Filme Odiado", "Filme Odiado", 2018, False, False)
+        block = api_core._preferences_prompt_block(created["id"])
+        self.assertIn("Filme Visto (2020)", block)
+        self.assertIn("Filme Odiado (2018)", block)
+        self.assertIn("Filme Amado (2019)", block)
+
+    # ------------------------------------------------------------------
+    # Marcações (gostei / não gostei / já assisti)
+    # ------------------------------------------------------------------
+
+    def test_upsert_list_and_delete_a_reaction(self):
+        created = create_user("react@test.local", "react-password")
+        record = upsert_reaction(created["id"], "Duna", "Duna", 2021, True, True)
+        self.assertTrue(record["liked"])
+        self.assertTrue(record["watched"])
+        self.assertEqual(len(list_reactions(created["id"])), 1)
+
+        upsert_reaction(created["id"], "Duna", "Duna", 2021, False, True)
+        updated = list_reactions(created["id"])[0]
+        self.assertFalse(updated["liked"])
+
+        delete_reaction(created["id"], updated["key"])
+        self.assertEqual(list_reactions(created["id"]), [])
+        with self.assertRaises(LookupError):
+            delete_reaction(created["id"], updated["key"])
+
+    def test_preferences_endpoint_upserts_and_deletes(self):
+        created = create_user("prefapi@test.local", "prefapi-password")
+        session = {"email": "prefapi@test.local", "role": "user", "user_id": created["id"]}
+        status, payload, _ = api_core.mutate_preference(
+            session, {"title_original": "Matrix", "title_pt": "Matrix", "year": 1999, "liked": True, "watched": True}
+        )
+        self.assertEqual(status, 200)
+        key = payload["reaction"]["key"]
+        status, payload, _ = api_core.list_preferences(session)
+        self.assertEqual(len(payload["reactions"]), 1)
+        status, payload, _ = api_core.mutate_preference(session, {"action": "delete", "key": key})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["reactions"], [])
+
+    # ------------------------------------------------------------------
+    # ASAAS: checkout e webhook
+    # ------------------------------------------------------------------
+
+    def test_start_checkout_requires_asaas_to_be_configured(self):
+        created = create_user("checkout@test.local", "checkout-password")
+        session = {"email": "checkout@test.local", "role": "user", "user_id": created["id"]}
+        with patch.dict(os.environ, {"ASAAS_API_KEY": ""}, clear=False):
+            status, payload, _ = api_core.start_checkout(
+                session, {"plan": "silver", "name": "Cliente Teste", "cpf_cnpj": "12345678901"}
+            )
+        self.assertEqual(status, 503)
+        self.assertIn("ASAAS_API_KEY", payload["error"])
+
+    def test_webhook_activates_plan_when_payment_is_confirmed(self):
+        created = create_user("webhook@test.local", "webhook-password")
+        set_billing_plan(created["id"], plan="silver", plan_status="pending")
+        status, payload, _ = api_core.billing_webhook(
+            {"payment": {"status": "CONFIRMED", "externalReference": created["id"]}}, {}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(get_billing_status(created["id"])["plan_status"], "active")
+
+    def test_webhook_marks_overdue_payment_as_past_due(self):
+        created = create_user("overdue@test.local", "overdue-password")
+        set_billing_plan(created["id"], plan="gold", plan_status="active")
+        api_core.billing_webhook({"payment": {"status": "OVERDUE", "externalReference": created["id"]}}, {})
+        self.assertEqual(get_billing_status(created["id"])["plan_status"], "past_due")
+
+    def test_webhook_rejects_a_wrong_access_token(self):
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": "segredo-correto"}, clear=False):
+            status, payload, _ = api_core.billing_webhook(
+                {"payment": {"status": "CONFIRMED", "externalReference": "x"}},
+                {"asaas-access-token": "token-errado"},
+            )
+        self.assertEqual(status, 401)
 
 
 if __name__ == "__main__":

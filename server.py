@@ -7,8 +7,6 @@ A chave OpenAI nunca é enviada para o navegador: somente este processo a lê.
 import json
 import os
 import time
-import urllib.error
-import urllib.request
 from collections import defaultdict, deque
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -17,7 +15,6 @@ from urllib.parse import parse_qs, urlparse
 
 import api_core
 from auth import is_secure_request, public_user, read_session
-from metadata import enrich_result
 
 ROOT = Path(__file__).parent
 PUBLIC = ROOT / "public"
@@ -39,206 +36,6 @@ def load_env_file():
 
 
 load_env_file()
-
-OFFICIAL_FILTER_OPTIONS = {
-    "genre": {"Livre (Qualquer)", "Ação", "Comédia", "Drama", "Ficção Científica", "Terror", "Romance", "Suspense / Thriller", "Animação", "Documentário", "Aventura", "Fantasia"},
-    "mood": {"Livre (Qualquer)", "Quer dar risada / Divertido", "Para chorar / Emocionante", "Tensão / Adrenalina", "Para pensar / Cabeça", "Leve / Relaxante para descansar", "Inspirador / Motivacional", "Sombrio / Assustador"},
-    "duration": {"Livre (Qualquer)", "Curto (Até 90 min)", "Padrão (90 a 120 min)", "Longo (Mais de 120 min)"},
-    "era": {"Livre (Qualquer)", "Lançamentos Recentes (2023-2026)", "Anos 2010s", "Anos 2000s", "Anos 90s", "Clássicos (Antes de 1990)"},
-    "platform": {"Livre (Qualquer)", "Netflix", "Amazon Prime Video", "Max (HBO)", "Disney+", "Apple TV+", "Paramount+", "Cinema / Aluguel"},
-    "companionship": {"Sozinho(a)", "Em Casal", "Com Amigos", "Em Família (com crianças)"},
-    "popularity": {"Indiferente", "Grandes Sucessos / Blockbusters", "Filmes Cult / Menos Conhecidos", "Aclamados pela Crítica / Premiações (Oscar, Cannes)"},
-}
-
-RECOMMENDATION_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["interpretation", "best_choice", "recommendations"],
-    "properties": {
-        "interpretation": {"type": "string"},
-        "best_choice": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["title_pt", "reason"],
-            "properties": {
-                "title_pt": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-        },
-        "recommendations": {
-            "type": "array",
-            "minItems": 3,
-            "maxItems": 3,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": [
-                    "rank", "title_original", "title_pt", "year", "runtime_minutes",
-                    "age_rating_br", "genres", "vibe_tags", "synopsis", "why_it_matches",
-                    "match_score", "ratings", "awards", "where_to_watch",
-                ],
-                "properties": {
-                    "rank": {"type": "integer", "minimum": 1, "maximum": 3},
-                    "title_original": {"type": "string"},
-                    "title_pt": {"type": "string"},
-                    "year": {"type": "integer", "minimum": 0},
-                    "runtime_minutes": {"type": "integer", "minimum": 0},
-                    "age_rating_br": {"type": "integer", "minimum": 0},
-                    "genres": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
-                    "vibe_tags": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
-                    "synopsis": {"type": "string"},
-                    "why_it_matches": {"type": "string"},
-                    "match_score": {"type": "integer", "minimum": 0, "maximum": 100},
-                    "ratings": {
-                        "type": "object", "additionalProperties": False,
-                        "required": ["imdb", "rotten_tomatoes_critics"],
-                        "properties": {
-                            "imdb": {"type": "number", "minimum": 0, "maximum": 10},
-                            "rotten_tomatoes_critics": {"type": "integer", "minimum": 0, "maximum": 100},
-                        },
-                    },
-                    "awards": {
-                        "type": "object", "additionalProperties": False,
-                        "required": ["oscars_won", "highlight"],
-                        "properties": {
-                            "oscars_won": {"type": "integer", "minimum": 0},
-                            "highlight": {"type": "string"},
-                        },
-                    },
-                    "where_to_watch": {
-                        "type": "array",
-                        "items": {
-                            "type": "object", "additionalProperties": False,
-                            "required": ["platform", "type"],
-                            "properties": {
-                                "platform": {"type": "string"},
-                                "type": {"type": "string", "enum": ["assinatura", "aluguel_compra", "cinema"]},
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    },
-}
-
-
-def clean_filters(value):
-    if not isinstance(value, dict):
-        raise ValueError("Filtros inválidos.")
-    allowed = {"genre", "mood", "duration", "era", "platform", "companionship", "popularity"}
-    cleaned = {}
-    for key in allowed:
-        item = value.get(key, "")
-        if not isinstance(item, str) or len(item) > 120:
-            raise ValueError("Um dos filtros é inválido.")
-        item = item.strip()
-        if item not in OFFICIAL_FILTER_OPTIONS[key]:
-            raise ValueError("Uma das respostas não pertence às opções oficiais.")
-        cleaned[key] = item
-    if not all(cleaned.values()):
-        raise ValueError("Responda às sete perguntas antes de buscar.")
-    return cleaned
-
-
-def buildRecommendationPrompt(filters):
-    return f"""Atue como um especialista em cinema e recomendador personalizado para o público brasileiro. Responda em pt-BR.
-
-Estou procurando uma recomendação perfeita para assistir agora. Considere conjuntamente estas sete dimensões:
-- Gênero principal: {filters['genre']}
-- Vibe/clima emocional desejado: {filters['mood']}
-- Tempo disponível: {filters['duration']}
-- Época do filme: {filters['era']}
-- Plataforma de streaming: {filters['platform']}
-- Companhia: {filters['companionship']}
-- Perfil de popularidade/estilo: {filters['popularity']}
-
-Priorize gênero, vibe e plataforma especificada; depois duração e companhia; por fim época e popularidade. Os filtros são preferências contextuais, não generalizações rígidas. A duração curta deve favorecer títulos de até 90 minutos; a faixa padrão, 90 a 120; a longa, acima de 120. Quando houver plataforma específica, trate disponibilidade como dado a ser validado por uma fonte externa, nunca como fato conhecido apenas pela IA. Para família com crianças, evite conteúdo inadequado quando a classificação for conhecida.
-
-Selecione exatamente três filmes reais, ordenados da maior para a menor compatibilidade, e explique por que cada um combina com o perfil. O match_score é a compatibilidade própria do sistema entre 0 e 100, não é nota do IMDb, da crítica ou de qualquer outra fonte. Não escolha simplesmente os filmes mais populares.
-
-Não invente avaliações, plataformas, disponibilidade, URLs, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado."""
-
-
-def validate_recommendation_payload(payload):
-    if not isinstance(payload, dict) or not isinstance(payload.get("recommendations"), list):
-        raise RuntimeError("A resposta do motor não tem o formato esperado.")
-    recommendations = payload["recommendations"]
-    if len(recommendations) != 3:
-        raise RuntimeError("O motor deve retornar exatamente 3 recomendações.")
-    required = {"rank", "title_original", "title_pt", "year", "runtime_minutes", "genres", "synopsis", "why_it_matches", "match_score"}
-    for index, recommendation in enumerate(recommendations, start=1):
-        if not isinstance(recommendation, dict) or not required.issubset(recommendation):
-            raise RuntimeError(f"A recomendação {index} está incompleta.")
-        if recommendation.get("rank") != index:
-            raise RuntimeError("As recomendações devem estar ordenadas por posição.")
-        if not 0 <= int(recommendation.get("match_score", 0)) <= 100:
-            raise RuntimeError("A pontuação de compatibilidade é inválida.")
-    return payload
-
-
-def extract_response_text(response):
-    """Extrai texto de uma resposta REST da OpenAI.
-
-    `output_text` é uma conveniência dos SDKs. A API REST retorna os blocos em
-    `output[].content[]`, então essa leitura mantém o backend independente de SDK.
-    """
-    parts = []
-    for item in response.get("output", []):
-        if item.get("type") != "message":
-            continue
-        for content in item.get("content", []):
-            if content.get("type") == "output_text" and content.get("text"):
-                parts.append(content["text"])
-    return "".join(parts).strip()
-
-
-def call_openai(filters):
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY não foi configurada no servidor.")
-    payload = {
-        "model": os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
-        "input": buildRecommendationPrompt(filters),
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "movie_recommendations",
-                "strict": True,
-                "schema": RECOMMENDATION_SCHEMA,
-            }
-        },
-        "max_output_tokens": 1800,
-        "reasoning": {"effort": "low"},
-        "store": False,
-    }
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        details = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"A consulta à OpenAI falhou (HTTP {error.code}).") from RuntimeError(details)
-    except urllib.error.URLError as error:
-        raise RuntimeError("Não foi possível conectar ao serviço da OpenAI.") from error
-
-    text = extract_response_text(result)
-    if not text:
-        status = result.get("status", "desconhecido")
-        reason = (result.get("incomplete_details") or {}).get("reason")
-        suffix = f" Motivo: {reason}." if reason else ""
-        raise RuntimeError(f"A OpenAI não retornou texto final (status: {status}).{suffix}")
-    try:
-        structured = validate_recommendation_payload(json.loads(text))
-    except (json.JSONDecodeError, TypeError, ValueError) as error:
-        raise RuntimeError("A OpenAI retornou um JSON inválido.") from error
-    enriched = enrich_result(structured)
-    return json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -299,6 +96,12 @@ class AppHandler(SimpleHTTPRequestHandler):
         if path.path in {"/api/admin/status", "/api/admin/users"}:
             self.send_result(api_core.admin_overview(self.current_user()))
             return
+        if path.path == "/api/billing/status":
+            self.send_result(api_core.billing_status(self.current_user()))
+            return
+        if path.path == "/api/preferences":
+            self.send_result(api_core.list_preferences(self.current_user()))
+            return
         if path.path.startswith("/api/"):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
             return
@@ -327,6 +130,22 @@ class AppHandler(SimpleHTTPRequestHandler):
             )
             return
 
+        if self.path == "/api/billing/checkout":
+            self.send_result(
+                api_core.start_checkout(self.current_user(), self.request_json_or_empty(2_048))
+            )
+            return
+
+        if self.path == "/api/billing/webhook":
+            self.send_result(api_core.billing_webhook(self.request_json_or_empty(65_536), self.headers))
+            return
+
+        if self.path == "/api/preferences":
+            self.send_result(
+                api_core.mutate_preference(self.current_user(), self.request_json_or_empty(4_096))
+            )
+            return
+
         if self.path != "/api/recommend":
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
             return
@@ -342,14 +161,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
             return
         requests.append(now)
-        try:
-            body = self.request_json()
-            text = call_openai(clean_filters(body.get("filters")))
-            self.send_json(HTTPStatus.OK, {"text": text})
-        except (ValueError, json.JSONDecodeError) as error:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
-        except RuntimeError as error:
-            self.send_json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
+        self.send_result(api_core.recommend(user, self.request_json_or_empty()))
 
     def log_message(self, fmt, *args):
         print(f"[{self.log_date_time_string()}] {args[0]}")
