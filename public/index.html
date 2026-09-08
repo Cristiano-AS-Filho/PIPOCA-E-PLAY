@@ -180,11 +180,21 @@
     display:flex;
     justify-content:space-between;
     align-items:center;
+    gap:8px;
+    /* O cliente logado tem mais itens (créditos, marcações, histórico), então a
+       barra quebra em duas linhas no celular em vez de espremer os botões. */
+    flex-wrap:wrap;
     font-family:'IBM Plex Mono',monospace;
     font-size:11.5px;
     color:var(--cream-dim);
   }
+  .topnav .nav-label{white-space:nowrap;}
+  @media (max-width:430px){
+    .topnav{justify-content:flex-end;}
+    .topnav .nav-label{width:100%;margin-bottom:2px;}
+  }
   .topnav button{
+    white-space:nowrap;
     background:none;border:1px solid rgba(239,230,216,0.18);
     color:var(--cream-dim);
     padding:6px 10px;
@@ -740,6 +750,109 @@
     .status-actions{flex-direction:row;}
     .status-actions .cta{flex:1;}
   }
+
+  /* ---------- planos e checkout ---------- */
+  .credit-chip{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10px;
+    letter-spacing:0.5px;
+    color:var(--ink);
+    background:var(--marquee);
+    border:1px solid var(--marquee);
+    padding:6px 8px;
+    border-radius:4px;
+    white-space:nowrap;
+  }
+  .credit-chip.empty{background:none;color:var(--danger);border-color:rgba(196,85,61,0.5);}
+  .credit-chip.locked{background:none;color:var(--cream-dim);border-color:rgba(239,230,216,.16);}
+  .plan-grid{display:flex;flex-direction:column;gap:14px;margin:18px 0 20px;}
+  .plan-card{
+    border:1px solid rgba(239,230,216,0.14);
+    background:var(--bg-elev);
+    border-radius:var(--radius);
+    padding:16px 18px;
+  }
+  .plan-card.current{border-color:var(--teal);background:linear-gradient(135deg,rgba(60,140,122,0.12),transparent);}
+  .plan-card.featured{border-color:rgba(242,169,59,0.45);}
+  .plan-card .pc-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:6px;}
+  .plan-card .pc-name{font-family:'Bebas Neue',cursive;font-size:22px;letter-spacing:1px;}
+  .plan-card .pc-price{font-family:'Bebas Neue',cursive;font-size:22px;color:var(--marquee);white-space:nowrap;}
+  .plan-card .pc-price small{font-family:'Inter',sans-serif;font-size:11px;color:var(--cream-dim);letter-spacing:0;}
+  .plan-card .pc-tagline{
+    font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1px;
+    text-transform:uppercase;color:var(--teal);margin-bottom:8px;
+  }
+  .plan-card .pc-desc{font-size:13px;color:var(--cream-dim);margin:0 0 14px;line-height:1.5;}
+  .plan-card .pc-flag{
+    display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1px;
+    text-transform:uppercase;color:var(--teal);border:1px solid rgba(60,140,122,0.45);
+    padding:4px 7px;border-radius:4px;margin-bottom:10px;
+  }
+  .paywall-box{
+    border:1px solid rgba(242,169,59,0.35);
+    background:rgba(242,169,59,0.08);
+    border-radius:var(--radius);
+    padding:16px 18px;
+    margin-bottom:18px;
+    font-size:13.5px;
+    line-height:1.55;
+  }
+  .paywall-box b{color:var(--marquee);}
+  .checkout-field{margin-bottom:12px;}
+  .checkout-field label{
+    display:block;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:1px;
+    text-transform:uppercase;color:var(--cream-dim);margin-bottom:6px;
+  }
+  .checkout-field input{
+    width:100%;background:var(--bg-elev-2);border:1px solid rgba(239,230,216,0.16);
+    border-radius:var(--radius);padding:12px 13px;color:var(--cream);font-size:14px;font-family:'Inter',sans-serif;
+  }
+  .checkout-field input:focus{outline:none;border-color:var(--marquee);}
+
+  /* ---------- marcações nos cards ----------
+     O ingresso tem fundo claro, então estes botões seguem a mesma paleta dos
+     chips do card, e o estado marcado usa preenchimento sólido com contraste
+     suficiente sobre o creme. */
+  .mark-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px;}
+  .mark-btn{
+    flex:1 1 auto;min-width:92px;
+    background:rgba(24,19,16,0.06);
+    border:1px solid rgba(24,19,16,0.15);
+    color:var(--ink);
+    border-radius:16px;
+    padding:9px 10px;font-size:12px;font-family:'Inter',sans-serif;
+    cursor:pointer;transition:background .15s,border-color .15s,color .15s;
+  }
+  .mark-btn:hover{background:rgba(24,19,16,0.11);border-color:rgba(24,19,16,0.35);}
+  .mark-btn[aria-pressed="true"]{background:var(--marquee);border-color:var(--marquee);color:var(--ink);font-weight:600;}
+  .mark-btn.dislike[aria-pressed="true"]{background:#A33F2B;border-color:#A33F2B;color:var(--cream);font-weight:600;}
+  .mark-btn.watched[aria-pressed="true"]{background:#2F6E60;border-color:#2F6E60;color:var(--cream);font-weight:600;}
+  .mark-btn:disabled{opacity:0.6;cursor:progress;}
+
+  /* ---------- histórico de marcações ---------- */
+  .mark-item{
+    border:1px solid rgba(239,230,216,0.12);
+    background:var(--bg-elev);
+    border-radius:var(--radius);
+    padding:13px 15px;margin-bottom:10px;
+    display:flex;align-items:center;gap:12px;
+  }
+  .mark-item .mi-body{flex:1;min-width:0;}
+  .mark-item .mi-title{font-size:14px;color:var(--cream);margin-bottom:5px;word-break:break-word;}
+  .mark-item .mi-tags{display:flex;gap:6px;flex-wrap:wrap;}
+  .mark-item .mi-tag{
+    font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.6px;text-transform:uppercase;
+    border:1px solid rgba(239,230,216,0.16);color:var(--cream-dim);padding:3px 6px;border-radius:4px;
+  }
+  .mark-item .mi-tag.liked{color:var(--marquee);border-color:rgba(242,169,59,0.45);}
+  .mark-item .mi-tag.disliked{color:var(--danger);border-color:rgba(196,85,61,0.45);}
+  .mark-item .mi-tag.watched{color:var(--teal);border-color:rgba(60,140,122,0.45);}
+  .mark-item .mi-remove{
+    background:none;border:1px solid rgba(196,85,61,0.4);color:var(--danger);
+    border-radius:var(--radius);padding:8px 11px;font-size:12px;cursor:pointer;white-space:nowrap;
+  }
+  .mark-item .mi-remove:hover{background:rgba(196,85,61,0.12);}
+  .mark-item .mi-remove:disabled{opacity:0.5;cursor:progress;}
 </style>
 </head>
 <body>
@@ -823,17 +936,96 @@ try{
   pendingAccess = null;
 }
 
+let subscription = null;   // assinatura e créditos do cliente logado
+let plansCatalog = [];     // silver / gold / diamante
+let checkoutInfo = null;   // fatura ASAAS aberta para o plano escolhido
+let checkoutPlan = "";
+let billingError = "";
+let billingBusy = false;
+let marksList = [];        // marcações do usuário (gostei / não gostei / já assisti)
+let marksError = "";
+let leavingOnPurpose = false;
+
 let state = {
-  screen: "landing", // landing | login | wizard | summary | loading | results | history | admin | error
+  screen: "landing", // landing | login | plans | checkout | wizard | summary | loading | results | history | marks | admin | error
   stepIndex: 0,
   filters: {},
   interpretation: "",
   bestChoice: null,
   recommendations: [],
   errorMsg: "",
+  errorReason: "",
   historyList: null,
   viewingHistoryItem: null
 };
+
+/* =========================================================
+   NAVEGAÇÃO — o botão voltar nativo do celular percorre as
+   telas do app. Cada tela vira uma entrada no histórico do
+   navegador; `popstate` restaura a tela anterior sem recarregar.
+   ========================================================= */
+const NAV_SCREENS = ["landing","login","access-status","plans","checkout","wizard","summary","results","history","marks","error"];
+
+function navSnapshot(){
+  return {
+    screen: state.screen,
+    stepIndex: state.stepIndex,
+    viewingHistoryItem: state.viewingHistoryItem ? state.viewingHistoryItem.created_at : null
+  };
+}
+
+function pushNav(replace = false){
+  if(!NAV_SCREENS.includes(state.screen)) return;
+  const snapshot = navSnapshot();
+  try{
+    if(replace) window.history.replaceState(snapshot, "");
+    else window.history.pushState(snapshot, "");
+  }catch(e){ /* navegador sem History API: a navegação interna continua funcionando */ }
+}
+
+function goTo(screen, patch = {}){
+  Object.assign(state, patch, { screen });
+  pushNav();
+  render();
+}
+
+window.addEventListener("popstate", event => {
+  const snapshot = event.state;
+  if(!snapshot || !snapshot.screen){
+    // Nada empilhado por nós: a primeira tela é a de entrada da sessão atual.
+    state.screen = sessionUser ? "wizard" : "landing";
+    render();
+    return;
+  }
+  state.screen = snapshot.screen;
+  state.stepIndex = snapshot.stepIndex || 0;
+  state.viewingHistoryItem = snapshot.viewingHistoryItem && state.historyList
+    ? (state.historyList.find(item => item.created_at === snapshot.viewingHistoryItem) || null)
+    : null;
+  // Uma tela de resultado sem resultado em memória (aba restaurada) volta ao wizard.
+  if(state.screen === "results" && !state.recommendations.length) state.screen = sessionUser ? "wizard" : "landing";
+  if(!sessionUser && !["landing","login","access-status"].includes(state.screen)) state.screen = "landing";
+  render();
+});
+
+/* =========================================================
+   NOVO LOGIN A CADA VISITA — ao sair da página, a sessão do
+   servidor é encerrada e o cookie (que já é de sessão de
+   navegador) é descartado. Voltar à plataforma exige login.
+   ========================================================= */
+function endSessionOnLeave(){
+  if(!sessionUser || leavingOnPurpose) return;
+  try{
+    const blob = new Blob(["{}"], { type: "application/json" });
+    if(navigator.sendBeacon) navigator.sendBeacon("/api/auth/logout", blob);
+    else fetch("/api/auth/logout", { method: "POST", credentials: "same-origin", keepalive: true });
+  }catch(e){ /* o cookie de sessão do navegador encerra o acesso de qualquer modo */ }
+}
+
+window.addEventListener("pagehide", event => {
+  // `persisted` indica ida para o cache de retrocesso: a página continua viva.
+  if(!event.persisted) endSessionOnLeave();
+});
 
 async function bootstrapAuth(){
   try{
@@ -849,8 +1041,169 @@ async function bootstrapAuth(){
   }catch(e){
     // A landing page continua disponível mesmo quando a API está temporariamente fora.
   }
+  if(sessionUser && sessionUser.role !== "admin"){
+    await Promise.all([loadSubscription(true), loadMarks()]);
+    // Sem pagamento confirmado, a plataforma abre na escolha do plano.
+    if(!hasPaidAccess()) state.screen = "plans";
+  }
+  pushNav(true);
   render();
   if(sessionUser && sessionUser.role === "admin") await openAdmin();
+}
+
+/* =========================================================
+   ASSINATURA, CRÉDITOS E CHECKOUT (ASAAS)
+   Um crédito equivale a uma consulta de filme, série ou novela.
+   ========================================================= */
+function hasPaidAccess(){
+  return !!(subscription && subscription.active);
+}
+
+function creditsLeft(){
+  if(!subscription) return 0;
+  if(subscription.unlimited) return Infinity;
+  return subscription.credits_remaining || 0;
+}
+
+async function loadSubscription(sync = true){
+  try{
+    const response = await fetch("/api/billing/status" + (sync ? "" : "?sync=0"), {
+      credentials: "same-origin",
+      cache: "no-store"
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || "Não foi possível consultar a sua assinatura.");
+    if(Array.isArray(data.plans) && data.plans.length) plansCatalog = data.plans;
+    subscription = data.subscription || null;
+    billingError = "";
+  }catch(e){
+    billingError = e.message || "Não foi possível consultar a sua assinatura.";
+  }
+}
+
+async function loadPlans(){
+  if(plansCatalog.length) return;
+  try{
+    const response = await fetch("/api/billing/plans", { credentials: "same-origin" });
+    const data = await response.json().catch(() => ({}));
+    if(Array.isArray(data.plans)) plansCatalog = data.plans;
+  }catch(e){}
+}
+
+async function startCheckout(planId, name, cpfCnpj){
+  billingBusy = true;
+  billingError = "";
+  checkoutPlan = planId;
+  render();
+  try{
+    const response = await fetch("/api/billing/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ plan: planId, name, cpf_cnpj: cpfCnpj })
+    });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || "Não foi possível abrir o pagamento agora.");
+    checkoutInfo = data.checkout || null;
+    subscription = data.subscription || subscription;
+    billingBusy = false;
+    goTo("checkout");
+  }catch(e){
+    billingBusy = false;
+    billingError = e.message || "Não foi possível abrir o pagamento agora.";
+    render();
+  }
+}
+
+async function refreshPayment(){
+  billingBusy = true;
+  render();
+  await loadSubscription(true);
+  billingBusy = false;
+  // Pagamento confirmado pelo ASAAS: a plataforma libera a busca na hora.
+  if(hasPaidAccess()){
+    checkoutInfo = null;
+    goTo("wizard", { stepIndex: 0, filters: {} });
+    return;
+  }
+  render();
+}
+
+/* =========================================================
+   MARCAÇÕES — gostei / não gostei / já assisti
+   Ficam gravadas na conta e viajam no prompt enviado ao GPT.
+   ========================================================= */
+function markKeyOf(rec){
+  const base = (rec.title_original || rec.title_pt || "")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if(!base) return "";
+  const year = parseInt(rec.year, 10) || 0;
+  return year ? base + ":" + year : base;
+}
+
+function markFor(rec){
+  const key = markKeyOf(rec);
+  return key ? (marksList.find(item => item.key === key) || null) : null;
+}
+
+async function loadMarks(){
+  try{
+    const response = await fetch("/api/marks", { credentials: "same-origin", cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || "Não foi possível carregar as suas marcações.");
+    marksList = Array.isArray(data.marks) ? data.marks : [];
+    marksError = "";
+  }catch(e){
+    marksError = e.message || "Não foi possível carregar as suas marcações.";
+  }
+}
+
+async function sendMark(payload){
+  const response = await fetch("/api/marks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok) throw new Error(data.error || "Não foi possível salvar a sua marcação.");
+  marksList = Array.isArray(data.marks) ? data.marks : marksList;
+  marksError = "";
+}
+
+async function toggleMark(rec, field){
+  const current = markFor(rec) || { opinion: "", watched: false };
+  let opinion = current.opinion || "";
+  let watched = !!current.watched;
+  if(field === "watched"){
+    watched = !watched;
+  }else{
+    // Clicar de novo na mesma opinião desfaz a marcação.
+    opinion = opinion === field ? "" : field;
+  }
+  try{
+    await sendMark({
+      action: "save",
+      title_original: rec.title_original || "",
+      title_pt: rec.title_pt || "",
+      year: rec.year || 0,
+      opinion,
+      watched
+    });
+  }catch(e){
+    marksError = e.message || "Não foi possível salvar a sua marcação.";
+  }
+  render();
+}
+
+async function removeMark(markId){
+  try{
+    await sendMark({ action: "delete", id: markId });
+  }catch(e){
+    marksError = e.message || "Não foi possível remover a marcação.";
+  }
+  render();
 }
 
 function setPendingAccess(data){
@@ -897,11 +1250,12 @@ async function login(email, password){
     clearPendingAccess();
     sessionUser = data.user;
     if(sessionUser.role === "admin"){
+      leavingOnPurpose = true;
       window.location.href = ADMIN_PANEL_URL;
       return;
     }
-    state.screen = "wizard";
-    render();
+    await Promise.all([loadSubscription(true), loadMarks()]);
+    goTo(hasPaidAccess() ? "wizard" : "plans", { stepIndex: 0, filters: {} });
   }catch(e){
     authError = e.message || "Não foi possível entrar agora.";
     render();
@@ -920,8 +1274,7 @@ async function register(email, password, confirmation){
     if(!response.ok) throw new Error(data.error || "Não foi possível enviar o cadastro agora.");
     setPendingAccess(data);
     authMode = "login";
-    state.screen = "access-status";
-    render();
+    goTo("access-status");
     checkPendingAccess(false);
   }catch(e){
     authError = e.message || "Não foi possível enviar o cadastro agora.";
@@ -933,11 +1286,16 @@ async function logout(){
   try{ await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); }catch(e){}
   sessionUser = null;
   adminStatus = null;
+  subscription = null;
+  checkoutInfo = null;
+  marksList = [];
+  billingError = "";
+  marksError = "";
   clearPendingAccess();
-  state.screen = "landing";
   state.stepIndex = 0;
   state.filters = {};
-  render();
+  state.recommendations = [];
+  goTo("landing");
 }
 
 async function openAdmin(){
@@ -1095,13 +1453,24 @@ async function getRecommendations(filters){
   const response = await fetch(RECOMMENDATION_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     body: JSON.stringify({ filters })
   });
   if(!response.ok){
     const error = await response.json().catch(() => ({}));
+    // 402: falta pagamento confirmado ou o crédito do dia acabou.
+    if(response.status === 402){
+      if(Array.isArray(error.plans) && error.plans.length) plansCatalog = error.plans;
+      if(error.subscription) subscription = error.subscription;
+      const blocked = new Error(error.error || "Assine um plano para receber indicações.");
+      blocked.reason = error.reason || "payment_required";
+      throw blocked;
+    }
     throw new Error(error.error || "Falha ao consultar o motor de recomendação (HTTP " + response.status + ").");
   }
   const data = await response.json();
+  // O backend devolve o saldo já debitado desta consulta.
+  if(data.subscription) subscription = data.subscription;
   const text = data.text || "";
   const clean = text.replace(/```json/gi,"").replace(/```/g,"").trim();
   let parsed;
@@ -1244,6 +1613,9 @@ function render(){
   if(state.screen === "landing") app.appendChild(renderLanding());
   else if(state.screen === "login") app.appendChild(renderLogin());
   else if(state.screen === "access-status") app.appendChild(renderAccessStatus());
+  else if(state.screen === "plans") app.appendChild(renderPlans());
+  else if(state.screen === "checkout") app.appendChild(renderCheckout());
+  else if(state.screen === "marks") app.appendChild(renderMarks());
   else if(state.screen === "admin") app.appendChild(renderAdmin());
   else if(state.screen === "wizard") app.appendChild(renderWizard());
   else if(state.screen === "summary") app.appendChild(renderSummary());
@@ -1264,17 +1636,20 @@ function renderTopnav(){
   nav.className = "topnav";
 
   const left = document.createElement("span");
+  left.className = "nav-label";
   left.textContent = sessionUser ? "SESSÃO DE HOJE" : "PIPOCA & PLAY";
 
   const right = document.createElement("div");
   right.style.display = "flex";
   right.style.gap = "8px";
   right.style.alignItems = "center";
+  right.style.flexWrap = "wrap";
+  right.style.justifyContent = "flex-end";
 
   if(!sessionUser){
     const enterBtn = document.createElement("button");
     enterBtn.textContent = "Entrar";
-    enterBtn.onclick = () => { state.screen = "login"; render(); };
+    enterBtn.onclick = () => goTo("login");
     right.appendChild(enterBtn);
   }else{
     const account = document.createElement("span");
@@ -1285,28 +1660,37 @@ function renderTopnav(){
     if(sessionUser.role === "admin"){
       const adminBtn = document.createElement("button");
       adminBtn.textContent = "Painel admin";
-      adminBtn.onclick = () => { window.location.href = ADMIN_PANEL_URL; };
+      adminBtn.onclick = () => { leavingOnPurpose = true; window.location.href = ADMIN_PANEL_URL; };
       right.appendChild(adminBtn);
     }else{
+      right.appendChild(renderCreditChip());
+
+      const marksBtn = document.createElement("button");
+      marksBtn.textContent = "Marcações";
+      marksBtn.onclick = async () => {
+        await loadMarks();
+        goTo("marks");
+      };
+      right.appendChild(marksBtn);
+
       const histBtn = document.createElement("button");
       histBtn.textContent = "Histórico";
       histBtn.onclick = async () => {
-        state.screen = "history";
         state.historyList = await loadHistory();
-        render();
+        goTo("history");
       };
       right.appendChild(histBtn);
     }
 
-    const newBtn = document.createElement("button");
-    newBtn.textContent = "Nova busca";
-    newBtn.onclick = () => {
-      state.screen = "wizard";
-      state.stepIndex = 0;
-      state.filters = {};
-      render();
-    };
-    right.appendChild(newBtn);
+    if(sessionUser.role !== "admin"){
+      const newBtn = document.createElement("button");
+      newBtn.textContent = "Nova busca";
+      newBtn.onclick = () => {
+        if(!hasPaidAccess()){ goTo("plans"); return; }
+        goTo("wizard", { stepIndex: 0, filters: {} });
+      };
+      right.appendChild(newBtn);
+    }
 
     const logoutBtn = document.createElement("button");
     logoutBtn.textContent = "Sair";
@@ -1316,6 +1700,29 @@ function renderTopnav(){
   nav.appendChild(left);
   nav.appendChild(right);
   return nav;
+}
+
+function renderCreditChip(){
+  const chip = document.createElement("span");
+  chip.className = "credit-chip";
+  if(!subscription || !subscription.active){
+    chip.className += " locked";
+    chip.textContent = "SEM PLANO";
+    chip.title = "Escolha um plano para liberar as indicações.";
+    chip.style.cursor = "pointer";
+    chip.onclick = () => goTo("plans");
+    return chip;
+  }
+  if(subscription.unlimited){
+    chip.textContent = "∞ CRÉDITOS";
+    chip.title = "Plano Diamante: consultas ilimitadas no ciclo de 30 dias.";
+    return chip;
+  }
+  const left = subscription.credits_remaining || 0;
+  if(left <= 0) chip.className += " empty";
+  chip.textContent = left + "/" + (subscription.daily_credits || 0) + " HOJE";
+  chip.title = "Créditos restantes hoje. 1 crédito = 1 consulta.";
+  return chip;
 }
 
 function renderLanding(){
@@ -1335,7 +1742,7 @@ function renderLanding(){
   const enter = document.createElement("button");
   enter.className = "cta";
   enter.textContent = "Entrar e encontrar meu filme";
-  enter.onclick = () => { state.screen = "login"; render(); };
+  enter.onclick = () => goTo("login");
   const how = document.createElement("button");
   how.className = "cta secondary";
   how.textContent = "Como funciona";
@@ -1446,7 +1853,7 @@ function renderLogin(){
   const back = document.createElement("button");
   back.className = "back-link";
   back.textContent = "← Voltar para a apresentação";
-  back.onclick = () => { authError = ""; state.screen = "landing"; render(); };
+  back.onclick = () => { authError = ""; window.history.back(); };
   wrap.appendChild(back);
   return wrap;
 }
@@ -1486,22 +1893,338 @@ function renderAccessStatus(){
     const enter = document.createElement("button");
     enter.className = "cta small";
     enter.textContent = "Entrar na plataforma";
-    enter.onclick = () => { clearPendingAccess(); authMode = "login"; state.screen = "login"; render(); };
+    enter.onclick = () => { clearPendingAccess(); authMode = "login"; goTo("login"); };
     actions.appendChild(enter);
   }else{
     const retry = document.createElement("button");
     retry.className = "cta small";
     retry.textContent = "Fazer novo cadastro";
-    retry.onclick = () => { clearPendingAccess(); authMode = "register"; authError = ""; state.screen = "login"; render(); };
+    retry.onclick = () => { clearPendingAccess(); authMode = "register"; authError = ""; goTo("login"); };
     actions.appendChild(retry);
   }
   const back = document.createElement("button");
   back.className = "cta secondary small";
   back.textContent = "Voltar para a apresentação";
-  back.onclick = () => { state.screen = "landing"; render(); };
+  back.onclick = () => goTo("landing");
   actions.appendChild(back);
   wrap.appendChild(actions);
   return wrap;
+}
+
+function brl(value){
+  return "R$ " + Number(value || 0).toFixed(2).replace(".", ",");
+}
+
+function formatCycleEnd(value){
+  if(!value) return "";
+  const date = new Date(value);
+  if(isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("pt-BR", { day:"2-digit", month:"2-digit", year:"numeric" });
+}
+
+/* ---------- planos ---------- */
+function renderPlans(){
+  const wrap = document.createElement("section");
+
+  const eyebrow = document.createElement("div");
+  eyebrow.className = "step-eyebrow";
+  eyebrow.textContent = "ASSINATURA";
+  wrap.appendChild(eyebrow);
+
+  const title = document.createElement("h2");
+  title.className = "step-question";
+  title.textContent = hasPaidAccess() ? "Seu plano" : "Escolha o seu plano";
+  wrap.appendChild(title);
+
+  if(billingError){
+    const box = document.createElement("div");
+    box.className = "error-box";
+    box.textContent = billingError;
+    wrap.appendChild(box);
+  }
+
+  const intro = document.createElement("div");
+  intro.className = "paywall-box";
+  if(hasPaidAccess()){
+    const until = formatCycleEnd(subscription.cycle_end);
+    intro.innerHTML = "Pagamento confirmado. Seu plano <b>" + escapeHtml(subscription.plan_name) + "</b> está ativo" +
+      (until ? " até <b>" + escapeHtml(until) + "</b>" : "") + ". " +
+      (subscription.unlimited
+        ? "Você tem consultas ilimitadas dentro do ciclo de 30 dias."
+        : "Você tem <b>" + subscription.daily_credits + " créditos por dia</b> e ainda pode fazer <b>" +
+          (subscription.credits_remaining || 0) + "</b> consulta(s) hoje.");
+  }else{
+    intro.innerHTML = "As indicações são liberadas depois que o pagamento é confirmado. " +
+      "<b>1 crédito = 1 consulta</b> de filme, série ou novela, e os créditos renovam todo dia.";
+  }
+  wrap.appendChild(intro);
+
+  if(subscription && subscription.checkout_configured === false){
+    const warn = document.createElement("div");
+    warn.className = "error-box";
+    warn.textContent = "O pagamento ainda não está configurado neste ambiente. Fale com o administrador da plataforma.";
+    wrap.appendChild(warn);
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "plan-grid";
+  (plansCatalog || []).forEach(plan => {
+    const card = document.createElement("div");
+    card.className = "plan-card";
+    const isCurrent = hasPaidAccess() && subscription.plan === plan.id;
+    if(isCurrent) card.className += " current";
+    else if(plan.unlimited) card.className += " featured";
+
+    if(isCurrent){
+      const flag = document.createElement("span");
+      flag.className = "pc-flag";
+      flag.textContent = "Plano ativo";
+      card.appendChild(flag);
+    }
+
+    const top = document.createElement("div");
+    top.className = "pc-top";
+    const name = document.createElement("div");
+    name.className = "pc-name";
+    name.textContent = plan.name;
+    const price = document.createElement("div");
+    price.className = "pc-price";
+    price.innerHTML = escapeHtml(brl(plan.price)) + " <small>/mês</small>";
+    top.appendChild(name);
+    top.appendChild(price);
+    card.appendChild(top);
+
+    const tagline = document.createElement("div");
+    tagline.className = "pc-tagline";
+    tagline.textContent = plan.tagline || "";
+    card.appendChild(tagline);
+
+    const desc = document.createElement("p");
+    desc.className = "pc-desc";
+    desc.textContent = plan.description || "";
+    card.appendChild(desc);
+
+    const cta = document.createElement("button");
+    cta.className = "cta small" + (isCurrent ? " secondary" : "");
+    cta.disabled = billingBusy;
+    cta.textContent = billingBusy && checkoutPlan === plan.id
+      ? "Abrindo pagamento…"
+      : (isCurrent ? "Renovar assinatura" : "Assinar " + plan.name);
+    cta.onclick = () => { checkoutPlan = plan.id; checkoutInfo = null; billingError = ""; goTo("checkout"); };
+    card.appendChild(cta);
+
+    grid.appendChild(card);
+  });
+  wrap.appendChild(grid);
+
+  if(hasPaidAccess()){
+    const back = document.createElement("button");
+    back.className = "back-link";
+    back.style.display = "block";
+    back.textContent = "← Voltar para a busca";
+    back.onclick = () => goTo("wizard", { stepIndex: 0, filters: {} });
+    wrap.appendChild(back);
+  }
+
+  return wrap;
+}
+
+/* ---------- checkout ---------- */
+function renderCheckout(){
+  const wrap = document.createElement("section");
+  const plan = (plansCatalog || []).find(item => item.id === checkoutPlan) || null;
+
+  const eyebrow = document.createElement("div");
+  eyebrow.className = "step-eyebrow";
+  eyebrow.textContent = "PAGAMENTO";
+  wrap.appendChild(eyebrow);
+
+  const title = document.createElement("h2");
+  title.className = "step-question";
+  title.textContent = plan ? "Plano " + plan.name : "Pagamento";
+  wrap.appendChild(title);
+
+  if(billingError){
+    const box = document.createElement("div");
+    box.className = "error-box";
+    box.textContent = billingError;
+    wrap.appendChild(box);
+  }
+
+  if(!checkoutInfo){
+    const intro = document.createElement("div");
+    intro.className = "paywall-box";
+    intro.innerHTML = plan
+      ? "Você vai assinar o plano <b>" + escapeHtml(plan.name) + "</b> por <b>" + escapeHtml(brl(plan.price)) +
+        "/mês</b> — " + escapeHtml(plan.tagline || "") + ". O pagamento é processado pelo ASAAS."
+      : "Escolha um plano para continuar.";
+    wrap.appendChild(intro);
+
+    const form = document.createElement("form");
+    const nameField = document.createElement("div");
+    nameField.className = "checkout-field";
+    nameField.innerHTML = '<label for="ck-name">Nome completo</label>';
+    const nameInput = document.createElement("input");
+    nameInput.id = "ck-name";
+    nameInput.type = "text";
+    nameInput.autocomplete = "name";
+    nameInput.placeholder = "Como está no seu documento";
+    nameField.appendChild(nameInput);
+
+    const docField = document.createElement("div");
+    docField.className = "checkout-field";
+    docField.innerHTML = '<label for="ck-doc">CPF ou CNPJ</label>';
+    const docInput = document.createElement("input");
+    docInput.id = "ck-doc";
+    docInput.type = "text";
+    docInput.inputMode = "numeric";
+    docInput.placeholder = "Somente números";
+    docField.appendChild(docInput);
+
+    const cta = document.createElement("button");
+    cta.className = "cta";
+    cta.type = "submit";
+    cta.disabled = billingBusy || !plan;
+    cta.textContent = billingBusy ? "Abrindo pagamento…" : "Gerar pagamento";
+
+    form.appendChild(nameField);
+    form.appendChild(docField);
+    form.appendChild(cta);
+    form.onsubmit = event => {
+      event.preventDefault();
+      if(!plan) return;
+      startCheckout(plan.id, nameInput.value.trim(), docInput.value.trim());
+    };
+    wrap.appendChild(form);
+  }else{
+    const intro = document.createElement("div");
+    intro.className = "paywall-box";
+    intro.innerHTML = "Sua cobrança foi criada. Abra a fatura, conclua o pagamento e volte aqui para confirmar. " +
+      "<b>As indicações são liberadas assim que o ASAAS confirmar o pagamento.</b>";
+    wrap.appendChild(intro);
+
+    if(checkoutInfo.invoice_url){
+      const pay = document.createElement("a");
+      pay.className = "cta";
+      pay.style.display = "block";
+      pay.style.textAlign = "center";
+      pay.style.textDecoration = "none";
+      pay.href = checkoutInfo.invoice_url;
+      // Nova aba: a plataforma continua aberta e a sessão não é encerrada.
+      pay.target = "_blank";
+      pay.rel = "noopener noreferrer";
+      pay.textContent = "💳 Abrir a fatura e pagar";
+      wrap.appendChild(pay);
+    }
+
+    const check = document.createElement("button");
+    check.className = "cta secondary";
+    check.style.marginTop = "12px";
+    check.disabled = billingBusy;
+    check.textContent = billingBusy ? "Consultando o ASAAS…" : "Já paguei — confirmar agora";
+    check.onclick = () => refreshPayment();
+    wrap.appendChild(check);
+
+    const note = document.createElement("p");
+    note.className = "disclaimer";
+    note.textContent = "Boleto e Pix podem levar alguns minutos para compensar. Se o pagamento ainda não aparecer, aguarde e confirme de novo.";
+    wrap.appendChild(note);
+  }
+
+  const back = document.createElement("button");
+  back.className = "back-link";
+  back.style.display = "block";
+  back.textContent = "← Escolher outro plano";
+  back.onclick = () => { checkoutInfo = null; billingError = ""; goTo("plans"); };
+  wrap.appendChild(back);
+
+  return wrap;
+}
+
+/* ---------- histórico de marcações ---------- */
+function renderMarks(){
+  const wrap = document.createElement("section");
+
+  const h = document.createElement("div");
+  h.className = "results-header";
+  h.textContent = "Minhas marcações";
+  wrap.appendChild(h);
+
+  const sub = document.createElement("div");
+  sub.className = "results-sub";
+  sub.textContent = "GOSTEI · NÃO GOSTEI · JÁ ASSISTI";
+  wrap.appendChild(sub);
+
+  if(marksError){
+    const box = document.createElement("div");
+    box.className = "error-box";
+    box.textContent = marksError;
+    wrap.appendChild(box);
+  }
+
+  const intro = document.createElement("div");
+  intro.className = "paywall-box";
+  intro.textContent = "Estas marcações são enviadas junto com a sua busca: o que você já assistiu não volta a ser indicado, " +
+    "e o que você gostou orienta as próximas escolhas. Remover uma marcação devolve o título às indicações futuras.";
+  wrap.appendChild(intro);
+
+  if(!marksList.length){
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "Nenhuma marcação ainda. Use os botões nos cards de indicação para marcar o que você gostou ou já assistiu.";
+    wrap.appendChild(empty);
+  }
+
+  marksList.forEach(mark => {
+    const item = document.createElement("div");
+    item.className = "mark-item";
+
+    const body = document.createElement("div");
+    body.className = "mi-body";
+
+    const label = document.createElement("div");
+    label.className = "mi-title";
+    const name = mark.title_pt || mark.title_original || "";
+    label.textContent = name + (mark.year ? " (" + mark.year + ")" : "");
+    body.appendChild(label);
+
+    const tags = document.createElement("div");
+    tags.className = "mi-tags";
+    if(mark.opinion === "liked") tags.appendChild(markTag("👍 Gostei", "liked"));
+    if(mark.opinion === "disliked") tags.appendChild(markTag("👎 Não gostei", "disliked"));
+    if(mark.watched) tags.appendChild(markTag("✅ Já assisti", "watched"));
+    body.appendChild(tags);
+    item.appendChild(body);
+
+    const remove = document.createElement("button");
+    remove.className = "mi-remove";
+    remove.textContent = "Remover";
+    remove.title = "Remover esta marcação e voltar a receber este título nas indicações";
+    remove.onclick = async () => {
+      remove.disabled = true;
+      remove.textContent = "Removendo…";
+      await removeMark(mark.id);
+    };
+    item.appendChild(remove);
+
+    wrap.appendChild(item);
+  });
+
+  const back = document.createElement("button");
+  back.className = "back-link";
+  back.style.display = "block";
+  back.textContent = "← Voltar";
+  back.onclick = () => window.history.back();
+  wrap.appendChild(back);
+
+  return wrap;
+}
+
+function markTag(text, kind){
+  const tag = document.createElement("span");
+  tag.className = "mi-tag " + kind;
+  tag.textContent = text;
+  return tag;
 }
 
 function formatUserDate(value){
@@ -1737,11 +2460,10 @@ function renderWizard(){
     b.onclick = () => {
       state.filters[step.key] = opt;
       if(state.stepIndex < STEPS.length - 1){
-        state.stepIndex += 1;
+        goTo("wizard", { stepIndex: state.stepIndex + 1 });
       }else{
-        state.screen = "summary";
+        goTo("summary");
       }
-      render();
     };
     opts.appendChild(b);
   });
@@ -1754,7 +2476,7 @@ function renderWizard(){
     const back = document.createElement("button");
     back.className = "back-link";
     back.textContent = "← Voltar";
-    back.onclick = () => { state.stepIndex -= 1; render(); };
+    back.onclick = () => window.history.back();
     wrap.appendChild(back);
   }
 
@@ -1790,7 +2512,7 @@ function renderSummary(){
   back.className = "back-link";
   back.textContent = "← Ajustar respostas";
   back.style.display = "block";
-  back.onclick = () => { state.screen = "wizard"; state.stepIndex = STEPS.length - 1; render(); };
+  back.onclick = () => window.history.back();
 
   wrap.appendChild(eyebrow);
   wrap.appendChild(q);
@@ -1819,13 +2541,18 @@ function renderError(){
   box.textContent = state.errorMsg || "Algo deu errado.";
   const retry = document.createElement("button");
   retry.className = "cta small";
-  retry.textContent = "Tentar de novo";
-  retry.onclick = () => runSearch();
+  if(state.errorReason === "no_credits"){
+    retry.textContent = "Ver planos e créditos";
+    retry.onclick = () => goTo("plans");
+  }else{
+    retry.textContent = "Tentar de novo";
+    retry.onclick = () => runSearch();
+  }
   const back = document.createElement("button");
   back.className = "back-link";
   back.textContent = "← Ajustar respostas";
   back.style.display = "block";
-  back.onclick = () => { state.screen = "summary"; render(); };
+  back.onclick = () => goTo("summary");
   wrap.appendChild(box);
   wrap.appendChild(retry);
   wrap.appendChild(back);
@@ -1833,6 +2560,10 @@ function renderError(){
 }
 
 async function runSearch(){
+  if(!hasPaidAccess()){
+    await loadSubscription(true);
+    if(!hasPaidAccess()){ goTo("plans"); return; }
+  }
   state.screen = "loading";
   render();
   try{
@@ -1852,8 +2583,7 @@ async function runSearch(){
     state.interpretation = result.interpretation || "";
     state.bestChoice = result.best_choice || null;
     state.recommendations = result.recommendations;
-    state.screen = "results";
-    render();
+    goTo("results");
 
     const record = {
       filters: { ...state.filters },
@@ -1865,9 +2595,15 @@ async function runSearch(){
     };
     saveToHistory(record);
   }catch(e){
+    // Pagamento pendente ou crédito esgotado levam direto à tela de planos.
+    if(e.reason === "payment_required"){
+      billingError = e.message || "";
+      goTo("plans");
+      return;
+    }
     state.errorMsg = e.message || "Não consegui buscar recomendações agora.";
-    state.screen = "error";
-    render();
+    state.errorReason = e.reason || "";
+    goTo("error");
   }
 }
 
@@ -2123,11 +2859,50 @@ function renderTicket(rec){
   });
   body.appendChild(links);
 
+  const marks = renderMarkRow(rec);
+  if(marks) body.appendChild(marks);
+
   t.appendChild(banner);
   t.appendChild(head);
   t.appendChild(tear);
   t.appendChild(body);
   return t;
+}
+
+/* ---------- gostei / não gostei / já assisti ---------- */
+function renderMarkRow(rec){
+  // Marcação é informação do usuário logado; visitante não tem onde gravar.
+  if(!sessionUser || sessionUser.role === "admin") return null;
+
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = "O QUE VOCÊ ACHOU";
+
+  const row = document.createElement("div");
+  row.className = "mark-row";
+  const current = markFor(rec) || { opinion: "", watched: false };
+
+  [
+    { field: "liked", css: "like", text: "👍 Gostei", on: current.opinion === "liked" },
+    { field: "disliked", css: "dislike", text: "👎 Não gostei", on: current.opinion === "disliked" },
+    { field: "watched", css: "watched", text: "✅ Já assisti", on: !!current.watched }
+  ].forEach(option => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mark-btn " + option.css;
+    button.textContent = option.text;
+    button.setAttribute("aria-pressed", option.on ? "true" : "false");
+    button.onclick = async () => {
+      button.disabled = true;
+      await toggleMark(rec, option.field);
+    };
+    row.appendChild(button);
+  });
+
+  const holder = document.createElement("div");
+  holder.appendChild(label);
+  holder.appendChild(row);
+  return holder;
 }
 
 function renderHistory(){
@@ -2144,7 +2919,7 @@ function renderHistory(){
     back.textContent = "← Todas as buscas";
     back.style.display = "block";
     back.style.marginBottom = "14px";
-    back.onclick = () => { state.viewingHistoryItem = null; render(); };
+    back.onclick = () => window.history.back();
     wrap.appendChild(back);
 
     if(item.interpretation){
@@ -2197,7 +2972,7 @@ function renderHistory(){
     ht.textContent = (item.filters.genre || "") + " · " + (item.filters.mood || "");
     el.appendChild(hd);
     el.appendChild(ht);
-    el.onclick = () => { state.viewingHistoryItem = item; render(); };
+    el.onclick = () => goTo("history", { viewingHistoryItem: item });
     wrap.appendChild(el);
   });
 

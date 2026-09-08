@@ -20,10 +20,11 @@ import os
 import re
 import secrets
 import threading
+import unicodedata
 import urllib.error
 import urllib.request
 from urllib.parse import quote, urlencode, urlparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -35,6 +36,11 @@ POSTGRES_TABLE = "pipoca_play_store"
 BLOB_PATH = os.environ.get("USER_STORE_BLOB_PATH", "pipoca-play/users.json").strip() or "pipoca-play/users.json"
 VALID_STATUSES = ("pending", "approved", "rejected")
 VALID_ROLES = ("user", "admin")
+VALID_OPINIONS = ("liked", "disliked", "")
+# Fuso oficial do Brasil (sem horário de verão desde 2019): o dia de crédito
+# vira à meia-noite de Brasília, não à meia-noite UTC.
+BRAZIL_TZ = timezone(timedelta(hours=-3))
+MAX_MARKS_PER_USER = 500
 _LOCK = threading.RLock()
 
 SETUP_HINT = (
@@ -48,8 +54,17 @@ class StorageError(RuntimeError):
     """Indica que a base de contas não pôde ser lida ou gravada."""
 
 
+class CreditsExhaustedError(RuntimeError):
+    """O usuário já usou todos os créditos do dia."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def brazil_today() -> str:
+    """Data corrente em Brasília, no formato AAAA-MM-DD."""
+    return datetime.now(BRAZIL_TZ).date().isoformat()
 
 
 def _is_serverless() -> bool:
@@ -713,6 +728,7 @@ def is_admin_user(email: str) -> bool:
 
 
 def _public_admin_user(user: dict) -> dict:
+    subscription = subscription_of(user)
     return {
         "id": str(user.get("id", "")),
         "email": str(user.get("email", "")),
@@ -722,6 +738,11 @@ def _public_admin_user(user: dict) -> dict:
         "updated_at": user.get("updated_at"),
         "approved_at": user.get("approved_at"),
         "rejected_at": user.get("rejected_at"),
+        "plan": subscription["plan"],
+        "subscription_status": subscription["status"],
+        "cycle_end": subscription["cycle_end"],
+        "credits_used_today": credits_of(user)["used"],
+        "marks_count": len(marks_of(user)),
     }
 
 
@@ -742,6 +763,7 @@ def admin_summary() -> dict:
         "approved": sum(user.get("status") == "approved" for user in users),
         "rejected": sum(user.get("status") == "rejected" for user in users),
         "admins": sum(_user_role(user) == "admin" for user in users),
+        "subscribers": sum(subscription_of(user)["status"] == "active" for user in users),
     }
 
 
@@ -803,3 +825,232 @@ def delete_user(user_id: str) -> None:
         if len(remaining) == len(users):
             raise LookupError("Usuário não encontrado.")
         save_users(remaining)
+
+
+# ---------------------------------------------------------------------------
+# Assinatura, créditos diários e marcações do usuário
+# ---------------------------------------------------------------------------
+
+
+EMPTY_SUBSCRIPTION = {
+    "plan": "",
+    "status": "none",
+    "asaas_customer_id": "",
+    "asaas_subscription_id": "",
+    "payment_id": "",
+    "invoice_url": "",
+    "cycle_start": None,
+    "cycle_end": None,
+    "confirmed_at": None,
+    "updated_at": None,
+}
+
+
+def _slugify(value: str) -> str:
+    """Chave estável para uma obra: sem acento, sem pontuação, em minúsculas."""
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_only = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", "-", ascii_only.lower()).strip("-")
+
+
+def mark_key(title_original: str, title_pt: str = "", year: int | str = 0) -> str:
+    """Identidade da obra marcada. O título original manda; o ano desempata."""
+    base = _slugify(title_original) or _slugify(title_pt)
+    if not base:
+        return ""
+    try:
+        parsed_year = int(year or 0)
+    except (TypeError, ValueError):
+        parsed_year = 0
+    return f"{base}:{parsed_year}" if parsed_year else base
+
+
+def subscription_of(user: dict | None) -> dict:
+    """Assinatura gravada na conta, sempre com todas as chaves preenchidas."""
+    stored = (user or {}).get("subscription")
+    subscription = dict(EMPTY_SUBSCRIPTION)
+    if isinstance(stored, dict):
+        subscription.update({key: stored.get(key, subscription[key]) for key in subscription})
+    return subscription
+
+
+def credits_of(user: dict | None, today: str | None = None) -> dict:
+    """Consumo do dia corrente. Um dia novo zera a contagem sem precisar gravar."""
+    reference = today or brazil_today()
+    stored = (user or {}).get("credits")
+    if isinstance(stored, dict) and str(stored.get("date", "")) == reference:
+        try:
+            used = max(0, int(stored.get("used", 0) or 0))
+        except (TypeError, ValueError):
+            used = 0
+        return {"date": reference, "used": used}
+    return {"date": reference, "used": 0}
+
+
+def marks_of(user: dict | None) -> list[dict]:
+    stored = (user or {}).get("marks")
+    return [item for item in stored if isinstance(item, dict)] if isinstance(stored, list) else []
+
+
+def _mutate_by_email(email: str, apply):
+    """Aplica uma mudança na conta do e-mail informado e devolve o retorno de `apply`."""
+    normalized = normalize_email(email)
+    with _LOCK:
+        users = load_users()
+        target = find_user(normalized, users)
+        if not target:
+            raise LookupError("Conta não encontrada.")
+        result = apply(target)
+        target["updated_at"] = _now()
+        save_users(users)
+        return result
+
+
+def get_account(email: str) -> dict | None:
+    return find_user(email)
+
+
+def save_subscription(email: str, patch: dict) -> dict:
+    """Grava campos da assinatura preservando os que não vieram no patch."""
+
+    def apply(target: dict) -> dict:
+        subscription = subscription_of(target)
+        for key, value in patch.items():
+            if key in EMPTY_SUBSCRIPTION:
+                subscription[key] = value
+        subscription["updated_at"] = _now()
+        target["subscription"] = subscription
+        return subscription
+
+    return _mutate_by_email(email, apply)
+
+
+def consume_credit(email: str, daily_limit: int | None, today: str | None = None) -> dict:
+    """Debita um crédito do dia. `daily_limit` None significa ilimitado.
+
+    A leitura, a checagem e a gravação acontecem sob o mesmo lock para que duas
+    buscas simultâneas não gastem o mesmo crédito duas vezes.
+    """
+    reference = today or brazil_today()
+
+    def apply(target: dict) -> dict:
+        credits = credits_of(target, reference)
+        if daily_limit is not None and credits["used"] >= daily_limit:
+            raise CreditsExhaustedError("Seus créditos de hoje acabaram.")
+        credits["used"] += 1
+        target["credits"] = credits
+        return dict(credits)
+
+    return _mutate_by_email(email, apply)
+
+
+def refund_credit(email: str, today: str | None = None) -> dict:
+    """Devolve o crédito quando a consulta não chegou a produzir recomendações."""
+    reference = today or brazil_today()
+
+    def apply(target: dict) -> dict:
+        credits = credits_of(target, reference)
+        credits["used"] = max(0, credits["used"] - 1)
+        target["credits"] = credits
+        return dict(credits)
+
+    return _mutate_by_email(email, apply)
+
+
+def list_marks(email: str) -> list[dict]:
+    """Marcações do usuário, da mais recente para a mais antiga."""
+    user = find_user(email)
+    if not user:
+        raise LookupError("Conta não encontrada.")
+    marks = marks_of(user)
+    return sorted(marks, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+
+
+def save_mark(email: str, mark: dict) -> dict:
+    """Cria ou atualiza a marcação de uma obra. A chave da obra evita duplicatas.
+
+    `opinion` e `watched` são independentes: quem só marcou "já assisti" continua
+    sem opinião registrada, e vice-versa.
+    """
+    title_original = str(mark.get("title_original", "") or "").strip()[:200]
+    title_pt = str(mark.get("title_pt", "") or "").strip()[:200]
+    if not title_original and not title_pt:
+        raise ValueError("Informe o título da obra marcada.")
+
+    opinion = str(mark.get("opinion", "") or "").strip().lower()
+    if opinion not in VALID_OPINIONS:
+        raise ValueError("Marcação inválida: use 'liked', 'disliked' ou vazio.")
+    watched = bool(mark.get("watched", False))
+
+    try:
+        year = int(mark.get("year", 0) or 0)
+    except (TypeError, ValueError):
+        year = 0
+    key = mark_key(title_original, title_pt, year)
+    if not key:
+        raise ValueError("Informe o título da obra marcada.")
+
+    def apply(target: dict) -> dict:
+        marks = marks_of(target)
+        now = _now()
+        existing = next((item for item in marks if str(item.get("key")) == key), None)
+        if existing:
+            existing.update(
+                {
+                    "title_original": title_original or existing.get("title_original", ""),
+                    "title_pt": title_pt or existing.get("title_pt", ""),
+                    "year": year or existing.get("year", 0),
+                    "opinion": opinion,
+                    "watched": watched,
+                    "updated_at": now,
+                }
+            )
+            record = existing
+        else:
+            record = {
+                "id": secrets.token_urlsafe(12),
+                "key": key,
+                "title_original": title_original,
+                "title_pt": title_pt,
+                "year": year,
+                "opinion": opinion,
+                "watched": watched,
+                "created_at": now,
+                "updated_at": now,
+            }
+            marks.append(record)
+        # Uma marcação sem opinião e sem "já assisti" não é marcação nenhuma:
+        # apagá-la é o que devolve a obra às indicações futuras.
+        if not opinion and not watched:
+            marks = [item for item in marks if str(item.get("key")) != key]
+            target["marks"] = marks
+            return {}
+        if len(marks) > MAX_MARKS_PER_USER:
+            marks = sorted(marks, key=lambda item: str(item.get("updated_at") or ""), reverse=True)[:MAX_MARKS_PER_USER]
+        target["marks"] = marks
+        return dict(record)
+
+    return _mutate_by_email(email, apply)
+
+
+def delete_mark(email: str, mark_id: str) -> None:
+    """Remove uma marcação individual: a obra volta a aparecer nas indicações."""
+    wanted = str(mark_id or "").strip()
+    if not wanted:
+        raise ValueError("Informe a marcação que deve ser removida.")
+
+    def apply(target: dict) -> None:
+        marks = marks_of(target)
+        remaining = [item for item in marks if str(item.get("id")) != wanted]
+        if len(remaining) == len(marks):
+            raise LookupError("Marcação não encontrada.")
+        target["marks"] = remaining
+
+    _mutate_by_email(email, apply)
+
+
+def clear_marks(email: str) -> None:
+    def apply(target: dict) -> None:
+        target["marks"] = []
+
+    _mutate_by_email(email, apply)

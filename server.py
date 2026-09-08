@@ -141,7 +141,42 @@ def clean_filters(value):
     return cleaned
 
 
-def buildRecommendationPrompt(filters):
+def _preferences_block(preferences):
+    """Bloco de marcações do usuário logado, injetado no prompt enviado ao GPT.
+
+    Sem marcações o bloco some inteiro, e o prompt volta a ser exatamente o do
+    MVP — nada de instrução vazia dizendo ao modelo que não há nada a evitar.
+    """
+    if not isinstance(preferences, dict):
+        return ""
+    watched = [str(item) for item in preferences.get("watched", []) if str(item).strip()]
+    liked = [str(item) for item in preferences.get("liked", []) if str(item).strip()]
+    disliked = [str(item) for item in preferences.get("disliked", []) if str(item).strip()]
+    if not (watched or liked or disliked):
+        return ""
+    lines = ["\n\nHistórico pessoal deste usuário (peso alto na escolha):"]
+    if watched:
+        lines.append(
+            "- Já assistiu, NÃO recomende nenhum destes títulos novamente: " + "; ".join(watched) + "."
+        )
+    if liked:
+        lines.append(
+            "- Gostou destes títulos; priorize obras com clima, ritmo ou temática parecidos: "
+            + "; ".join(liked)
+            + "."
+        )
+    if disliked:
+        lines.append(
+            "- Não gostou destes títulos; evite obras parecidas com eles: " + "; ".join(disliked) + "."
+        )
+    lines.append(
+        "Estas marcações vêm do próprio usuário e valem mais do que a popularidade do título. "
+        "As três recomendações precisam ser diferentes de tudo que ele já assistiu."
+    )
+    return "\n".join(lines)
+
+
+def buildRecommendationPrompt(filters, preferences=None):
     return f"""Atue como um especialista em cinema e recomendador personalizado para o público brasileiro. Responda em pt-BR.
 
 Estou procurando uma recomendação perfeita para assistir agora. Considere conjuntamente estas sete dimensões:
@@ -157,7 +192,7 @@ Priorize gênero, vibe e plataforma especificada; depois duração e companhia; 
 
 Selecione exatamente três filmes reais, ordenados da maior para a menor compatibilidade, e explique por que cada um combina com o perfil. O match_score é a compatibilidade própria do sistema entre 0 e 100, não é nota do IMDb, da crítica ou de qualquer outra fonte. Não escolha simplesmente os filmes mais populares.
 
-Não invente avaliações, plataformas, disponibilidade, URLs, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado."""
+Não invente avaliações, plataformas, disponibilidade, URLs, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado.{_preferences_block(preferences)}"""
 
 
 def validate_recommendation_payload(payload):
@@ -193,13 +228,13 @@ def extract_response_text(response):
     return "".join(parts).strip()
 
 
-def call_openai(filters):
+def call_openai(filters, preferences=None):
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY não foi configurada no servidor.")
     payload = {
         "model": os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
-        "input": buildRecommendationPrompt(filters),
+        "input": buildRecommendationPrompt(filters, preferences),
         "text": {
             "format": {
                 "type": "json_schema",
@@ -299,6 +334,16 @@ class AppHandler(SimpleHTTPRequestHandler):
         if path.path in {"/api/admin/status", "/api/admin/users"}:
             self.send_result(api_core.admin_overview(self.current_user()))
             return
+        if path.path == "/api/billing/plans":
+            self.send_result(api_core.plans())
+            return
+        if path.path == "/api/billing/status":
+            sync = parse_qs(path.query).get("sync", ["1"])[0] != "0"
+            self.send_result(api_core.billing_status(self.current_user(), sync))
+            return
+        if path.path == "/api/marks":
+            self.send_result(api_core.marks(self.current_user()))
+            return
         if path.path.startswith("/api/"):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
             return
@@ -327,6 +372,27 @@ class AppHandler(SimpleHTTPRequestHandler):
             )
             return
 
+        if self.path == "/api/billing/checkout":
+            self.send_result(
+                api_core.billing_checkout(self.current_user(), self.request_json_or_empty(4_096))
+            )
+            return
+
+        if self.path == "/api/billing/webhook":
+            self.send_result(
+                api_core.billing_webhook(
+                    self.request_json_or_empty(16_384),
+                    self.headers.get("asaas-access-token"),
+                )
+            )
+            return
+
+        if self.path == "/api/marks":
+            self.send_result(
+                api_core.mark_action(self.current_user(), self.request_json_or_empty(4_096))
+            )
+            return
+
         if self.path != "/api/recommend":
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
             return
@@ -342,14 +408,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
             return
         requests.append(now)
-        try:
-            body = self.request_json()
-            text = call_openai(clean_filters(body.get("filters")))
-            self.send_json(HTTPStatus.OK, {"text": text})
-        except (ValueError, json.JSONDecodeError) as error:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
-        except RuntimeError as error:
-            self.send_json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
+        self.send_result(api_core.recommend(user, self.request_json_or_empty()))
 
     def log_message(self, fmt, *args):
         print(f"[{self.log_date_time_string()}] {args[0]}")

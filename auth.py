@@ -18,7 +18,23 @@ from user_store import StorageError, find_user, is_admin_user, is_approved_user,
 
 
 SESSION_COOKIE = "pipoca_session"
-SESSION_TTL_SECONDS = 60 * 60 * 24
+
+
+def _session_ttl_seconds() -> int:
+    """Validade máxima da sessão no servidor.
+
+    O cookie é de sessão de navegador (sem Max-Age): fechar a aba ou sair da
+    página encerra o acesso e o cliente precisa entrar de novo. Este teto é o
+    limite de segurança para o caso de a aba ficar aberta indefinidamente.
+    """
+    try:
+        configured = int(os.environ.get("SESSION_TTL_SECONDS", "").strip() or 0)
+    except ValueError:
+        configured = 0
+    return configured if 60 <= configured <= 60 * 60 * 24 else 60 * 60 * 8
+
+
+SESSION_TTL_SECONDS = _session_ttl_seconds()
 
 
 def _is_production():
@@ -89,7 +105,7 @@ def create_session(email: str, role: str, user_id: str | None = None) -> str:
         "email": email,
         "role": role,
         "user_id": user_id,
-        "exp": int(time.time()) + SESSION_TTL_SECONDS,
+        "exp": int(time.time()) + _session_ttl_seconds(),
     }
     encoded = _b64(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
     return encoded + "." + _sign(encoded)
@@ -150,7 +166,8 @@ def session_cookie(session_value: str, secure: bool = False) -> str:
     morsel["httponly"] = True
     morsel["samesite"] = "Lax"
     morsel["path"] = "/"
-    morsel["max-age"] = str(SESSION_TTL_SECONDS)
+    # Sem Max-Age nem Expires: o navegador descarta o cookie ao fechar a aba,
+    # de modo que voltar à plataforma exige um novo login.
     if secure:
         morsel["secure"] = True
     return morsel.OutputString()

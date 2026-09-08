@@ -72,7 +72,7 @@
   .banner li{margin-bottom:3px;}
 
   .stats{display:grid;gap:10px;grid-template-columns:repeat(2,1fr);margin-bottom:18px;}
-  @media(min-width:720px){ .stats{grid-template-columns:repeat(5,1fr);} }
+  @media(min-width:720px){ .stats{grid-template-columns:repeat(6,1fr);} }
   .stat{background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:13px;}
   .stat .k{font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;font-size:9.5px;color:var(--cream-dim);margin-bottom:6px;}
   .stat .v{font-size:22px;font-weight:700;line-height:1;}
@@ -153,7 +153,7 @@
       <div class="tablewrap">
         <table>
           <thead>
-            <tr><th>E-mail</th><th>Situação</th><th>Papel</th><th>Cadastro</th><th>Ações</th></tr>
+            <tr><th>E-mail</th><th>Situação</th><th>Papel</th><th>Assinatura</th><th>Cadastro</th><th>Ações</th></tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
@@ -307,10 +307,11 @@ function renderDiagnostics(){
 function renderStats(){
   const box = $("stats");
   box.innerHTML = "";
-  const data = summary || { total: 0, pending: 0, approved: 0, rejected: 0, admins: 0 };
+  const data = summary || { total: 0, pending: 0, approved: 0, rejected: 0, admins: 0, subscribers: 0 };
   [
     ["Pendentes", data.pending],
     ["Liberados", data.approved],
+    ["Assinaturas ativas", data.subscribers || 0],
     ["Rejeitados", data.rejected],
     ["Administradores", data.admins || 0],
     ["Total", data.total]
@@ -322,6 +323,30 @@ function renderStats(){
     cell.appendChild(k); cell.appendChild(v);
     box.appendChild(cell);
   });
+}
+
+const PLAN_LABEL = { silver: "Silver", gold: "Gold", diamante: "Diamante" };
+const SUBSCRIPTION_LABEL = {
+  none: "Sem plano",
+  pending: "Aguardando pagamento",
+  active: "Pago",
+  overdue: "Em atraso",
+  canceled: "Cancelada"
+};
+
+function planTag(user){
+  const tag = document.createElement("span");
+  const status = user.subscription_status || "none";
+  const plan = PLAN_LABEL[user.plan] || "";
+  // "Pago" só aparece quando o ASAAS confirmou e o ciclo de 30 dias segue válido.
+  tag.className = "tag " + (status === "active" ? "approved" : status === "pending" ? "pending" : "rejected");
+  tag.textContent = status === "active" && plan
+    ? plan + " · pago"
+    : (plan ? plan + " · " + (SUBSCRIPTION_LABEL[status] || status) : SUBSCRIPTION_LABEL[status] || "Sem plano");
+  if(status === "active" && user.cycle_end){
+    tag.title = "Ciclo válido até " + formatDate(user.cycle_end);
+  }
+  return tag;
 }
 
 function actionButton(label, className, handler){
@@ -367,6 +392,10 @@ function renderRows(){
     roleTag.textContent = user.role === "admin" ? "Admin" : "Cliente";
     role.appendChild(roleTag);
     tr.appendChild(role);
+
+    const plan = document.createElement("td");
+    plan.appendChild(planTag(user));
+    tr.appendChild(plan);
 
     const created = document.createElement("td");
     created.textContent = formatDate(user.created_at);

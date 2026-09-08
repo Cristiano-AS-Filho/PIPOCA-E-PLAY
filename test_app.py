@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from pathlib import Path
 
@@ -14,18 +15,25 @@ os.environ["ENVIRONMENT"] = "test"
 os.environ["TMDB_API_KEY"] = ""
 os.environ["USER_STORE_FILE"] = str(TEST_STORE)
 
-from auth import authenticate, create_session, read_session  # noqa: E402
+from auth import authenticate, create_session, read_session, session_cookie  # noqa: E402
 from metadata import NullMetadataProvider  # noqa: E402
 from server import buildRecommendationPrompt, clean_filters, validate_recommendation_payload  # noqa: E402
 import api_core  # noqa: E402
+import billing  # noqa: E402
 from user_store import (  # noqa: E402
+    CreditsExhaustedError,
     StorageError,
     admin_summary,
     admin_users,
+    consume_credit,
     create_user,
+    delete_mark,
     delete_user,
     get_status_by_token,
+    list_marks,
     register_user,
+    save_mark,
+    save_subscription,
     set_user_password,
     storage_diagnostics,
     storage_mode,
@@ -33,6 +41,9 @@ from user_store import (  # noqa: E402
     update_user_status,
 )
 
+
+# Um ciclo de 30 dias que já venceu: usado para testar a expiração do acesso.
+CYCLE_OVER = 31
 
 FILTERS = {
     "genre": "Suspense / Thriller",
@@ -91,7 +102,7 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertIsNone(authenticate("user@test.local", "user-password"))
         self.assertEqual(
             admin_summary(),
-            {"total": 1, "pending": 1, "approved": 0, "rejected": 0, "admins": 0},
+            {"total": 1, "pending": 1, "approved": 0, "rejected": 0, "admins": 0, "subscribers": 0},
         )
 
     def test_admin_can_approve_reject_and_delete_user(self):
@@ -446,6 +457,229 @@ class PipocaPlayTests(unittest.TestCase):
         metadata = NullMetadataProvider().lookup("Example")
         self.assertFalse(metadata["availability_verified"])
         self.assertEqual(metadata["availability"], [])
+
+
+class SubscriptionAndCreditTests(unittest.TestCase):
+    """Assinatura paga, créditos diários e liberação dos resultados."""
+
+    def setUp(self):
+        TEST_STORE.unlink(missing_ok=True)
+        record, _, _ = register_user("cliente@test.local", "cliente-password")
+        update_user_status(record["id"], "approved")
+        self.email = "cliente@test.local"
+        self.session = {"email": self.email, "role": "user", "user_id": record["id"]}
+
+    def tearDown(self):
+        TEST_STORE.unlink(missing_ok=True)
+
+    def activate(self, plan: str):
+        start, end = billing.cycle_bounds()
+        save_subscription(
+            self.email,
+            {"plan": plan, "status": "active", "cycle_start": start, "cycle_end": end, "confirmed_at": start},
+        )
+
+    def test_plans_match_the_published_prices_and_credits(self):
+        catalog = {plan["id"]: plan for plan in billing.plans_catalog()}
+        self.assertEqual(catalog["silver"]["price"], 15.00)
+        self.assertEqual(catalog["silver"]["daily_credits"], 2)
+        self.assertEqual(catalog["gold"]["price"], 25.00)
+        self.assertEqual(catalog["gold"]["daily_credits"], 5)
+        self.assertEqual(catalog["diamante"]["price"], 30.00)
+        self.assertTrue(catalog["diamante"]["unlimited"])
+        self.assertIsNone(catalog["diamante"]["daily_credits"])
+
+    def test_recommendation_is_blocked_until_payment_is_confirmed(self):
+        status, payload, _ = api_core.recommend(self.session, {"filters": FILTERS})
+        self.assertEqual(status, 402)
+        self.assertEqual(payload["reason"], "payment_required")
+        self.assertFalse(billing.account_state(self.email)["payment_confirmed"])
+
+    def test_pending_payment_still_blocks_the_results(self):
+        save_subscription(self.email, {"plan": "gold", "status": "pending", "asaas_subscription_id": "sub_1"})
+        status, payload, _ = api_core.recommend(self.session, {"filters": FILTERS})
+        self.assertEqual(status, 402)
+        self.assertIn("confirmação", payload["error"])
+
+    def test_silver_plan_grants_exactly_two_daily_credits(self):
+        self.activate("silver")
+        self.assertEqual(billing.account_state(self.email)["credits_remaining"], 2)
+        billing.authorize_search(self.email)
+        billing.authorize_search(self.email)
+        self.assertEqual(billing.account_state(self.email)["credits_remaining"], 0)
+        with self.assertRaises(CreditsExhaustedError):
+            billing.authorize_search(self.email)
+
+    def test_gold_plan_grants_five_daily_credits(self):
+        self.activate("gold")
+        for _ in range(5):
+            billing.authorize_search(self.email)
+        self.assertEqual(billing.account_state(self.email)["credits_used_today"], 5)
+        with self.assertRaises(CreditsExhaustedError):
+            billing.authorize_search(self.email)
+
+    def test_diamond_plan_has_no_daily_limit(self):
+        self.activate("diamante")
+        for _ in range(25):
+            billing.authorize_search(self.email)
+        state = billing.account_state(self.email)
+        self.assertTrue(state["unlimited"])
+        self.assertIsNone(state["credits_remaining"])
+        self.assertTrue(state["active"])
+
+    def test_credits_reset_on_the_next_brazilian_day(self):
+        self.activate("silver")
+        consume_credit(self.email, 2, today="2026-09-08")
+        consume_credit(self.email, 2, today="2026-09-08")
+        with self.assertRaises(CreditsExhaustedError):
+            consume_credit(self.email, 2, today="2026-09-08")
+        self.assertEqual(consume_credit(self.email, 2, today="2026-09-09")["used"], 1)
+
+    def test_expired_cycle_stops_being_active(self):
+        expired = datetime.now(timezone.utc) - timedelta(days=CYCLE_OVER)
+        start, end = billing.cycle_bounds(expired)
+        save_subscription(
+            self.email,
+            {"plan": "diamante", "status": "active", "cycle_start": start, "cycle_end": end, "confirmed_at": start},
+        )
+        self.assertFalse(billing.account_state(self.email)["active"])
+        with self.assertRaises(billing.PaymentRequiredError):
+            billing.authorize_search(self.email)
+
+    def test_failed_search_refunds_the_credit(self):
+        self.activate("silver")
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            status, _, _ = api_core.recommend(self.session, {"filters": FILTERS})
+        self.assertEqual(status, 502)
+        self.assertEqual(billing.account_state(self.email)["credits_used_today"], 0)
+
+    def test_webhook_confirms_the_payment_and_releases_access(self):
+        save_subscription(self.email, {"plan": "gold", "status": "pending", "asaas_subscription_id": "sub_42"})
+        event = {
+            "event": "PAYMENT_CONFIRMED",
+            "payment": {
+                "id": "pay_42",
+                "status": "CONFIRMED",
+                "subscription": "sub_42",
+                "externalReference": f"pipoca-play:{self.email}:gold",
+                "confirmedDate": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+        }
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": "token-do-asaas"}):
+            self.assertEqual(api_core.billing_webhook(event, "errado")[0], 401)
+            self.assertEqual(api_core.billing_webhook(event, None)[0], 401)
+            status, payload, _ = api_core.billing_webhook(event, "token-do-asaas")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["handled"])
+        state = billing.account_state(self.email)
+        self.assertTrue(state["payment_confirmed"])
+        self.assertEqual(state["daily_credits"], 5)
+
+    def test_webhook_without_configured_token_is_refused(self):
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": ""}):
+            self.assertEqual(api_core.billing_webhook({}, "qualquer-coisa")[0], 401)
+
+    def test_overdue_payment_takes_the_access_back(self):
+        self.activate("silver")
+        event = {"payment": {"id": "p", "status": "OVERDUE", "externalReference": f"pipoca-play:{self.email}:silver"}}
+        with patch.dict(os.environ, {"ASAAS_WEBHOOK_TOKEN": "t"}):
+            api_core.billing_webhook(event, "t")
+        self.assertFalse(billing.account_state(self.email)["active"])
+
+    def test_admin_summary_counts_active_subscribers(self):
+        self.assertEqual(admin_summary()["subscribers"], 0)
+        self.activate("gold")
+        self.assertEqual(admin_summary()["subscribers"], 1)
+
+
+class MarkTests(unittest.TestCase):
+    """Gostei / não gostei / já assisti, e o histórico com remoção individual."""
+
+    def setUp(self):
+        TEST_STORE.unlink(missing_ok=True)
+        record, _, _ = register_user("marcador@test.local", "marcador-password")
+        update_user_status(record["id"], "approved")
+        self.email = "marcador@test.local"
+        self.session = {"email": self.email, "role": "user", "user_id": record["id"]}
+
+    def tearDown(self):
+        TEST_STORE.unlink(missing_ok=True)
+
+    def test_marks_are_stored_per_user_and_deduplicated_by_title(self):
+        save_mark(self.email, {"title_original": "Parasite", "title_pt": "Parasita", "year": 2019, "opinion": "liked"})
+        save_mark(
+            self.email,
+            {"title_original": "Parasite", "title_pt": "Parasita", "year": 2019, "opinion": "liked", "watched": True},
+        )
+        marks = list_marks(self.email)
+        self.assertEqual(len(marks), 1)
+        self.assertEqual(marks[0]["opinion"], "liked")
+        self.assertTrue(marks[0]["watched"])
+
+    def test_marks_do_not_leak_between_accounts(self):
+        other, _, _ = register_user("outro@test.local", "outro-password")
+        update_user_status(other["id"], "approved")
+        save_mark(self.email, {"title_original": "Dune", "year": 2021, "opinion": "liked"})
+        self.assertEqual(len(list_marks(self.email)), 1)
+        self.assertEqual(list_marks("outro@test.local"), [])
+
+    def test_opinion_and_watched_are_independent(self):
+        save_mark(self.email, {"title_original": "Dune", "year": 2021, "watched": True})
+        mark = list_marks(self.email)[0]
+        self.assertEqual(mark["opinion"], "")
+        self.assertTrue(mark["watched"])
+
+    def test_clearing_both_flags_removes_the_mark(self):
+        save_mark(self.email, {"title_original": "Dune", "year": 2021, "opinion": "liked"})
+        save_mark(self.email, {"title_original": "Dune", "year": 2021, "opinion": "", "watched": False})
+        self.assertEqual(list_marks(self.email), [])
+
+    def test_marks_reach_the_prompt_sent_to_the_model(self):
+        save_mark(self.email, {"title_original": "Parasite", "title_pt": "Parasita", "year": 2019, "watched": True})
+        save_mark(self.email, {"title_original": "Cats", "title_pt": "Cats", "year": 2019, "opinion": "disliked"})
+        preferences = billing.preferences_for_prompt(self.email)
+        self.assertEqual(preferences["watched"], ["Parasita (2019)"])
+        self.assertEqual(preferences["disliked"], ["Cats (2019)"])
+        prompt = buildRecommendationPrompt(FILTERS, preferences)
+        self.assertIn("NÃO recomende nenhum destes títulos novamente: Parasita (2019)", prompt)
+        self.assertIn("evite obras parecidas com eles: Cats (2019)", prompt)
+
+    def test_prompt_is_unchanged_when_the_user_has_no_marks(self):
+        self.assertNotIn("Histórico pessoal", buildRecommendationPrompt(FILTERS))
+        self.assertNotIn(
+            "Histórico pessoal",
+            buildRecommendationPrompt(FILTERS, {"watched": [], "liked": [], "disliked": []}),
+        )
+
+    def test_removing_one_mark_brings_the_title_back_to_future_searches(self):
+        save_mark(self.email, {"title_original": "Parasite", "title_pt": "Parasita", "year": 2019, "watched": True})
+        save_mark(self.email, {"title_original": "Cats", "title_pt": "Cats", "year": 2019, "opinion": "disliked"})
+        parasite = next(item for item in list_marks(self.email) if item["title_pt"] == "Parasita")
+        status, payload, _ = api_core.mark_action(self.session, {"action": "delete", "id": parasite["id"]})
+        self.assertEqual(status, 200)
+        self.assertEqual([item["title_pt"] for item in payload["marks"]], ["Cats"])
+        self.assertEqual(billing.preferences_for_prompt(self.email)["watched"], [])
+        with self.assertRaises(LookupError):
+            delete_mark(self.email, parasite["id"])
+
+    def test_marks_require_an_authenticated_session(self):
+        self.assertEqual(api_core.marks(None)[0], 401)
+        self.assertEqual(api_core.mark_action(None, {"action": "save"})[0], 401)
+
+    def test_mark_without_a_title_is_rejected(self):
+        status, _, _ = api_core.mark_action(self.session, {"action": "save", "title_original": " "})
+        self.assertEqual(status, 400)
+
+
+class SessionCookieTests(unittest.TestCase):
+    """A sessão termina ao sair da página: o cookie é de sessão de navegador."""
+
+    def test_cookie_has_no_expiry_so_leaving_the_page_requires_a_new_login(self):
+        cookie = session_cookie(create_session("a@test.local", "user", "1"), secure=True)
+        self.assertNotIn("Max-Age", cookie)
+        self.assertNotIn("Expires", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("Secure", cookie)
 
 
 if __name__ == "__main__":

@@ -20,16 +20,21 @@ from auth import (
     root_admin_configured,
     session_cookie,
 )
+import billing
 from user_store import (
+    CreditsExhaustedError,
     StorageError,
     admin_summary,
     admin_users,
     create_user,
+    delete_mark,
     delete_user,
     find_user,
     find_user_by_id,
     get_status_by_token,
+    list_marks,
     register_user,
+    save_mark,
     set_user_password,
     storage_diagnostics,
     update_user_role,
@@ -257,3 +262,193 @@ def admin_action(session, body):
         return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error), "storage": storage_diagnostics()}, None
     except (ValueError, json.JSONDecodeError) as error:
         return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
+
+
+# ---------------------------------------------------------------------------
+# Assinatura, checkout e créditos
+# ---------------------------------------------------------------------------
+
+
+UNAUTHENTICATED = (
+    HTTPStatus.UNAUTHORIZED,
+    {"error": "Faça login para continuar."},
+    None,
+)
+
+
+def _client_email(session) -> str | None:
+    """E-mail da conta de cliente da sessão.
+
+    O administrador raiz não tem conta na base, então não assina nem consome
+    crédito: as rotas de billing e de marcações valem para clientes.
+    """
+    if not session or not session.get("email"):
+        return None
+    return str(session["email"]).strip().lower()
+
+
+def plans():
+    return (
+        HTTPStatus.OK,
+        {"plans": billing.plans_catalog(), "checkout_configured": billing.is_configured()},
+        None,
+    )
+
+
+def billing_status(session, sync: bool = True):
+    """Estado da assinatura. Por padrão confirma o pagamento junto ao ASAAS."""
+    email = _client_email(session)
+    if not email:
+        return UNAUTHENTICATED
+    try:
+        state = billing.sync_subscription(email) if sync else billing.account_state(email)
+    except LookupError:
+        return (
+            HTTPStatus.OK,
+            {"plans": billing.plans_catalog(), "subscription": None, "checkout_configured": billing.is_configured()},
+            None,
+        )
+    except StorageError as error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
+    return HTTPStatus.OK, {"plans": billing.plans_catalog(), "subscription": state}, None
+
+
+def billing_checkout(session, body):
+    email = _client_email(session)
+    if not email:
+        return UNAUTHENTICATED
+    try:
+        checkout = billing.start_checkout(
+            email,
+            _text(body, "plan", "plan_id"),
+            _text(body, "name"),
+            _text(body, "cpf_cnpj", "cpfCnpj"),
+        )
+    except ValueError as error:
+        return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
+    except LookupError as error:
+        return HTTPStatus.NOT_FOUND, {"error": str(error)}, None
+    except billing.BillingError as error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
+    except StorageError as error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
+    return HTTPStatus.OK, {"checkout": checkout, "subscription": billing.account_state(email)}, None
+
+
+def billing_webhook(body, access_token):
+    """Recebe a confirmação de pagamento enviada pelo ASAAS.
+
+    Sem `ASAAS_WEBHOOK_TOKEN` configurado a rota recusa tudo: um webhook aberto
+    deixaria qualquer um liberar acesso pago.
+    """
+    if not billing.webhook_token_matches(access_token):
+        return HTTPStatus.UNAUTHORIZED, {"error": "Webhook não autorizado."}, None
+    if not isinstance(body, dict):
+        return HTTPStatus.BAD_REQUEST, {"error": "Evento inválido."}, None
+    try:
+        result = billing.apply_webhook(body)
+    except StorageError as error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
+    # O ASAAS reenvia eventos que não recebem 2xx; um evento que não nos diz
+    # respeito é aceito para não entrar em fila de reentrega infinita.
+    return HTTPStatus.OK, result, None
+
+
+# ---------------------------------------------------------------------------
+# Marcações (gostei / não gostei / já assisti)
+# ---------------------------------------------------------------------------
+
+
+def marks(session):
+    email = _client_email(session)
+    if not email:
+        return UNAUTHENTICATED
+    try:
+        return HTTPStatus.OK, {"marks": list_marks(email)}, None
+    except LookupError:
+        return HTTPStatus.OK, {"marks": []}, None
+    except StorageError as error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
+
+
+def mark_action(session, body):
+    """`save` grava a marcação da obra; `delete` remove uma marcação individual."""
+    email = _client_email(session)
+    if not email:
+        return UNAUTHENTICATED
+    action = _text(body, "action", default="save").strip().lower()
+    try:
+        if action == "delete":
+            delete_mark(email, _text(body, "id", "mark_id"))
+        elif action == "save":
+            save_mark(
+                email,
+                {
+                    "title_original": _text(body, "title_original"),
+                    "title_pt": _text(body, "title_pt"),
+                    "year": body.get("year", 0),
+                    "opinion": _text(body, "opinion"),
+                    "watched": bool(body.get("watched", False)),
+                },
+            )
+        else:
+            return HTTPStatus.BAD_REQUEST, {"error": "Ação inválida para marcações."}, None
+        return HTTPStatus.OK, {"marks": list_marks(email)}, None
+    except ValueError as error:
+        return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
+    except LookupError as error:
+        return HTTPStatus.NOT_FOUND, {"error": str(error)}, None
+    except StorageError as error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
+
+
+# ---------------------------------------------------------------------------
+# Motor de recomendação
+# ---------------------------------------------------------------------------
+
+
+def recommend(session, body):
+    """Consulta protegida: exige login, pagamento confirmado e crédito do dia.
+
+    O crédito é debitado antes da chamada ao modelo e estornado se ela falhar,
+    de modo que duas buscas simultâneas não usem o mesmo crédito.
+    """
+    from server import call_openai, clean_filters  # noqa: PLC0415 - server importa api_core
+
+    email = _client_email(session)
+    if not email:
+        return HTTPStatus.UNAUTHORIZED, {"error": "Faça login para receber recomendações."}, None
+
+    try:
+        filters = clean_filters((body or {}).get("filters"))
+    except (ValueError, json.JSONDecodeError) as error:
+        return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
+
+    try:
+        state = billing.authorize_search(email)
+    except billing.PaymentRequiredError as error:
+        return (
+            HTTPStatus.PAYMENT_REQUIRED,
+            {"error": str(error), "reason": "payment_required", "plans": billing.plans_catalog()},
+            None,
+        )
+    except CreditsExhaustedError as error:
+        return (
+            HTTPStatus.PAYMENT_REQUIRED,
+            {"error": str(error), "reason": "no_credits", "subscription": billing.account_state(email)},
+            None,
+        )
+    except LookupError as error:
+        return HTTPStatus.NOT_FOUND, {"error": str(error)}, None
+    except StorageError as error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
+
+    try:
+        text = call_openai(filters, billing.preferences_for_prompt(email))
+    except RuntimeError as error:
+        billing.release_search(email)
+        return HTTPStatus.BAD_GATEWAY, {"error": str(error)}, None
+    except (ValueError, json.JSONDecodeError) as error:
+        billing.release_search(email)
+        return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
+    return HTTPStatus.OK, {"text": text, "subscription": state}, None

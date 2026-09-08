@@ -1,6 +1,6 @@
 # Pipoca & Play
 
-**Pipoca & Play** é uma plataforma SaaS de recomendação personalizada de filmes. O cliente cria seu acesso com e-mail e senha, aguarda a validação do administrador e, depois da liberação, responde aos sete filtros do MVP para receber exatamente três opções ordenadas por compatibilidade, com explicação curta e histórico local da sessão.
+**Pipoca & Play** é uma plataforma SaaS de recomendação personalizada de filmes. O cliente cria seu acesso com e-mail e senha, aguarda a validação do administrador, assina um dos três planos e, com o pagamento confirmado, responde aos sete filtros do MVP para receber exatamente três opções ordenadas por compatibilidade, com explicação curta. Cada consulta consome um crédito diário, e o que o cliente marca como “já assisti”, “gostei” ou “não gostei” passa a orientar as próximas indicações.
 
 ## Funcionalidades disponíveis
 
@@ -9,6 +9,36 @@ A experiência pública começa em uma **landing page** responsiva, com apresent
 A lógica oficial dos sete filtros foi preservada: gênero principal, humor/vibe do dia, tempo disponível, época do filme, plataforma de streaming, companhia e popularidade/estilo. O backend valida o JSON da IA e exige três recomendações ordenadas. A pontuação exibida é um **match próprio do sistema**, não uma nota de IMDb ou crítica.
 
 O enriquecimento factual é separado da IA. Quando `TMDB_API_KEY` está configurada, o adaptador consulta posters, backdrops, duração, gêneros e disponibilidade no Brasil. Sem essa chave, o sistema informa explicitamente que a disponibilidade não foi confirmada e oferece links de conferência no JustWatch, IMDb e Letterboxd; o modelo nunca é tratado como banco de dados.
+
+## Planos, créditos e checkout
+
+O acesso ao motor de recomendação é pago. **Um crédito equivale a uma consulta** — um filme, uma série ou uma novela — e os créditos são diários, renovados à meia-noite de Brasília.
+
+| Plano | Preço mensal | Créditos |
+| --- | --- | --- |
+| Silver | R$ 15,00 | 2 consultas por dia |
+| Gold | R$ 25,00 | 5 consultas por dia |
+| Diamante | R$ 30,00 | Ilimitado dentro do ciclo de 30 dias |
+
+O checkout usa a API do ASAAS. Ao escolher um plano, a plataforma cria (ou reaproveita) o cliente no ASAAS, abre uma assinatura mensal e devolve a fatura para pagamento; a fatura abre em uma nova aba para que a sessão da plataforma continue viva. **Nenhum resultado é liberado antes da confirmação do pagamento**: enquanto a cobrança estiver pendente, `POST /api/recommend` responde `402` e a interface leva o cliente de volta à tela de planos.
+
+A confirmação chega por dois caminhos independentes, de propósito. O primeiro é o webhook `POST /api/billing/webhook`, cadastrado no painel do ASAAS; ele exige o cabeçalho `asaas-access-token` igual a `ASAAS_WEBHOOK_TOKEN` e recusa qualquer evento sem esse token — sem a variável configurada, a rota rejeita tudo. O segundo é a consulta ativa: toda leitura de `GET /api/billing/status` pergunta ao ASAAS se a cobrança foi liquidada, de modo que o acesso é liberado mesmo se o webhook não chegar. O botão “Já paguei — confirmar agora” usa exatamente esse caminho.
+
+O crédito é debitado antes da chamada ao modelo e estornado quando ela falha, então uma indisponibilidade da OpenAI não consome a consulta do cliente. A leitura, a checagem e a gravação do saldo acontecem sob o mesmo lock, para que duas buscas simultâneas não gastem o mesmo crédito. O ciclo dura 30 dias a partir da confirmação; vencido o ciclo sem novo pagamento, a assinatura volta para pendente e o acesso fecha.
+
+## Marcações do cliente
+
+Cada card de indicação traz três botões: **👍 Gostei**, **👎 Não gostei** e **✅ Já assisti**. A opinião e o “já assisti” são independentes — dá para marcar só que assistiu, sem opinar — e clicar de novo na mesma opinião a desfaz. As marcações ficam gravadas na conta do usuário logado, não no navegador.
+
+Essas marcações viajam **no prompt enviado ao GPT**: o que o cliente já assistiu é listado como proibido de recomendar de novo, o que ele gostou orienta o modelo a buscar obras de clima parecido, e o que não gostou vira instrução de evitar títulos semelhantes. Sem nenhuma marcação, o prompt continua idêntico ao do MVP — nenhuma instrução vazia é adicionada.
+
+O botão **Marcações** no topo abre o histórico completo, com o título, o ano e as marcas de cada obra. Cada linha tem um botão **Remover** que apaga aquela marcação individualmente, devolvendo o título às indicações futuras.
+
+## Navegação e sessão
+
+A plataforma é uma página só, mas cada tela entra no histórico do navegador via `history.pushState`. O **botão voltar nativo do celular** percorre os sete filtros, o resumo, os resultados, os planos, o checkout e as marcações, sem recarregar a página nem sair do app.
+
+A sessão termina quando o cliente sai da página. O cookie `pipoca_session` é um cookie de sessão de navegador — sem `Max-Age` nem `Expires` —, e ao descarregar a página o front envia um `navigator.sendBeacon` para `/api/auth/logout`, encerrando a sessão no servidor. Voltar à plataforma exige um novo login. `SESSION_TTL_SECONDS` (padrão 8 horas) é apenas o teto de segurança para abas deixadas abertas.
 
 ## Painel do administrador (`/admin`)
 
@@ -60,8 +90,9 @@ A conexão direta (`db.<ref-do-projeto>.supabase.co:5432`, mostrada na aba "URI"
 3. Defina `AUTH_SECRET`, `ADMIN_EMAIL` e `ADMIN_PASSWORD` com valores privados e fortes. Não publique `.env`.
 4. Em desenvolvimento, `USER_STORE_FILE=data/users.json` cria a base local automaticamente.
 5. Defina `OPENAI_API_KEY` e, se disponível, `TMDB_API_KEY`.
-6. Execute `python3 server.py` dentro desta pasta.
-7. Abra `http://127.0.0.1:8000` para a plataforma e `http://127.0.0.1:8000/admin` para o painel.
+6. Para testar o checkout, use `ASAAS_ENVIRONMENT=sandbox` com uma chave do ambiente de testes do ASAAS. Sem `ASAAS_API_KEY` a tela de planos avisa que o pagamento não está configurado e nenhuma assinatura é criada.
+7. Execute `python3 server.py` dentro desta pasta.
+8. Abra `http://127.0.0.1:8000` para a plataforma e `http://127.0.0.1:8000/admin` para o painel.
 
 A chave da OpenAI é lida apenas pelo servidor. O navegador envia os sete filtros para `POST /api/recommend` apenas depois do login.
 
@@ -81,9 +112,16 @@ Os testes rodam com `python3 -m unittest test_app`.
 | `/api/auth/status` | GET | token do pedido | Acompanhamento do cadastro |
 | `/api/admin/status` | GET | admin | Configuração, contadores e lista de contas |
 | `/api/admin/users` | GET/POST | admin | Ações administrativas |
-| `/api/recommend` | POST | usuário autenticado | Motor de recomendação |
+| `/api/billing/plans` | GET | público | Catálogo dos três planos |
+| `/api/billing/status` | GET | usuário autenticado | Assinatura e créditos do dia; confirma o pagamento no ASAAS |
+| `/api/billing/checkout` | POST | usuário autenticado | Abre a assinatura no ASAAS e devolve a fatura |
+| `/api/billing/webhook` | POST | ASAAS (`asaas-access-token`) | Confirmação de pagamento |
+| `/api/marks` | GET/POST | usuário autenticado | Marcações do cliente |
+| `/api/recommend` | POST | usuário pagante com crédito | Motor de recomendação |
 
 As ações aceitas em `POST /api/admin/users` são `approve`, `reject`, `pending`, `delete`, `promote`, `demote`, `set_password` e `create`.
+
+Em `POST /api/marks`, `action: "save"` grava a marcação de uma obra (`title_original`, `title_pt`, `year`, `opinion` com `liked`/`disliked`/vazio e `watched`) e `action: "delete"` remove uma marcação pelo seu `id`. `GET /api/billing/status?sync=0` lê apenas o que já está gravado, sem consultar o ASAAS.
 
 ## Publicação na Vercel
 
@@ -102,9 +140,15 @@ O arquivo `vercel.json` e as funções em `api/` deixam o repositório pronto pa
 | `USER_STORE_BLOB_PATH` | Não | Objeto privado do Blob; padrão `pipoca-play/users.json`. |
 | `USER_STORE_FILE` | Local | Caminho do JSON local; não persiste em produção serverless. |
 | `USER_STORE_MODE` | Não | Força um backend específico; use apenas para depurar. |
+| `ASAAS_API_KEY` | Sim | Chave da API do ASAAS. Sem ela nenhum plano pode ser assinado. |
+| `ASAAS_WEBHOOK_TOKEN` | Sim | Token do webhook de pagamento; o mesmo valor cadastrado no painel do ASAAS. |
+| `ASAAS_ENVIRONMENT` | Não | `sandbox` para testes; em branco usa a API de produção. |
+| `ASAAS_API_URL` | Não | Sobrescreve a URL base da API do ASAAS. |
+| `ASAAS_BILLING_TYPE` | Não | Forma de pagamento da fatura; padrão `UNDEFINED` (cliente escolhe). |
+| `SESSION_TTL_SECONDS` | Não | Teto da sessão em segundos; padrão 28800 (8 horas). |
 | `TMDB_API_KEY` | Não | Habilita enriquecimento de catálogo e disponibilidade no Brasil. |
 | `ENVIRONMENT=production` | Recomendada | Desativa credenciais padrão de desenvolvimento e ativa cookies seguros. |
 
-O cadastro de clientes segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão e usar o motor de recomendação, e toda rota administrativa exige uma sessão com papel `admin`. Depois do deploy, confira `GET /api/health`: se `storage.persistent` vier `false`, o banco ainda não está conectado. Recuperação de senha pelo próprio cliente, e-mail transacional e auditoria de ações administrativas permanecem como evoluções futuras.
+O cadastro de clientes segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão, e apenas as que têm assinatura paga e crédito no dia chegam ao motor de recomendação; toda rota administrativa exige uma sessão com papel `admin`. O painel mostra, para cada conta, o plano contratado e se o pagamento está confirmado. Depois do deploy, confira `GET /api/health`: se `storage.persistent` vier `false`, o banco ainda não está conectado. Recuperação de senha pelo próprio cliente, e-mail transacional e auditoria de ações administrativas permanecem como evoluções futuras.
 
 Não coloque chaves no HTML, no Git ou em mensagens de erro. Se uma chave tiver sido exposta anteriormente, revogue-a no respectivo provedor antes de publicar.
