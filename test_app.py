@@ -291,6 +291,27 @@ class PipocaPlayTests(unittest.TestCase):
         with patch.dict(os.environ, {"DATABASE_URL": "  "}, clear=False):
             self.assertEqual(storage_mode(), "arquivo-local")
 
+    def test_postgres_url_with_surrounding_quotes_is_cleaned(self):
+        dsn = '"postgres://user:pass@host/db"'
+        with patch.dict(os.environ, {"DATABASE_URL": dsn}, clear=False):
+            self.assertEqual(storage_mode(), "postgres")
+
+    def test_invalid_uri_query_parameter_gets_a_specific_hint(self):
+        class FakeDriver:
+            @staticmethod
+            def connect(dsn, **kwargs):
+                raise RuntimeError('invalid URI query parameter: "supa"')
+
+        dsn = "postgresql://postgres:secret@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require&supa"
+        with patch.dict(os.environ, {"DATABASE_URL": dsn}, clear=False):
+            with patch("user_store._postgres_driver", return_value=FakeDriver):
+                with self.assertRaises(StorageError) as raised:
+                    register_user("badparam@test.local", "senha-do-cliente")
+                message = str(raised.exception)
+                self.assertIn("DATABASE_URL", message)
+                self.assertIn('"supa"', message)
+                self.assertIn("colada pela metade", message)
+
     def test_serverless_without_storage_explains_the_setup(self):
         with patch.dict(os.environ, {"ENVIRONMENT": "production"}, clear=False):
             diagnostics = storage_diagnostics()

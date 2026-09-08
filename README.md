@@ -53,6 +53,14 @@ postgresql://postgres.<ref-do-projeto>:[SUA-SENHA]@aws-0-<região>.pooler.supaba
 
 A conexão direta (`db.<ref-do-projeto>.supabase.co:5432`, mostrada na aba "URI") só tem endereço **IPv6**, e as funções serverless da Vercel não têm saída IPv6 — a conexão falha mesmo com a senha certa. Se isso acontecer, `/api/health` e a mensagem de erro do cadastro já apontam essa causa específica.
 
+### Erro "invalid URI query parameter"
+
+Se `/api/health` mostrar algo como `ProgrammingError: invalid URI query parameter: "supa"`, a string de conexão salva em `POSTGRES_URL`/`DATABASE_URL` na Vercel está corrompida — normalmente sobrou um pedaço de texto depois de um `&` (por exemplo, um fragmento de "supabase" colado pela metade). O `/api/health` já aponta qual variável e qual parâmetro é o culpado. Para corrigir:
+
+1. Vercel → **Settings → Environment Variables**, abra a variável indicada no erro.
+2. Apague o valor inteiro e copie a Connection string novamente, sem editar manualmente (Supabase: aba "Transaction pooler"; Neon: variável injetada automaticamente).
+3. Salve e faça um novo deploy (**Deployments → Redeploy**).
+
 ## Executar localmente
 
 1. Copie `.env.example` para `.env`.

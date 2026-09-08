@@ -129,10 +129,18 @@ POSTGRES_ENV_VARS = (
 )
 
 
+def _clean_env_value(raw: str) -> str:
+    """Remove espaços e aspas envolventes deixadas por um copiar/colar malfeito."""
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1].strip()
+    return value
+
+
 def _postgres_dsn_source() -> tuple[str, str] | None:
     """Retorna (nome_da_variável, valor) da primeira URL de Postgres válida encontrada."""
     for name in POSTGRES_ENV_VARS:
-        value = os.environ.get(name, "").strip()
+        value = _clean_env_value(os.environ.get(name, ""))
         if value.startswith("postgres://") or value.startswith("postgresql://"):
             return name, value
     return None
@@ -301,6 +309,9 @@ def _sanitize_postgres_error(dsn: str, error: Exception) -> str:
     return text[:300]
 
 
+_INVALID_URI_QUERY_PARAM_RE = re.compile(r'invalid URI query parameter: "([^"]*)"')
+
+
 def _postgres_connect():
     dsn = _postgres_dsn()
     if not dsn:
@@ -310,6 +321,21 @@ def _postgres_connect():
         return psycopg.connect(dsn, connect_timeout=10, autocommit=True)
     except Exception as error:
         detail = _sanitize_postgres_error(dsn, error)
+        bad_param = _INVALID_URI_QUERY_PARAM_RE.search(detail)
+        if bad_param:
+            source = _postgres_dsn_source()
+            var_name = source[0] if source else "POSTGRES_URL/DATABASE_URL"
+            raise StorageError(
+                f"A variável {var_name} contém uma string de conexão inválida: o parâmetro "
+                f"\"{bad_param.group(1)}\" na query (depois do \"?\") não é reconhecido. Isso "
+                "normalmente acontece quando a URL foi colada pela metade ou ficou com um "
+                "pedaço de texto sobrando (por exemplo, um fragmento da palavra \"supabase\" "
+                "depois de um \"&\"). Vá em Vercel → Project Settings → Environment Variables, "
+                f"apague o valor atual de {var_name}, copie a Connection string novamente "
+                "inteira e sem editar manualmente (aba \"Transaction pooler\" no Supabase, ou "
+                "a variável injetada automaticamente pelo Neon) e cole de novo. Depois faça um "
+                f"novo deploy. Detalhe técnico: {detail}"
+            ) from error
         if _looks_like_supabase_direct_host(dsn):
             raise StorageError(
                 "Não foi possível conectar ao banco Postgres das contas. Você está usando a "
