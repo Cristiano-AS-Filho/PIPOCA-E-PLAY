@@ -247,6 +247,21 @@ class PipocaPlayTests(unittest.TestCase):
                 self.assertEqual(json.loads(stored["pipoca-play:users"])[0]["email"], "pg@test.local")
                 self.assertIn("CREATE", statements)
 
+    def test_postgres_connect_failure_reports_a_safe_technical_detail(self):
+        class FakeDriver:
+            @staticmethod
+            def connect(dsn, **kwargs):
+                raise RuntimeError("timeout expired")
+
+        dsn = "postgresql://postgres:senha-secreta-123@ep-example.neon.tech:5432/postgres"
+        with patch.dict(os.environ, {"DATABASE_URL": dsn}, clear=False):
+            with patch("user_store._postgres_driver", return_value=FakeDriver):
+                with self.assertRaises(StorageError) as raised:
+                    register_user("neon@test.local", "senha-do-cliente")
+                message = str(raised.exception)
+                self.assertIn("timeout expired", message)
+                self.assertNotIn("senha-secreta-123", message)
+
     def test_supabase_direct_host_gets_a_pooler_hint(self):
         class FakeDriver:
             @staticmethod

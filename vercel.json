@@ -3,7 +3,8 @@
   "cleanUrls": true,
   "functions": {
     "api/**/*.py": {
-      "excludeFiles": "{__pycache__/**,**/*.pyc,.env,public/**}"
+      "excludeFiles": "{__pycache__/**,**/*.pyc,.env,public/**}",
+      "maxDuration": 15
     }
   }
 }

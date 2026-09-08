@@ -259,14 +259,28 @@ def _looks_like_supabase_direct_host(dsn: str) -> bool:
     return host.startswith("db.") and host.endswith(".supabase.co")
 
 
+def _sanitize_postgres_error(dsn: str, error: Exception) -> str:
+    """Detalhe técnico seguro para exibir em /api/health: sem senha nenhuma."""
+    text = f"{type(error).__name__}: {error}".strip()
+    text = " ".join(text.split())
+    try:
+        password = urlparse(dsn.replace("postgres://", "postgresql://", 1)).password
+    except ValueError:
+        password = None
+    if password:
+        text = text.replace(password, "***")
+    return text[:300]
+
+
 def _postgres_connect():
     dsn = _postgres_dsn()
     if not dsn:
         raise StorageError("Nenhuma URL de Postgres foi configurada. " + SETUP_HINT)
     psycopg = _postgres_driver()
     try:
-        return psycopg.connect(dsn, connect_timeout=8, autocommit=True)
+        return psycopg.connect(dsn, connect_timeout=10, autocommit=True)
     except Exception as error:
+        detail = _sanitize_postgres_error(dsn, error)
         if _looks_like_supabase_direct_host(dsn):
             raise StorageError(
                 "Não foi possível conectar ao banco Postgres das contas. Você está usando a "
@@ -274,11 +288,11 @@ def _postgres_connect():
                 "IPv6 — funções serverless da Vercel não alcançam esse host. Abra o Supabase → "
                 "Project Settings → Database → Connection string → aba \"Transaction pooler\" "
                 "e use essa URL (host aws-0-<região>.pooler.supabase.com, porta 6543) em "
-                "POSTGRES_URL/DATABASE_URL na Vercel."
+                f"POSTGRES_URL/DATABASE_URL na Vercel. Detalhe técnico: {detail}"
             ) from error
         raise StorageError(
             "Não foi possível conectar ao banco Postgres das contas. Confira a variável "
-            "POSTGRES_URL/DATABASE_URL do projeto."
+            f"POSTGRES_URL/DATABASE_URL do projeto. Detalhe técnico: {detail}"
         ) from error
 
 
