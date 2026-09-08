@@ -1,12 +1,12 @@
 # Pipoca & Play
 
-**Pipoca & Play** é uma plataforma SaaS de recomendação personalizada de filmes. O cliente cria seu acesso com e-mail e senha, aguarda a validação do administrador, assina um dos três planos mensais e então responde aos sete filtros do MVP para receber exatamente três opções ordenadas por compatibilidade. Cada consulta consome um crédito do plano, e o que o cliente marca como *gostei*, *não gostei* ou *já assisti* passa a orientar as próximas indicações.
+**Pipoca & Play** é uma plataforma SaaS de recomendação personalizada de filmes e séries. O cliente cria seu acesso com e-mail e senha, aguarda a validação do administrador, assina um dos três planos mensais e então responde aos oito filtros para receber exatamente três opções ordenadas por compatibilidade. Cada consulta consome um crédito do plano, e o que o cliente marca como *gostei*, *não gostei* ou *já assisti* passa a orientar as próximas indicações.
 
 ## Funcionalidades disponíveis
 
 A experiência pública começa em uma **landing page** responsiva, com apresentação do produto e CTA de entrada. A autenticação usa sessão por cookie `HttpOnly`, `SameSite=Lax`, assinatura HMAC e expiração automática. O cadastro exige senha individual com hash PBKDF2, começa com status `pending` e pode ser acompanhado automaticamente pelo cliente. O papel `admin` abre um painel restrito para listar pedidos, aceitar, rejeitar ou excluir usuários.
 
-A lógica oficial dos sete filtros foi preservada: gênero principal, humor/vibe do dia, tempo disponível, época do filme, plataforma de streaming, companhia e popularidade/estilo. O backend valida o JSON da IA e exige três recomendações ordenadas. A pontuação exibida é um **match próprio do sistema**, não uma nota de IMDb ou crítica.
+A primeira pergunta define o tipo de produção — **Filme**, **Série** ou **Mesclar (filmes e séries)** — e é a restrição mais forte do prompt: em "Mesclar", a lista traz pelo menos um filme e pelo menos uma série, e cada indicação vem marcada com o seu formato. Os sete filtros originais do MVP foram preservados na sequência: gênero principal, humor/vibe do dia, tempo disponível, época do título, plataforma de streaming, companhia e popularidade/estilo. Para séries, a duração é a média por episódio e o card mostra o número de temporadas. O backend valida o JSON da IA e exige três recomendações ordenadas. A pontuação exibida é um **match próprio do sistema**, não uma nota de IMDb ou crítica.
 
 O enriquecimento factual é separado da IA. Quando `TMDB_API_KEY` está configurada, o adaptador consulta posters, backdrops, duração, gêneros e disponibilidade no Brasil. Sem essa chave, o sistema informa explicitamente que a disponibilidade não foi confirmada e oferece links de conferência no JustWatch, IMDb e Letterboxd; o modelo nunca é tratado como banco de dados.
 
@@ -100,7 +100,7 @@ A conexão direta (`db.<ref-do-projeto>.supabase.co:5432`, mostrada na aba "URI"
 6. Execute `python3 server.py` dentro desta pasta.
 7. Abra `http://127.0.0.1:8000` para a plataforma e `http://127.0.0.1:8000/admin` para o painel.
 
-A chave da OpenAI é lida apenas pelo servidor. O navegador envia os sete filtros para `POST /api/recommend` apenas depois do login.
+A chave da OpenAI é lida apenas pelo servidor. O navegador envia os oito filtros para `POST /api/recommend` apenas depois do login.
 
 Os testes rodam com `python3 -m unittest test_app`.
 

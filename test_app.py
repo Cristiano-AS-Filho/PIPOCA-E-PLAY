@@ -17,9 +17,14 @@ os.environ["USER_STORE_FILE"] = str(TEST_STORE)
 import billing  # noqa: E402
 from auth import authenticate, create_session, read_session  # noqa: E402
 from plans import public_plans  # noqa: E402
-from recommender import build_feedback_section  # noqa: E402
+from recommender import CONTENT_TYPE_OPTIONS, build_feedback_section  # noqa: E402
 from metadata import NullMetadataProvider  # noqa: E402
-from server import buildRecommendationPrompt, clean_filters, validate_recommendation_payload  # noqa: E402
+from server import (  # noqa: E402
+    RECOMMENDATION_SCHEMA,
+    buildRecommendationPrompt,
+    clean_filters,
+    validate_recommendation_payload,
+)
 import api_core  # noqa: E402
 from user_store import (  # noqa: E402
     CreditError,
@@ -46,6 +51,7 @@ from user_store import (  # noqa: E402
 
 
 FILTERS = {
+    "content_type": "Filme",
     "genre": "Suspense / Thriller",
     "mood": "Sombrio / Assustador",
     "duration": "Livre (Qualquer)",
@@ -63,9 +69,34 @@ class PipocaPlayTests(unittest.TestCase):
     def tearDown(self):
         TEST_STORE.unlink(missing_ok=True)
 
-    def test_clean_filters_preserves_all_seven_dimensions(self):
+    def test_clean_filters_preserves_all_eight_dimensions(self):
         cleaned = clean_filters(FILTERS)
         self.assertEqual(cleaned, FILTERS)
+        self.assertEqual(len(cleaned), 8)
+
+    def test_content_type_accepts_only_the_three_official_answers(self):
+        self.assertEqual(CONTENT_TYPE_OPTIONS, ("Filme", "Série", "Mesclar (filmes e séries)"))
+        for answer in CONTENT_TYPE_OPTIONS:
+            self.assertEqual(clean_filters({**FILTERS, "content_type": answer})["content_type"], answer)
+        with self.assertRaises(ValueError):
+            clean_filters({**FILTERS, "content_type": "Novela mexicana"})
+        missing = {key: value for key, value in FILTERS.items() if key != "content_type"}
+        with self.assertRaises(ValueError):
+            clean_filters(missing)
+
+    def test_prompt_states_the_requested_production_type(self):
+        prompt = buildRecommendationPrompt({**FILTERS, "content_type": "Mesclar (filmes e séries)"})
+        self.assertIn("Tipo de produção: Mesclar (filmes e séries)", prompt)
+        self.assertIn("pelo menos um filme e pelo menos uma série", prompt)
+        self.assertIn("Marque cada indicação em content_type", prompt)
+        series_prompt = buildRecommendationPrompt({**FILTERS, "content_type": "Série"})
+        self.assertIn("Tipo de produção: Série", series_prompt)
+
+    def test_schema_requires_the_format_of_each_recommendation(self):
+        item_schema = RECOMMENDATION_SCHEMA["properties"]["recommendations"]["items"]
+        self.assertIn("content_type", item_schema["required"])
+        self.assertIn("seasons", item_schema["required"])
+        self.assertEqual(item_schema["properties"]["content_type"]["enum"], ["filme", "serie"])
 
     def test_invalid_filter_value_is_rejected(self):
         invalid = {**FILTERS, "genre": "Qualquer valor inventado"}
@@ -90,7 +121,14 @@ class PipocaPlayTests(unittest.TestCase):
             "match_score": 90,
         }
         payload = {"recommendations": [item, {**item, "rank": 2}, {**item, "rank": 3}]}
-        self.assertEqual(validate_recommendation_payload(payload), payload)
+        validated = validate_recommendation_payload(payload)
+        self.assertEqual(validated, payload)
+        # Sem content_type declarado, a indicação é tratada como filme.
+        self.assertEqual([entry["content_type"] for entry in validated["recommendations"]], ["filme"] * 3)
+        serie = validate_recommendation_payload(
+            {"recommendations": [{**item, "content_type": "serie"}, {**item, "rank": 2}, {**item, "rank": 3}]}
+        )
+        self.assertEqual(serie["recommendations"][0]["content_type"], "serie")
         with self.assertRaises(RuntimeError):
             validate_recommendation_payload({"recommendations": [item]})
 
@@ -452,6 +490,53 @@ class PipocaPlayTests(unittest.TestCase):
         )
         self.assertEqual(status, 403)
         self.assertIn("aguardando", payload["error"])
+
+    def test_series_metadata_uses_the_tv_endpoints(self):
+        from metadata import TMDBMetadataProvider
+
+        seen = []
+
+        def fake_get(self, path, params):
+            seen.append((path, dict(params)))
+            if path.startswith("/search"):
+                return {"results": [{"id": 7, "poster_path": "/p.jpg", "backdrop_path": "/b.jpg"}]}
+            return {
+                "name": "Ruptura",
+                "original_name": "Severance",
+                "first_air_date": "2022-02-18",
+                "episode_run_time": [48],
+                "number_of_seasons": 2,
+                "genres": [{"name": "Drama"}],
+                "overview": "sinopse",
+            }
+
+        with patch.object(TMDBMetadataProvider, "_get", fake_get):
+            metadata = TMDBMetadataProvider("chave").lookup("Severance", "Ruptura", 2022, "serie")
+        self.assertEqual(seen[0][0], "/search/tv")
+        self.assertEqual(seen[0][1]["first_air_date_year"], 2022)
+        self.assertEqual(seen[1][0], "/tv/7")
+        self.assertEqual(metadata["title_pt"], "Ruptura")
+        self.assertEqual(metadata["runtime_minutes"], 48)
+        self.assertEqual(metadata["seasons"], 2)
+        self.assertEqual(metadata["year"], 2022)
+
+    def test_film_metadata_still_uses_the_movie_endpoints(self):
+        from metadata import TMDBMetadataProvider
+
+        seen = []
+
+        def fake_get(self, path, params):
+            seen.append(path)
+            if path.startswith("/search"):
+                return {"results": [{"id": 9, "poster_path": "/p.jpg"}]}
+            return {"title": "Cidade de Deus", "original_title": "Cidade de Deus", "release_date": "2002-08-30", "runtime": 130}
+
+        with patch.object(TMDBMetadataProvider, "_get", fake_get):
+            metadata = TMDBMetadataProvider("chave").lookup("Cidade de Deus", "Cidade de Deus", 2002, "filme")
+        self.assertEqual(seen[0], "/search/movie")
+        self.assertEqual(seen[1], "/movie/9")
+        self.assertEqual(metadata["runtime_minutes"], 130)
+        self.assertEqual(metadata["seasons"], 0)
 
     def test_metadata_provider_is_explicitly_unconfirmed_without_key(self):
         metadata = NullMetadataProvider().lookup("Example")

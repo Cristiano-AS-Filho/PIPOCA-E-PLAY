@@ -65,3 +65,11 @@ Na interface, o cliente sem assinatura cai na vitrine de planos, paga pela Asaas
 Fluxo HTTP completo executado contra o servidor real com Asaas e OpenAI simulados: cadastro → aprovação pelo admin → login → bloqueio sem plano → checkout → webhook de confirmação → duas consultas do plano Silver → bloqueio por falta de crédito → marcação enviada ao prompt → remoção da marcação → sessão encerrada ao sair.
 
 Interface validada em Chromium (390×844, sem erros de JavaScript no console): olho da senha, vitrine com os três preços, checkout com recusa de CPF inválido, espera pela confirmação, liberação após o webhook, contador de créditos no topo, marcação nos cards, histórico de marcações, aviso de limite diário, remoção individual e retorno pelo botão voltar. Recarregar a página desconecta o cliente e exige novo login, como especificado.
+
+## Rodada 3 — tipo de produção (filme, série ou mescla)
+
+Foi acrescentada a **primeira pergunta do questionário**: *O que você quer ver hoje?* — **Filme**, **Série** ou **Mesclar (filmes e séries)** —, passando o fluxo de sete para oito filtros. O tipo escolhido é a restrição mais forte do prompt: em "Mesclar", a lista traz pelo menos um filme e pelo menos uma série.
+
+O schema da resposta passou a exigir `content_type` (`filme`/`serie`) e `seasons` em cada indicação; a validação normaliza um `content_type` ausente para `filme`. O card mostra o selo do formato e, em séries, o número de temporadas e a duração média por episódio. O `metadata.py` passou a consultar `/search/tv` e `/tv/{id}` para séries — buscar série na rota de filmes traria o pôster errado — e a busca de pôster na Wikipedia usa o sufixo `(TV series)`. O construtor de prompt duplicado que existia no navegador, sem nenhuma chamada, foi removido para não divergir do prompt real do backend.
+
+Validação: 56 testes automatizados verdes, incluindo as três respostas oficiais da nova pergunta, a recusa de resposta fora do catálogo, o texto do prompt em "Mesclar", o schema e a separação dos endpoints de série e filme no TMDB. O fluxo HTTP completo e as 31 verificações de interface em Chromium foram repetidos com as oito perguntas, com os cards exibindo corretamente `FILME`, `SÉRIE` e as temporadas.

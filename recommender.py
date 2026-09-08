@@ -14,7 +14,10 @@ import urllib.request
 from metadata import enrich_result
 
 
+CONTENT_TYPE_OPTIONS = ("Filme", "Série", "Mesclar (filmes e séries)")
+
 OFFICIAL_FILTER_OPTIONS = {
+    "content_type": set(CONTENT_TYPE_OPTIONS),
     "genre": {"Livre (Qualquer)", "Ação", "Comédia", "Drama", "Ficção Científica", "Terror", "Romance", "Suspense / Thriller", "Animação", "Documentário", "Aventura", "Fantasia"},
     "mood": {"Livre (Qualquer)", "Quer dar risada / Divertido", "Para chorar / Emocionante", "Tensão / Adrenalina", "Para pensar / Cabeça", "Leve / Relaxante para descansar", "Inspirador / Motivacional", "Sombrio / Assustador"},
     "duration": {"Livre (Qualquer)", "Curto (Até 90 min)", "Padrão (90 a 120 min)", "Longo (Mais de 120 min)"},
@@ -47,16 +50,19 @@ RECOMMENDATION_SCHEMA = {
                 "type": "object",
                 "additionalProperties": False,
                 "required": [
-                    "rank", "title_original", "title_pt", "year", "runtime_minutes",
-                    "age_rating_br", "genres", "vibe_tags", "synopsis", "why_it_matches",
-                    "match_score", "ratings", "awards", "where_to_watch",
+                    "rank", "content_type", "title_original", "title_pt", "year",
+                    "runtime_minutes", "seasons", "age_rating_br", "genres", "vibe_tags",
+                    "synopsis", "why_it_matches", "match_score", "ratings", "awards",
+                    "where_to_watch",
                 ],
                 "properties": {
                     "rank": {"type": "integer", "minimum": 1, "maximum": 3},
+                    "content_type": {"type": "string", "enum": ["filme", "serie"]},
                     "title_original": {"type": "string"},
                     "title_pt": {"type": "string"},
                     "year": {"type": "integer", "minimum": 0},
                     "runtime_minutes": {"type": "integer", "minimum": 0},
+                    "seasons": {"type": "integer", "minimum": 0},
                     "age_rating_br": {"type": "integer", "minimum": 0},
                     "genres": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
                     "vibe_tags": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
@@ -100,7 +106,7 @@ RECOMMENDATION_SCHEMA = {
 def clean_filters(value):
     if not isinstance(value, dict):
         raise ValueError("Filtros inválidos.")
-    allowed = {"genre", "mood", "duration", "era", "platform", "companionship", "popularity"}
+    allowed = set(OFFICIAL_FILTER_OPTIONS)
     cleaned = {}
     for key in allowed:
         item = value.get(key, "")
@@ -111,7 +117,7 @@ def clean_filters(value):
             raise ValueError("Uma das respostas não pertence às opções oficiais.")
         cleaned[key] = item
     if not all(cleaned.values()):
-        raise ValueError("Responda às sete perguntas antes de buscar.")
+        raise ValueError("Responda às oito perguntas antes de buscar.")
     return cleaned
 
 
@@ -169,20 +175,23 @@ def build_feedback_section(feedback):
 
 
 def buildRecommendationPrompt(filters, feedback=None):
-    return f"""Atue como um especialista em cinema e recomendador personalizado para o público brasileiro. Responda em pt-BR.
+    return f"""Atue como um especialista em cinema e séries, recomendador personalizado para o público brasileiro. Responda em pt-BR.
 
-Estou procurando uma recomendação perfeita para assistir agora. Considere conjuntamente estas sete dimensões:
+Estou procurando uma recomendação perfeita para assistir agora. Considere conjuntamente estas oito dimensões:
+- Tipo de produção: {filters['content_type']}
 - Gênero principal: {filters['genre']}
 - Vibe/clima emocional desejado: {filters['mood']}
 - Tempo disponível: {filters['duration']}
-- Época do filme: {filters['era']}
+- Época do título: {filters['era']}
 - Plataforma de streaming: {filters['platform']}
 - Companhia: {filters['companionship']}
 - Perfil de popularidade/estilo: {filters['popularity']}
 
-Priorize gênero, vibe e plataforma especificada; depois duração e companhia; por fim época e popularidade. Os filtros são preferências contextuais, não generalizações rígidas. A duração curta deve favorecer títulos de até 90 minutos; a faixa padrão, 90 a 120; a longa, acima de 120. Quando houver plataforma específica, trate disponibilidade como dado a ser validado por uma fonte externa, nunca como fato conhecido apenas pela IA. Para família com crianças, evite conteúdo inadequado quando a classificação for conhecida.
+O tipo de produção é a restrição mais forte de todas: com "Filme", as três indicações são longas-metragens; com "Série", as três são séries de TV ou streaming (incluindo minisséries e novelas); com "Mesclar (filmes e séries)", entregue os dois formatos na mesma lista, com pelo menos um filme e pelo menos uma série. Marque cada indicação em content_type com "filme" ou "serie". Para séries, runtime_minutes é a duração média de um episódio e seasons é o número de temporadas já lançadas; para filmes, seasons é 0.
 
-Selecione exatamente três filmes reais, ordenados da maior para a menor compatibilidade, e explique por que cada um combina com o perfil. O match_score é a compatibilidade própria do sistema entre 0 e 100, não é nota do IMDb, da crítica ou de qualquer outra fonte. Não escolha simplesmente os filmes mais populares.
+Priorize gênero, vibe e plataforma especificada; depois duração e companhia; por fim época e popularidade. Os filtros são preferências contextuais, não generalizações rígidas. A duração curta deve favorecer títulos de até 90 minutos; a faixa padrão, 90 a 120; a longa, acima de 120 — em séries, aplique a mesma faixa à duração média do episódio. Quando houver plataforma específica, trate disponibilidade como dado a ser validado por uma fonte externa, nunca como fato conhecido apenas pela IA. Para família com crianças, evite conteúdo inadequado quando a classificação for conhecida.
+
+Selecione exatamente três títulos reais do tipo pedido, ordenados da maior para a menor compatibilidade, e explique por que cada um combina com o perfil. O match_score é a compatibilidade própria do sistema entre 0 e 100, não é nota do IMDb, da crítica ou de qualquer outra fonte. Não escolha simplesmente os títulos mais populares.
 
 Não invente avaliações, plataformas, disponibilidade, URLs, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado.{build_feedback_section(feedback)}"""
 
@@ -201,6 +210,8 @@ def validate_recommendation_payload(payload):
             raise RuntimeError("As recomendações devem estar ordenadas por posição.")
         if not 0 <= int(recommendation.get("match_score", 0)) <= 100:
             raise RuntimeError("A pontuação de compatibilidade é inválida.")
+        # Sem content_type declarado, tratamos como filme: é o formato padrão do MVP.
+        recommendation["content_type"] = "serie" if str(recommendation.get("content_type", "")).lower().startswith("seri") else "filme"
     return payload
 
 

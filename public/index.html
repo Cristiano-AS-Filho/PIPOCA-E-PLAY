@@ -471,6 +471,9 @@
     margin-bottom:8px;
     flex-wrap:wrap;
   }
+  /* Com o selo de formato são quatro etiquetas: se a linha quebrar, o
+     MATCH continua encostado à direita em vez de cair no canto esquerdo. */
+  .rank-row .match-stamp{margin-left:auto;}
   .badges-left{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
   .rank-badge{
     font-family:'IBM Plex Mono',monospace;
@@ -481,6 +484,11 @@
     padding:4px 9px;
     border-radius:3px;
   }
+  .kind-badge{
+    font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.9px;
+    padding:5px 7px;border-radius:4px;background:#2b3a52;color:#f4efe6;white-space:nowrap;
+  }
+  .kind-badge.serie{background:#5a3a6b;}
   .age-badge{
     font-family:'IBM Plex Mono',monospace;
     font-size:10.5px;
@@ -822,7 +830,7 @@
 <script>
 /* =========================================================
    PIPOCA & PLAY — motor de recomendação
-   Preserva a lógica dos 7 filtros do MVP original.
+   Preserva a lógica dos filtros do MVP e acrescenta o tipo de produção.
    ========================================================= */
 
 const PROMPT_VERSION = "v1.2";
@@ -832,45 +840,51 @@ const RECOMMENDATION_ENDPOINT = "/api/recommend";
 
 const STEPS = [
   {
+    key: "content_type",
+    eyebrow: "1 de 8",
+    question: "O que você quer ver hoje?",
+    options: ["Filme","Série","Mesclar (filmes e séries)"]
+  },
+  {
     key: "genre",
-    eyebrow: "1 de 7",
+    eyebrow: "2 de 8",
     question: "O que você quer assistir?",
     options: ["Livre (Qualquer)","Ação","Comédia","Drama","Ficção Científica","Terror","Romance","Suspense / Thriller","Animação","Documentário","Aventura","Fantasia"]
   },
   {
     key: "mood",
-    eyebrow: "2 de 7",
+    eyebrow: "3 de 8",
     question: "Como você quer se sentir?",
     options: ["Livre (Qualquer)","Quer dar risada / Divertido","Para chorar / Emocionante","Tensão / Adrenalina","Para pensar / Cabeça","Leve / Relaxante para descansar","Inspirador / Motivacional","Sombrio / Assustador"]
   },
   {
     key: "duration",
-    eyebrow: "3 de 7",
+    eyebrow: "4 de 8",
     question: "Quanto tempo você tem?",
     options: ["Livre (Qualquer)","Curto (Até 90 min)","Padrão (90 a 120 min)","Longo (Mais de 120 min)"]
   },
   {
     key: "era",
-    eyebrow: "4 de 7",
+    eyebrow: "5 de 8",
     question: "Você prefere alguma época?",
     options: ["Livre (Qualquer)","Lançamentos Recentes (2023-2026)","Anos 2010s","Anos 2000s","Anos 90s","Clássicos (Antes de 1990)"]
   },
   {
     key: "platform",
-    eyebrow: "5 de 7",
+    eyebrow: "6 de 8",
     question: "Onde pretende assistir?",
     options: ["Livre (Qualquer)","Netflix","Amazon Prime Video","Max (HBO)","Disney+","Apple TV+","Paramount+","Cinema / Aluguel"]
   },
   {
     key: "companionship",
-    eyebrow: "6 de 7",
+    eyebrow: "7 de 8",
     question: "Vai assistir com quem?",
     options: ["Sozinho(a)","Em Casal","Com Amigos","Em Família (com crianças)"]
   },
   {
     key: "popularity",
-    eyebrow: "7 de 7",
-    question: "Que tipo de filme você prefere?",
+    eyebrow: "8 de 8",
+    question: "Que perfil de produção você prefere?",
     options: ["Indiferente","Grandes Sucessos / Blockbusters","Filmes Cult / Menos Conhecidos","Aclamados pela Crítica / Premiações (Oscar, Cannes)"]
   }
 ];
@@ -1398,34 +1412,6 @@ function syncPopcorn(){
   });
 }
 
-function buildRecommendationPrompt(filters){
-  return (
-`Atue como um especialista em cinema e recomendador personalizado de filmes, com foco no público do Brasil (streaming e classificação indicativa brasileiros).
-
-Estou procurando uma recomendação perfeita para assistir agora.
-
-Considere cuidadosamente minhas preferências e restrições:
-
-Gênero: ${filters.genre}
-Vibe/Clima desejado: ${filters.mood}
-Tempo disponível: ${filters.duration}
-Época do filme: ${filters.era}
-Plataforma disponível: ${filters.platform}
-Companhia: ${filters.companionship}
-Perfil do filme: ${filters.popularity}
-
-Selecione os 3 melhores filmes com a maior compatibilidade com esse perfil. Não escolha simplesmente filmes populares — priorize a compatibilidade real entre gênero, clima emocional, duração, época, companhia e perfil de popularidade.
-
-Use seu melhor conhecimento sobre cada filme (notas, prêmios, onde assistir no Brasil, classificação indicativa). Não é necessário verificação em tempo real, mas não invente números absurdos nem plataformas inexistentes — use apenas dados plausíveis e realistas para cada título real.
-
-Responda APENAS com um objeto JSON válido, compacto (sem quebras de linha ou espaços desnecessários, sem markdown, sem texto antes ou depois), no formato exato:
-
-{"interpretation":"uma frase em pt-BR resumindo o pedido","best_choice":{"title_pt":"título do rank 1","reason":"uma frase curta em pt-BR do porquê é a melhor pedida de hoje"},"recommendations":[{"rank":1,"title_original":"","title_pt":"","year":0,"runtime_minutes":0,"age_rating_br":0,"genres":["max 3"],"vibe_tags":["max 3"],"synopsis":"sem spoilers, max 22 palavras, pt-BR","why_it_matches":"max 16 palavras, pt-BR","match_score":0,"ratings":{"imdb":0,"rotten_tomatoes_critics":0},"awards":{"oscars_won":0,"highlight":"max 6 palavras ou vazio"},"where_to_watch":[{"platform":"","type":"assinatura|aluguel_compra|cinema"}]}]}
-
-O array "recommendations" deve ter exatamente 3 itens, ordenados do maior para o menor match_score. Use age_rating_br 0 para "Livre". Deixe campos vazios ("" ou [] ou 0) quando não tiver certeza — nunca invente um número aleatório para preencher.`
-  );
-}
-
 async function getRecommendations(filters){
   const data = await apiFetch(RECOMMENDATION_ENDPOINT, {
     method: "POST",
@@ -1479,10 +1465,16 @@ async function fetchPosterUrl(rec){
   const year = rec.year;
   if(!original && !pt) return "";
 
+  const isSeries = String(rec.content_type || "filme").toLowerCase().indexOf("seri") === 0;
   const candidates = [];
   if(original){
-    if(year) candidates.push(original + " (" + year + " film)");
-    candidates.push(original + " (film)");
+    if(isSeries){
+      candidates.push(original + " (TV series)");
+      if(year) candidates.push(original + " (" + year + " TV series)");
+    }else{
+      if(year) candidates.push(original + " (" + year + " film)");
+      candidates.push(original + " (film)");
+    }
     candidates.push(original);
   }
   if(pt && pt !== original){
@@ -1689,12 +1681,12 @@ function renderLanding(){
   title.innerHTML = "Menos busca.<br><span>Mais filme.</span>";
   const copy = document.createElement("p");
   copy.className = "landing-copy";
-  copy.textContent = "Responda sete perguntas sobre o seu momento e receba três opções que combinam de verdade com o seu clima, seu tempo e sua companhia.";
+  copy.textContent = "Escolha entre filme, série ou os dois, responda oito perguntas sobre o seu momento e receba três opções que combinam de verdade com o seu clima, seu tempo e sua companhia.";
   const actions = document.createElement("div");
   actions.className = "landing-actions";
   const enter = document.createElement("button");
   enter.className = "cta";
-  enter.textContent = "Entrar e encontrar meu filme";
+  enter.textContent = "Entrar e encontrar o que assistir";
   enter.onclick = () => go("login");
   const how = document.createElement("button");
   how.className = "cta secondary";
@@ -1704,7 +1696,7 @@ function renderLanding(){
   actions.appendChild(how);
   const proof = document.createElement("div");
   proof.className = "landing-proof";
-  [["7", "filtros que entendem o seu momento"], ["3", "filmes para decidir sem rolar"], ["0", "horas perdidas comparando listas"]].forEach(([value, label]) => {
+  [["8", "filtros que entendem o seu momento"], ["3", "opções para decidir sem rolar"], ["0", "horas perdidas comparando listas"]].forEach(([value, label]) => {
     const card = document.createElement("div");
     card.className = "proof-card";
     const strong = document.createElement("strong");
@@ -2400,7 +2392,7 @@ function renderMarquee(){
   const h1 = document.createElement("h1");
   h1.textContent = "PIPOCA & PLAY";
   const p = document.createElement("p");
-  p.textContent = "7 perguntas. 3 filmes. Zero rolagem infinita.";
+  p.textContent = "8 perguntas. 3 indicações. Zero rolagem infinita.";
 
   wrap.appendChild(bulbs);
   wrap.appendChild(h1);
@@ -2489,7 +2481,7 @@ function renderSummary(){
 
   const cta = document.createElement("button");
   cta.className = "cta";
-  cta.textContent = "🎬 Encontrar meu filme";
+  cta.textContent = "🎬 Encontrar o que assistir";
   cta.onclick = () => runSearch();
 
   const back = document.createElement("button");
@@ -2709,6 +2701,11 @@ function renderTicket(rec){
   badge.className = "rank-badge";
   badge.textContent = "ESCOLHA #" + rec.rank;
   badgesLeft.appendChild(badge);
+  const isSeries = String(rec.content_type || "filme").toLowerCase().indexOf("seri") === 0;
+  const kind = document.createElement("span");
+  kind.className = "kind-badge" + (isSeries ? " serie" : "");
+  kind.textContent = isSeries ? "SÉRIE" : "FILME";
+  badgesLeft.appendChild(kind);
   if(rec.age_rating_br){
     const age = document.createElement("span");
     age.className = "age-badge";
@@ -2740,7 +2737,8 @@ function renderTicket(rec){
   meta.className = "meta-row";
   const parts = [];
   if(rec.year) parts.push(String(rec.year));
-  if(rec.runtime_minutes) parts.push(rec.runtime_minutes + " min");
+  if(isSeries && rec.seasons) parts.push(rec.seasons + (rec.seasons > 1 ? " temporadas" : " temporada"));
+  if(rec.runtime_minutes) parts.push(rec.runtime_minutes + " min" + (isSeries ? "/ep" : ""));
   if(rec.genres && rec.genres.length) parts.push(rec.genres.join(" · "));
   parts.forEach(p => {
     const span = document.createElement("span");
@@ -2964,7 +2962,7 @@ function renderHistory(){
       " · " + date.toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" });
     const ht = document.createElement("div");
     ht.className = "ht";
-    ht.textContent = (item.filters.genre || "") + " · " + (item.filters.mood || "");
+    ht.textContent = [item.filters.content_type, item.filters.genre, item.filters.mood].filter(Boolean).join(" · ");
     el.appendChild(hd);
     el.appendChild(ht);
     el.onclick = () => go("history", () => { state.viewingHistoryItem = item; state.historyIndex = index; });
