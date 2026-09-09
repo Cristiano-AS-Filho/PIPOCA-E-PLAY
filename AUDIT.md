@@ -73,3 +73,13 @@ Foi acrescentada a **primeira pergunta do questionário**: *O que você quer ver
 O schema da resposta passou a exigir `content_type` (`filme`/`serie`) e `seasons` em cada indicação; a validação normaliza um `content_type` ausente para `filme`. O card mostra o selo do formato e, em séries, o número de temporadas e a duração média por episódio. O `metadata.py` passou a consultar `/search/tv` e `/tv/{id}` para séries — buscar série na rota de filmes traria o pôster errado — e a busca de pôster na Wikipedia usa o sufixo `(TV series)`. O construtor de prompt duplicado que existia no navegador, sem nenhuma chamada, foi removido para não divergir do prompt real do backend.
 
 Validação: 56 testes automatizados verdes, incluindo as três respostas oficiais da nova pergunta, a recusa de resposta fora do catálogo, o texto do prompt em "Mesclar", o schema e a separação dos endpoints de série e filme no TMDB. O fluxo HTTP completo e as 31 verificações de interface em Chromium foram repetidos com as oito perguntas, com os cards exibindo corretamente `FILME`, `SÉRIE` e as temporadas.
+
+## Rodada 4 — build da Vercel quebrado pelo limite de funções
+
+O deploy de preview do PR falhou. A causa: cada arquivo em `api/` vira uma função serverless, e o plano Hobby da Vercel aceita no máximo 12 por deploy. A `main` tinha 9 funções e publicava normalmente; as seis rotas novas (planos, conta, marcações e as três de cobrança) levaram o total a 15, e o build passou a ser recusado antes de qualquer código rodar.
+
+A correção foi concentrar todo o `/api` em **uma única função**: `router.py` resolve método e caminho e devolve `(status, payload, headers)`; `api/index.py` é o invólucro HTTP dessa função na Vercel, alcançado pela reescrita `/api/:path*` → `/api/index` no `vercel.json`; e o `server.py` passou a usar o mesmo roteador, de modo que produção e desenvolvimento compartilham a resolução de rotas. O deploy foi de 15 para 1 função. O `maxDuration` subiu de 15s para 60s, alinhando o limite da função ao timeout de 45s da chamada à OpenAI — antes, uma resposta lenta era cortada pela plataforma.
+
+Um 404 de roteamento passou a devolver o caminho recebido, o que torna imediato o diagnóstico caso alguma reescrita altere a rota em produção.
+
+Validação: 62 testes automatizados, incluindo uma bateria que exige que cada rota publicada exista no roteador, a recusa de método errado e a checagem de que o deploy tem uma única função. O fluxo HTTP completo foi executado duas vezes — pelo servidor local e **pela própria função serverless de `api/index.py`**, servida com o mesmo handler que a Vercel usa — e as 31 verificações de interface em Chromium foram repetidas, todas verdes.

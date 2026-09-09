@@ -15,6 +15,7 @@ os.environ["TMDB_API_KEY"] = ""
 os.environ["USER_STORE_FILE"] = str(TEST_STORE)
 
 import billing  # noqa: E402
+import router  # noqa: E402
 from auth import authenticate, create_session, read_session  # noqa: E402
 from plans import public_plans  # noqa: E402
 from recommender import CONTENT_TYPE_OPTIONS, build_feedback_section  # noqa: E402
@@ -542,6 +543,76 @@ class PipocaPlayTests(unittest.TestCase):
         metadata = NullMetadataProvider().lookup("Example")
         self.assertFalse(metadata["availability_verified"])
         self.assertEqual(metadata["availability"], [])
+
+    # -----------------------------------------------------------------
+    # Roteador único (uma função serverless serve todo o /api)
+    # -----------------------------------------------------------------
+
+    def test_router_answers_every_published_route(self):
+        """Cada rota da documentação precisa existir no roteador único."""
+        routes = [
+            ("GET", "/api/health"),
+            ("GET", "/api/plans"),
+            ("POST", "/api/auth/register"),
+            ("POST", "/api/auth/login"),
+            ("POST", "/api/auth/logout"),
+            ("GET", "/api/auth/me"),
+            ("GET", "/api/auth/status"),
+            ("GET", "/api/admin/status"),
+            ("GET", "/api/admin/users"),
+            ("POST", "/api/admin/users"),
+            ("GET", "/api/account"),
+            ("GET", "/api/feedback"),
+            ("POST", "/api/feedback"),
+            ("DELETE", "/api/feedback"),
+            ("POST", "/api/billing/checkout"),
+            ("GET", "/api/billing/status"),
+            ("GET", "/api/billing/webhook"),
+            ("POST", "/api/billing/webhook"),
+            ("POST", "/api/recommend"),
+        ]
+        for method, path in routes:
+            status, payload, _ = router.handle(method, path, {}, {}, {})
+            # Só o 404 de roteamento carrega a chave "path"; um 404 de regra de
+            # negócio (pedido inexistente, por exemplo) significa que a rota existe.
+            self.assertNotIn("path", payload, f"{method} {path} não está roteado")
+            self.assertNotEqual(status, 405, f"{method} {path} recusou o próprio método")
+
+    def test_router_rejects_unknown_paths_and_wrong_methods(self):
+        status, payload, _ = router.handle("GET", "/api/inventada", {}, {}, {})
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["path"], "/api/inventada")
+        self.assertEqual(router.handle("GET", "/api/recommend", {}, {}, {})[0], 405)
+        self.assertEqual(router.handle("POST", "/api/health", {}, {}, {})[0], 405)
+        self.assertEqual(router.handle("GET", "/nao-e-api", {}, {}, {})[0], 404)
+
+    def test_router_ignores_the_trailing_slash(self):
+        self.assertEqual(router.handle("GET", "/api/plans/", {}, {}, {})[0], 200)
+
+    def test_router_reads_the_session_from_the_cookie(self):
+        record = create_user("router@test.local", "client-password")
+        cookie = "pipoca_session=" + create_session(record["email"], "user", record["id"])
+        status, payload, _ = router.handle("GET", "/api/auth/me", {}, {}, {"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["authenticated"])
+        self.assertEqual(payload["user"]["email"], "router@test.local")
+        anonymous = router.handle("GET", "/api/auth/me", {}, {}, {})
+        self.assertFalse(anonymous[1]["authenticated"])
+
+    def test_router_reads_the_query_string_of_the_registration_status(self):
+        record, token, _ = register_user("query@test.local", "client-password")
+        status, payload, _ = router.handle(
+            "GET", "/api/auth/status", {"email": ["query@test.local"], "token": [token]}, {}, {}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "pending")
+
+    def test_deploy_stays_within_the_serverless_function_limit(self):
+        """O plano Hobby da Vercel aceita no máximo 12 funções por deploy."""
+        functions = sorted(Path(__file__).parent.glob("api/**/*.py"))
+        self.assertEqual([item.name for item in functions], ["index.py"])
+        config = json.loads((Path(__file__).parent / "vercel.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["rewrites"][0]["destination"], "/api/index")
 
     # -----------------------------------------------------------------
     # Assinatura, créditos diários e marcações

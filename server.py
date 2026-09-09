@@ -13,8 +13,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-import api_core
-from auth import is_secure_request, public_user, read_session
+import router
 
 ROOT = Path(__file__).parent
 PUBLIC = ROOT / "public"
@@ -68,9 +67,6 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def current_user(self):
-        return read_session(self.headers.get("Cookie"))
-
     def request_json(self, max_length=8_192):
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0 or length > max_length:
@@ -89,107 +85,45 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.send_json(status, payload, headers)
 
     def do_GET(self):
-        path = urlparse(self.path)
-        if path.path == "/api/health":
-            self.send_result(api_core.health())
+        target = urlparse(self.path)
+        if target.path.startswith("/api"):
+            self.send_result(router.handle("GET", target.path, parse_qs(target.query), {}, self.headers))
             return
-        if path.path == "/api/auth/me":
-            user = self.current_user()
-            self.send_json(HTTPStatus.OK, {"authenticated": bool(user), "user": public_user(user)})
-            return
-        if path.path == "/api/auth/status":
-            params = parse_qs(path.query)
-            self.send_result(
-                api_core.registration_status(params.get("email", [""])[0], params.get("token", [""])[0])
-            )
-            return
-        if path.path in {"/api/admin/status", "/api/admin/users"}:
-            self.send_result(api_core.admin_overview(self.current_user()))
-            return
-        if path.path == "/api/plans":
-            self.send_result(api_core.plans_catalog())
-            return
-        if path.path == "/api/account":
-            self.send_result(api_core.account_overview(self.current_user()))
-            return
-        if path.path == "/api/feedback":
-            self.send_result(api_core.feedback_overview(self.current_user()))
-            return
-        if path.path == "/api/billing/status":
-            self.send_result(api_core.billing_status(self.current_user()))
-            return
-        if path.path == "/api/billing/webhook":
-            self.send_json(HTTPStatus.OK, {"ok": True, "endpoint": "asaas-webhook"})
-            return
-        if path.path.startswith("/api/"):
-            self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
-            return
-        if path.path in {"/admin", "/admin/"}:
+        if target.path in {"/admin", "/admin/"}:
             self.path = "/admin.html"
         super().do_GET()
 
     def do_POST(self):
-        if self.path == "/api/auth/register":
-            self.send_result(api_core.register(self.request_json_or_empty(4_096)))
-            return
-
-        if self.path == "/api/auth/login":
-            self.send_result(
-                api_core.login(self.request_json_or_empty(4_096), is_secure_request(self.headers))
-            )
-            return
-
-        if self.path == "/api/auth/logout":
-            self.send_result(api_core.logout(is_secure_request(self.headers)))
-            return
-
-        if self.path == "/api/admin/users":
-            self.send_result(
-                api_core.admin_action(self.current_user(), self.request_json_or_empty(4_096))
-            )
-            return
-
-        if self.path == "/api/feedback":
-            body = self.request_json_or_empty(4_096)
-            session = self.current_user()
-            if str(body.get("action", "")).lower() in {"remove", "delete"}:
-                self.send_result(api_core.feedback_delete(session, body))
-            else:
-                self.send_result(api_core.feedback_save(session, body))
-            return
-
-        if self.path == "/api/billing/checkout":
-            self.send_result(api_core.billing_checkout(self.current_user(), self.request_json_or_empty(4_096)))
-            return
-
-        if self.path == "/api/billing/status":
-            self.send_result(api_core.billing_status(self.current_user()))
-            return
-
-        if self.path == "/api/billing/webhook":
-            token = self.headers.get("asaas-access-token")
-            self.send_result(api_core.billing_webhook(self.request_json_or_empty(64_000), token))
-            return
-
-        if self.path != "/api/recommend":
+        target = urlparse(self.path)
+        if not target.path.startswith("/api"):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
             return
+        # O limite por IP é do servidor local; na Vercel cada invocação é isolada.
+        if target.path.rstrip("/") == "/api/recommend" and self.rate_limited():
+            return
+        self.send_result(
+            router.handle("POST", target.path, parse_qs(target.query), self.request_json_or_empty(64_000), self.headers)
+        )
 
+    def do_PUT(self):
+        self.do_POST()
+
+    def do_DELETE(self):
+        target = urlparse(self.path)
+        self.send_result(
+            router.handle("DELETE", target.path, parse_qs(target.query), self.request_json_or_empty(64_000), self.headers)
+        )
+
+    def rate_limited(self):
         now = time.monotonic()
         requests = REQUESTS_BY_IP[self.client_address[0]]
         while requests and now - requests[0] > 60:
             requests.popleft()
         if len(requests) >= MAX_REQUESTS_PER_MINUTE:
             self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
-            return
+            return True
         requests.append(now)
-        self.send_result(api_core.recommend(self.current_user(), self.request_json_or_empty()))
-
-    def do_DELETE(self):
-        if self.path == "/api/feedback":
-            self.send_result(api_core.feedback_delete(self.current_user(), self.request_json_or_empty(4_096)))
-            return
-        self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
+        return False
 
     def log_message(self, fmt, *args):
         print(f"[{self.log_date_time_string()}] {args[0]}")

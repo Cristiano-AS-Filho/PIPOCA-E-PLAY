@@ -132,7 +132,7 @@ As ações aceitas em `POST /api/admin/users` são `approve`, `reject`, `pending
 
 ## Publicação na Vercel
 
-O arquivo `vercel.json` e as funções em `api/` deixam o repositório pronto para a Vercel. Em **Project Settings → Environment Variables**, configure, por ambiente:
+O arquivo `vercel.json` e a função em `api/index.py` deixam o repositório pronto para a Vercel. **Todas as rotas `/api/*` são servidas por uma única função serverless**: o `vercel.json` reescreve `/api/:path*` para `/api/index`, e `router.py` — o mesmo roteador usado pelo servidor local — resolve o caminho. O plano Hobby da Vercel aceita no máximo 12 funções por deploy, e um arquivo por rota estouraria esse limite; concentrar tudo em uma função também reduz partidas a frio. Em **Project Settings → Environment Variables**, configure, por ambiente:
 
 | Variável | Obrigatória | Uso |
 | --- | --- | --- |
