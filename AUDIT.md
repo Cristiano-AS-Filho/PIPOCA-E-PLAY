@@ -83,3 +83,35 @@ A correção foi concentrar todo o `/api` em **uma única função**: `router.py
 Um 404 de roteamento passou a devolver o caminho recebido, o que torna imediato o diagnóstico caso alguma reescrita altere a rota em produção.
 
 Validação: 62 testes automatizados, incluindo uma bateria que exige que cada rota publicada exista no roteador, a recusa de método errado e a checagem de que o deploy tem uma única função. O fluxo HTTP completo foi executado duas vezes — pelo servidor local e **pela própria função serverless de `api/index.py`**, servida com o mesmo handler que a Vercel usa — e as 31 verificações de interface em Chromium foram repetidas, todas verdes.
+
+## Rodada 5 — marcação múltipla de streamings, avaliações ampliadas, preços e contato
+
+### Onde pretende assistir: várias plataformas de uma vez
+
+A sexta pergunta deixou de ser de resposta única. O cliente marca **quantos serviços quiser**, até cinco por busca, e cada opção mostra a **logo do serviço** — selos SVG desenhados no próprio arquivo, sem requisição externa, para que a etapa nunca fique sem imagem. Marcar *Livre (Qualquer)* limpa as demais marcações, porque a opção abre o catálogo inteiro e anularia o filtro se convivesse com um serviço específico. Atingido o teto, a tela avisa em vez de trocar a seleção por baixo do usuário.
+
+O contrato do backend acompanhou a mudança em vez de confiar na tela. O `clean_filters` ganhou `MULTI_ANSWER_KEYS` e passou a aceitar lista **ou** texto na chave `platform`, validando cada serviço contra o catálogo oficial, removendo duplicatas e aplicando o mesmo teto de cinco. A divisão é feita só nas perguntas multivaloradas: opções de resposta única como *Aclamados pela Crítica / Premiações (Oscar, Cannes)* já trazem vírgula no próprio nome e seriam quebradas por um split cego.
+
+O prompt passou a receber a lista inteira por meio de `build_platform_section`, com três redações distintas: sem restrição, um único serviço, ou o conjunto marcado — neste caso exigindo que cada indicação esteja em pelo menos uma das plataformas marcadas, que nenhuma dependa de serviço fora da lista e que as três opções sejam distribuídas entre elas quando houver bons títulos em mais de uma.
+
+### Avaliações de nove fontes
+
+O bloco `ratings` do schema saiu de duas fontes (IMDb e Rotten Tomatoes) para nove: **IMDb, Rotten Tomatoes crítica, Rotten Tomatoes público, Metacritic, Google, TMDB, Letterboxd, AdoroCinema e Mercado Livre Filmes**. Schema, prompt e tela derivam todos do mesmo catálogo `RATING_SOURCES`, cada fonte com a sua escala — o modo estrito da API exige toda propriedade em `required`, então a fonte desconhecida volta como `0` e simplesmente não vira pílula na tela, nunca uma nota estimada.
+
+O enriquecimento externo passou a preencher a nota do TMDB a partir do próprio TMDB, e um valor vindo da fonte externa **sobrescreve** o que o modelo tiver lembrado. Os links de "conferir na fonte" cobrem agora as mesmas nove fontes.
+
+Na tela, nove pílulas em coluna única deixariam o ingresso 298px mais alto, e comprimi-las em uma linha truncava "Mercado Livre" e "Tomatômetro". A solução foi uma grade que se adapta à largura do ingresso, com o nome da fonte acima e a nota abaixo: nenhuma abreviação, cinco linhas em vez de nove.
+
+### Preços, contato e sigilo do motor
+
+Os planos foram reprecificados: **Silver R$ 10,00, Gold R$ 15,00 e Diamante R$ 20,00**. O `plans.py` é a única origem desses valores — vitrine, checkout e cobrança leem de lá.
+
+Um **botão flutuante de WhatsApp** aponta para o número (11) 93425-2085. Ele fica fora de `#app`, porque cada `render()` esvazia o container, e o rodapé da página ganhou folga para o botão não cobrir conteúdo.
+
+A tela de resultado deixou de estampar `MOTOR: CHATGPT`. Junto com o rótulo, foram neutralizadas as mensagens de erro que chegavam ao navegador nomeando o provedor — chave ausente, falha HTTP, falha de conexão, resposta vazia e JSON inválido —, todas reescritas como "motor de recomendação". O detalhe técnico continua no encadeamento da exceção, para os logs do servidor.
+
+### Validação
+
+`python3 -m unittest test_app` — **81 testes verdes**, entre eles: marcação múltipla vinda como lista e como texto, remoção de duplicatas e vazios, precedência de *Livre (Qualquer)*, recusa de serviço inventado, teto de cinco serviços, as três redações do prompt de plataforma, o catálogo de avaliações governando o schema, a nota externa sobrescrevendo a do modelo, os três preços novos e a garantia de que nenhuma mensagem de erro entregue ao cliente nomeia o provedor do motor.
+
+Interface exercitada em Chromium (430×900, sem erro de JavaScript vindo da aplicação): marcação de três serviços com as logos, aviso ao tentar o sexto, *Livre (Qualquer)* limpando as demais, resumo exibindo "Netflix, Disney+", as nove pílulas de avaliação sem truncamento, os oito links de conferência, o subtítulo do resultado sem qualquer menção ao motor e o botão do WhatsApp visível e apontando para `wa.me/5511934252085`.

@@ -118,7 +118,7 @@
     z-index:1;
     max-width:var(--max);
     margin:0 auto;
-    padding:20px 16px 48px;
+    padding:20px 16px 96px;
     min-height:100vh;
     display:flex;
     flex-direction:column;
@@ -256,6 +256,71 @@
     border-color:var(--marquee);
     background:linear-gradient(90deg, rgba(242,169,59,0.14), rgba(242,169,59,0.04));
   }
+
+  /* Pergunta com marcação múltipla: logo à esquerda, visto à direita. */
+  .opt.multi{
+    display:flex;
+    align-items:center;
+    gap:12px;
+  }
+  .opt-logo{
+    flex:0 0 auto;
+    width:72px;
+    display:block;
+    line-height:0;
+  }
+  .opt-logo svg{
+    width:100%;
+    height:auto;
+    display:block;
+    border-radius:6px;
+  }
+  .opt-label{flex:1;}
+  .opt-check{
+    flex:0 0 auto;
+    width:22px;height:22px;
+    border-radius:50%;
+    border:1px solid rgba(239,230,216,0.22);
+    display:flex;align-items:center;justify-content:center;
+    font-size:12px;
+    color:var(--bg);
+  }
+  .opt.selected .opt-check{
+    background:var(--marquee);
+    border-color:var(--marquee);
+  }
+  .step-hint{
+    font-size:12.5px;
+    color:var(--cream-dim);
+    line-height:1.5;
+    margin:-10px 0 14px;
+  }
+  .step-notice{
+    font-size:12.5px;
+    color:var(--marquee);
+    line-height:1.5;
+    margin:12px 0 0;
+  }
+  .multi-continue{margin-top:16px;}
+  .multi-continue[disabled]{opacity:.45;cursor:not-allowed;}
+
+  /* Contato rápido: fica fora do #app, então sobrevive a cada render(). */
+  .wa-fab{
+    position:fixed;
+    right:16px;
+    bottom:calc(16px + env(safe-area-inset-bottom, 0px));
+    z-index:60;
+    width:56px;height:56px;
+    border-radius:50%;
+    background:#25d366;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 8px 22px rgba(0,0,0,0.38);
+    text-decoration:none;
+    transition:transform .15s, box-shadow .15s;
+  }
+  .wa-fab:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(0,0,0,0.48);}
+  .wa-fab:active{transform:scale(0.95);}
+  .wa-fab svg{width:31px;height:31px;fill:#fff;display:block;}
 
   .back-link{
     margin-top:18px;
@@ -574,18 +639,38 @@
     line-height:1.5;
   }
 
+  /* São nove fontes de avaliação: em coluna única o ingresso ficaria alto
+     demais, então elas ocupam a largura disponível em duas ou mais colunas. */
   .ratings-row{
-    display:flex;flex-wrap:wrap;gap:8px;
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(118px, 1fr));
+    gap:6px;
     margin-bottom:12px;
   }
   .rating-pill{
     font-family:'IBM Plex Mono',monospace;
-    font-size:11.5px;
-    font-weight:600;
-    padding:5px 10px;
+    padding:6px 8px;
     border-radius:6px;
     background:rgba(24,19,16,0.06);
     border:1px solid rgba(24,19,16,0.12);
+    display:flex;
+    flex-direction:column;
+    align-items:flex-start;
+    gap:1px;
+    white-space:nowrap;
+  }
+  /* Nome da fonte em cima, nota embaixo: assim "Mercado Livre" e
+     "Tomatômetro" cabem inteiros na coluna estreita do ingresso. */
+  .rating-pill .rating-name{
+    font-size:9px;
+    font-weight:600;
+    letter-spacing:0.4px;
+    text-transform:uppercase;
+    opacity:0.68;
+  }
+  .rating-pill .rating-value{
+    font-size:12.5px;
+    font-weight:700;
   }
   .awards-row{
     display:flex;align-items:center;gap:6px;
@@ -827,6 +912,18 @@
 <div id="popcorn-bg"></div>
 <div id="app"></div>
 
+<!-- Contato direto por WhatsApp. Fica fora de #app porque render() esvazia o app. -->
+<a class="wa-fab"
+   href="https://wa.me/5511934252085?text=Ol%C3%A1!%20Vim%20pelo%20Pipoca%20%26%20Play%20e%20preciso%20de%20ajuda."
+   target="_blank"
+   rel="noopener noreferrer"
+   title="Falar com o Pipoca &amp; Play no WhatsApp"
+   aria-label="Falar com o Pipoca e Play no WhatsApp (11 93425-2085)">
+  <svg viewBox="0 0 24 24" role="img" aria-hidden="true" focusable="false">
+    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+  </svg>
+</a>
+
 <script>
 /* =========================================================
    PIPOCA & PLAY — motor de recomendação
@@ -873,6 +970,9 @@ const STEPS = [
     key: "platform",
     eyebrow: "6 de 8",
     question: "Onde pretende assistir?",
+    hint: "Marque quantos serviços quiser: as indicações vão sair de alguma das plataformas marcadas.",
+    multi: true,
+    logos: true,
     options: ["Livre (Qualquer)","Netflix","Amazon Prime Video","Max (HBO)","Disney+","Apple TV+","Paramount+","Cinema / Aluguel"]
   },
   {
@@ -888,6 +988,60 @@ const STEPS = [
     options: ["Indiferente","Grandes Sucessos / Blockbusters","Filmes Cult / Menos Conhecidos","Aclamados pela Crítica / Premiações (Oscar, Cannes)"]
   }
 ];
+
+/* Mesmo teto e mesma regra de "Livre (Qualquer)" aplicados pelo backend em
+   clean_filters: a tela avisa antes de o servidor recusar a busca. */
+const MAX_PLATFORMS_PER_SEARCH = 5;
+const ANY_PLATFORM = "Livre (Qualquer)";
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/* Logo de cada serviço na pergunta "onde pretende assistir". Os selos são
+   desenhados aqui em SVG: nenhuma requisição externa deixa a etapa sem imagem. */
+const PLATFORM_BRANDS = {
+  "Livre (Qualquer)":   { bg:"#2b2420", fg:"#f2a93b", label:"TODAS",       size:14 },
+  "Netflix":            { bg:"#000000", fg:"#e50914", label:"NETFLIX",     size:14 },
+  "Amazon Prime Video": { bg:"#00a8e1", fg:"#0f171e", label:"prime video", size:13 },
+  "Max (HBO)":          { bg:"#0a0a0a", fg:"#ffffff", label:"MAX",         size:17 },
+  "Disney+":            { bg:"#0c1b53", fg:"#ffffff", label:"Disney+",     size:15 },
+  "Apple TV+":          { bg:"#111111", fg:"#ffffff", label:"Apple TV+",   size:14 },
+  "Paramount+":         { bg:"#0064ff", fg:"#ffffff", label:"Paramount+",  size:13 },
+  "Cinema / Aluguel":   { bg:"#5a1f1a", fg:"#f4d9a0", label:"CINEMA",      size:14 }
+};
+
+function platformLogo(name){
+  const brand = PLATFORM_BRANDS[name] ||
+    { bg:"#2b2420", fg:"#efe6d8", label:String(name || "").slice(0,10).toUpperCase(), size:13 };
+  const box = document.createElement("span");
+  box.className = "opt-logo";
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 120 40");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Logo " + name);
+
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("width", "120");
+  rect.setAttribute("height", "40");
+  rect.setAttribute("rx", "8");
+  rect.setAttribute("fill", brand.bg);
+
+  const text = document.createElementNS(SVG_NS, "text");
+  text.setAttribute("x", "60");
+  text.setAttribute("y", "26");
+  text.setAttribute("text-anchor", "middle");
+  text.setAttribute("font-family", "Inter, Helvetica, Arial, sans-serif");
+  text.setAttribute("font-size", String(brand.size));
+  text.setAttribute("font-weight", "800");
+  text.setAttribute("letter-spacing", "0.4");
+  text.setAttribute("fill", brand.fg);
+  text.textContent = brand.label;
+
+  svg.appendChild(rect);
+  svg.appendChild(text);
+  box.appendChild(svg);
+  return box;
+}
 
 const LOADING_MESSAGES = [
   "Consultando o roteirista de plantão…",
@@ -909,6 +1063,9 @@ try{
 }catch(e){
   pendingAccess = null;
 }
+
+/* Aviso da etapa de marcação múltipla (teto de serviços atingido). */
+let wizardNotice = "";
 
 let state = {
   screen: "landing", // landing | login | access-status | plans | checkout | wizard | summary | loading | results | history | marks | admin | error
@@ -1136,6 +1293,7 @@ function go(screen, mutate){
 }
 
 function applyRoute(snapshot){
+  wizardNotice = "";
   const target = snapshot && snapshot.screen ? snapshot.screen : (sessionUser ? "wizard" : "landing");
   state.stepIndex = snapshot && typeof snapshot.stepIndex === "number" ? snapshot.stepIndex : 0;
   state.historyIndex = snapshot && typeof snapshot.historyIndex === "number" ? snapshot.historyIndex : -1;
@@ -1540,6 +1698,43 @@ function imdbUrl(title){
 }
 function letterboxdUrl(title){
   return "https://letterboxd.com/search/" + encodeURIComponent(title) + "/";
+}
+function rottenTomatoesUrl(title){
+  return "https://www.rottentomatoes.com/search?search=" + encodeURIComponent(title);
+}
+function metacriticUrl(title){
+  return "https://www.metacritic.com/search/" + encodeURIComponent(title) + "/";
+}
+function googleUrl(title, isSeries){
+  return "https://www.google.com/search?q=" +
+    encodeURIComponent(title + (isSeries ? " série" : " filme") + " avaliações");
+}
+function mercadoLivreUrl(title){
+  return "https://lista.mercadolivre.com.br/" + encodeURIComponent(title);
+}
+function adoroCinemaUrl(title){
+  return "https://www.adorocinema.com/pesquisar/?q=" + encodeURIComponent(title);
+}
+
+/* Fontes de avaliação exibidas no cartão, na mesma ordem de RATING_SOURCES do
+   backend. Uma nota 0 (ou ausente) significa "o motor não sabe" e não vira
+   pílula na tela. */
+const RATING_SOURCES = [
+  { key:"imdb",                     label:"IMDb",          icon:"⭐", suffix:"/10", decimals:1, scale:"nota de 0 a 10" },
+  { key:"rotten_tomatoes_critics",  label:"Tomatômetro",   icon:"🍅", suffix:"%",   decimals:0, scale:"aprovação da crítica no Rotten Tomatoes" },
+  { key:"rotten_tomatoes_audience", label:"Público RT",    icon:"🍿", suffix:"%",   decimals:0, scale:"aprovação do público no Rotten Tomatoes" },
+  { key:"metacritic",               label:"Metacritic",    icon:"🎯", suffix:"",    decimals:0, scale:"metascore de 0 a 100" },
+  { key:"google_users",             label:"Google",        icon:"🔎", suffix:"%",   decimals:0, scale:"percentual de usuários que gostaram" },
+  { key:"tmdb",                     label:"TMDB",          icon:"🎬", suffix:"/10", decimals:1, scale:"nota de 0 a 10" },
+  { key:"letterboxd",               label:"Letterboxd",    icon:"📓", suffix:"/5",  decimals:1, scale:"nota de 0 a 5" },
+  { key:"adorocinema",              label:"AdoroCinema",   icon:"🎟️", suffix:"/5", decimals:1, scale:"nota de 0 a 5" },
+  { key:"mercado_livre_filmes",     label:"Mercado Livre", icon:"🛒", suffix:"/5",  decimals:1, scale:"nota de 0 a 5" }
+];
+
+function formatRating(value, decimals){
+  const number = Number(value);
+  if(!isFinite(number) || number <= 0) return "";
+  return decimals ? number.toFixed(decimals).replace(".", ",") : String(Math.round(number));
 }
 
 const WATCH_TYPE_ICON = {
@@ -2412,11 +2607,53 @@ function renderPerf(){
   return perf;
 }
 
+/* Uma resposta sempre é lida como lista: as perguntas de marcação única têm
+   um item só. Nada de split por vírgula aqui — opções como "Aclamados pela
+   Crítica / Premiações (Oscar, Cannes)" já trazem vírgula no próprio nome. */
+function filterAnswers(key){
+  const raw = state.filters[key];
+  if(Array.isArray(raw)) return raw.slice();
+  return raw ? [raw] : [];
+}
+
+function answerLabel(key){
+  return filterAnswers(key).join(", ");
+}
+
+function isAnswerSelected(step, option){
+  return filterAnswers(step.key).indexOf(option) !== -1;
+}
+
+/* Devolve a nova marcação da pergunta múltipla, ou null quando o teto foi
+   atingido — aí a tela avisa em vez de trocar a seleção por baixo do usuário. */
+function toggleAnswer(step, option){
+  if(option === ANY_PLATFORM) return [ANY_PLATFORM];
+  const next = filterAnswers(step.key).filter(item => item !== ANY_PLATFORM);
+  const at = next.indexOf(option);
+  if(at !== -1){
+    next.splice(at, 1);
+    return next;
+  }
+  if(next.length >= MAX_PLATFORMS_PER_SEARCH) return null;
+  next.push(option);
+  return next;
+}
+
+function advanceStep(){
+  wizardNotice = "";
+  if(state.stepIndex < STEPS.length - 1){
+    go("wizard", () => { state.stepIndex += 1; });
+  }else{
+    go("summary");
+  }
+}
+
 function renderWizard(){
   const wrap = document.createElement("div");
   wrap.appendChild(renderPerf());
 
   const step = STEPS[state.stepIndex];
+  const chosen = filterAnswers(step.key);
 
   const eyebrow = document.createElement("div");
   eyebrow.className = "step-eyebrow";
@@ -2426,27 +2663,77 @@ function renderWizard(){
   q.className = "step-question";
   q.textContent = step.question;
 
+  wrap.appendChild(eyebrow);
+  wrap.appendChild(q);
+
+  if(step.hint){
+    const hint = document.createElement("p");
+    hint.className = "step-hint";
+    hint.textContent = step.hint;
+    wrap.appendChild(hint);
+  }
+
   const opts = document.createElement("div");
   opts.className = "options";
 
   step.options.forEach(opt => {
+    const selected = isAnswerSelected(step, opt);
     const b = document.createElement("button");
-    b.className = "opt" + (state.filters[step.key] === opt ? " selected" : "");
-    b.textContent = opt;
-    b.onclick = () => {
-      state.filters[step.key] = opt;
-      if(state.stepIndex < STEPS.length - 1){
-        go("wizard", () => { state.stepIndex += 1; });
-      }else{
-        go("summary");
-      }
-    };
+    b.type = "button";
+    b.className = "opt" + (step.multi ? " multi" : "") + (selected ? " selected" : "");
+
+    if(step.logos) b.appendChild(platformLogo(opt));
+
+    const label = document.createElement("span");
+    label.className = "opt-label";
+    label.textContent = opt;
+    b.appendChild(label);
+
+    if(step.multi){
+      b.setAttribute("aria-pressed", selected ? "true" : "false");
+      const check = document.createElement("span");
+      check.className = "opt-check";
+      check.textContent = selected ? "✔" : "";
+      b.appendChild(check);
+      b.onclick = () => {
+        const next = toggleAnswer(step, opt);
+        if(next === null){
+          wizardNotice = "Você já marcou " + MAX_PLATFORMS_PER_SEARCH +
+            " serviços. Desmarque um para escolher outro.";
+        }else{
+          wizardNotice = "";
+          state.filters[step.key] = next;
+        }
+        render();
+      };
+    }else{
+      b.onclick = () => {
+        state.filters[step.key] = opt;
+        advanceStep();
+      };
+    }
     opts.appendChild(b);
   });
 
-  wrap.appendChild(eyebrow);
-  wrap.appendChild(q);
   wrap.appendChild(opts);
+
+  if(step.multi){
+    if(wizardNotice){
+      const notice = document.createElement("p");
+      notice.className = "step-notice";
+      notice.textContent = wizardNotice;
+      wrap.appendChild(notice);
+    }
+    const cta = document.createElement("button");
+    cta.type = "button";
+    cta.className = "cta small multi-continue";
+    cta.disabled = chosen.length === 0;
+    cta.textContent = chosen.length > 1
+      ? "Continuar com " + chosen.length + " serviços"
+      : "Continuar";
+    cta.onclick = () => { if(chosen.length) advanceStep(); };
+    wrap.appendChild(cta);
+  }
 
   if(state.stepIndex > 0){
     const back = document.createElement("button");
@@ -2475,7 +2762,7 @@ function renderSummary(){
   STEPS.forEach(s => {
     const tag = document.createElement("div");
     tag.className = "tag";
-    tag.innerHTML = "<b>" + escapeHtml(state.filters[s.key]) + "</b>";
+    tag.innerHTML = "<b>" + escapeHtml(answerLabel(s.key)) + "</b>";
     list.appendChild(tag);
   });
 
@@ -2607,7 +2894,9 @@ function renderResults(){
   h.textContent = "Encontramos 3 opções pra você";
   const sub = document.createElement("div");
   sub.className = "results-sub";
-  let subText = "ROTEIRO Nº " + PROMPT_VERSION.toUpperCase() + " · MOTOR: CHATGPT";
+  // A tecnologia por trás da curadoria é informação interna: a tela de
+  // resultado nunca nomeia o motor nem a versão do roteiro usados na busca.
+  let subText = "CURADORIA PIPOCA & PLAY";
   if(account && account.subscription_active){
     subText += " · " + (account.unlimited
       ? "PLANO " + String(account.plan_name || "").toUpperCase() + ": CONSULTAS ILIMITADAS"
@@ -2783,21 +3072,35 @@ function renderTicket(rec){
   body.appendChild(p2);
 
   /* ratings */
-  if(rec.ratings && (rec.ratings.imdb || rec.ratings.rotten_tomatoes_critics)){
+  const ratings = rec.ratings || {};
+  const scored = RATING_SOURCES
+    .map(source => ({ source: source, text: formatRating(ratings[source.key], source.decimals) }))
+    .filter(entry => entry.text);
+  if(scored.length){
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = "AVALIAÇÕES";
+    body.appendChild(label);
+
     const ratingsRow = document.createElement("div");
     ratingsRow.className = "ratings-row";
-    if(rec.ratings.imdb){
+    scored.forEach(entry => {
       const pill = document.createElement("span");
       pill.className = "rating-pill";
-      pill.textContent = "IMDb " + rec.ratings.imdb;
+      pill.title = "Avaliação no " + entry.source.label + " (" + entry.source.scale + ")";
+
+      const name = document.createElement("span");
+      name.className = "rating-name";
+      name.textContent = entry.source.icon + " " + entry.source.label;
+
+      const value = document.createElement("span");
+      value.className = "rating-value";
+      value.textContent = entry.text + entry.source.suffix;
+
+      pill.appendChild(name);
+      pill.appendChild(value);
       ratingsRow.appendChild(pill);
-    }
-    if(rec.ratings.rotten_tomatoes_critics){
-      const pill = document.createElement("span");
-      pill.className = "rating-pill";
-      pill.textContent = "🍅 " + rec.ratings.rotten_tomatoes_critics + "%";
-      ratingsRow.appendChild(pill);
-    }
+    });
     body.appendChild(ratingsRow);
   }
 
@@ -2879,7 +3182,12 @@ function renderTicket(rec){
   [
     ["JustWatch", justWatchUrl(titleForLinks)],
     ["IMDb", imdbUrl(titleForLinks)],
-    ["Letterboxd", letterboxdUrl(titleForLinks)]
+    ["Rotten Tomatoes", rottenTomatoesUrl(titleForLinks)],
+    ["Metacritic", metacriticUrl(titleForLinks)],
+    ["Google", googleUrl(titleForLinks, isSeries)],
+    ["Letterboxd", letterboxdUrl(titleForLinks)],
+    ["AdoroCinema", adoroCinemaUrl(titleForLinks)],
+    ["Mercado Livre", mercadoLivreUrl(titleForLinks)]
   ].forEach(([label, url]) => {
     const a = document.createElement("a");
     a.className = "link-chip";

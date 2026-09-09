@@ -8,7 +8,15 @@ A experiência pública começa em uma **landing page** responsiva, com apresent
 
 A primeira pergunta define o tipo de produção — **Filme**, **Série** ou **Mesclar (filmes e séries)** — e é a restrição mais forte do prompt: em "Mesclar", a lista traz pelo menos um filme e pelo menos uma série, e cada indicação vem marcada com o seu formato. Os sete filtros originais do MVP foram preservados na sequência: gênero principal, humor/vibe do dia, tempo disponível, época do título, plataforma de streaming, companhia e popularidade/estilo. Para séries, a duração é a média por episódio e o card mostra o número de temporadas. O backend valida o JSON da IA e exige três recomendações ordenadas. A pontuação exibida é um **match próprio do sistema**, não uma nota de IMDb ou crítica.
 
-O enriquecimento factual é separado da IA. Quando `TMDB_API_KEY` está configurada, o adaptador consulta posters, backdrops, duração, gêneros e disponibilidade no Brasil. Sem essa chave, o sistema informa explicitamente que a disponibilidade não foi confirmada e oferece links de conferência no JustWatch, IMDb e Letterboxd; o modelo nunca é tratado como banco de dados.
+A pergunta **"onde pretende assistir"** aceita **mais de uma marcação**: o cliente marca quantos serviços quiser (até cinco por busca), cada opção aparece com a **logo do serviço** e o prompt recebe a lista inteira — toda indicação precisa estar em pelo menos uma das plataformas marcadas, e o motor distribui as três opções entre elas quando há bons títulos em mais de uma. Marcar "Livre (Qualquer)" limpa as demais marcações e libera o catálogo. O mesmo teto e a mesma regra valem no `clean_filters` do backend, que recusa a busca antes de gastar crédito quando aparece um serviço fora da lista oficial.
+
+Cada indicação mostra as notas de **nove fontes de avaliação**: IMDb, Rotten Tomatoes (crítica e público), Metacritic, Google, TMDB, Letterboxd, AdoroCinema e Mercado Livre Filmes. Cada fonte tem a sua própria escala, e a fonte que o motor não souber com segurança volta como `0` e simplesmente não vira pílula na tela — nunca uma nota estimada. O bloco "conferir na fonte" leva a esses mesmos serviços.
+
+O enriquecimento factual é separado da IA. Quando `TMDB_API_KEY` está configurada, o adaptador consulta posters, backdrops, duração, gêneros, disponibilidade no Brasil e a nota do próprio TMDB, que **prevalece sobre a nota lembrada pelo modelo**. Sem essa chave, o sistema informa explicitamente que a disponibilidade não foi confirmada e oferece os links de conferência; o modelo nunca é tratado como banco de dados.
+
+Qual motor de IA está por trás da curadoria é **informação interna**: nenhuma tela — nem a de resultado, nem a de erro — nomeia o provedor. As mensagens de falha descrevem o problema como "motor de recomendação", e o detalhe técnico fica apenas no encadeamento da exceção, nos logs do servidor.
+
+Um **botão flutuante de WhatsApp** fica disponível em todas as telas e abre a conversa com o atendimento no número **(11) 93425-2085**.
 
 ## Planos, créditos e checkout
 
@@ -16,9 +24,9 @@ O acesso à recomendação é pago. Depois de aprovado pelo administrador, o cli
 
 | Plano | Preço mensal | Créditos | Ciclo |
 | --- | --- | --- | --- |
-| Silver | R$ 15,00 | 2 créditos por dia | 30 dias |
-| Gold | R$ 25,00 | 5 créditos por dia | 30 dias |
-| Diamante | R$ 30,00 | ilimitado | 30 dias |
+| Silver | R$ 10,00 | 2 créditos por dia | 30 dias |
+| Gold | R$ 15,00 | 5 créditos por dia | 30 dias |
+| Diamante | R$ 20,00 | ilimitado | 30 dias |
 
 **1 crédito = 1 consulta** de filme, série ou novela. Os créditos diários zeram e voltam à meia-noite no horário de Brasília (UTC-3 fixo, sem depender do banco de fusos do runtime); o ciclo de 30 dias é contado a partir da confirmação do pagamento. Quando os créditos do dia acabam, a plataforma explica o limite e oferece a troca de plano; se o motor falhar depois do débito, o crédito é devolvido automaticamente.
 

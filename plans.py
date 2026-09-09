@@ -12,7 +12,7 @@ PLANS = {
     "silver": {
         "id": "silver",
         "name": "Silver",
-        "price": 15.00,
+        "price": 10.00,
         "daily_credits": 2,
         "cycle_days": 30,
         "headline": "2 indicações por dia",
@@ -26,7 +26,7 @@ PLANS = {
     "gold": {
         "id": "gold",
         "name": "Gold",
-        "price": 25.00,
+        "price": 15.00,
         "daily_credits": 5,
         "cycle_days": 30,
         "headline": "5 indicações por dia",
@@ -40,7 +40,7 @@ PLANS = {
     "diamante": {
         "id": "diamante",
         "name": "Diamante",
-        "price": 30.00,
+        "price": 20.00,
         "daily_credits": UNLIMITED,
         "cycle_days": 30,
         "headline": "Indicações ilimitadas",

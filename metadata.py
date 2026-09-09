@@ -23,6 +23,7 @@ class NullMetadataProvider(ContentMetadataProvider):
         return {
             "images": {"poster": "", "backdrop": ""},
             "availability": [],
+            "ratings": {},
             "metadata_source": "Fonte externa não configurada",
             "availability_verified": False,
         }
@@ -103,6 +104,8 @@ class TMDBMetadataProvider(ContentMetadataProvider):
             "genres": genres[:3],
             "synopsis": details.get("overview") or "",
             "availability": availability[:6],
+            # A nota do TMDB vem da própria fonte externa, nunca do modelo.
+            "ratings": {"tmdb": round(float(details.get("vote_average") or 0), 1)},
             "metadata_source": "TMDB",
             "availability_verified": bool(availability),
         }
@@ -130,6 +133,14 @@ def enrich_result(result: dict) -> dict:
                 recommendation.get("year", 0),
                 recommendation.get("content_type", "filme"),
             )
+        ratings = recommendation.get("ratings")
+        if not isinstance(ratings, dict):
+            ratings = {}
+        # Nota vinda de fonte externa vale mais que a nota lembrada pelo modelo.
+        for source, value in (metadata.get("ratings") or {}).items():
+            if value:
+                ratings[source] = value
+        recommendation["ratings"] = ratings
         recommendation["poster_url"] = metadata["images"].get("poster", "")
         recommendation["backdrop_url"] = metadata["images"].get("backdrop", "")
         recommendation["metadata_source"] = metadata.get("metadata_source", "")

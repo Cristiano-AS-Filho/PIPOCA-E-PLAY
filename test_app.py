@@ -18,8 +18,13 @@ import billing  # noqa: E402
 import router  # noqa: E402
 from auth import authenticate, create_session, read_session  # noqa: E402
 from plans import public_plans  # noqa: E402
-from recommender import CONTENT_TYPE_OPTIONS, build_feedback_section  # noqa: E402
-from metadata import NullMetadataProvider  # noqa: E402
+from recommender import (  # noqa: E402
+    CONTENT_TYPE_OPTIONS,
+    MAX_PLATFORMS_PER_SEARCH,
+    RATING_SOURCES,
+    build_feedback_section,
+)
+from metadata import NullMetadataProvider, enrich_result  # noqa: E402
 from server import (  # noqa: E402
     RECOMMENDATION_SCHEMA,
     buildRecommendationPrompt,
@@ -49,6 +54,16 @@ from user_store import (  # noqa: E402
     update_user_role,
     update_user_status,
 )
+
+
+class _FakeMetadataProvider(NullMetadataProvider):
+    """Fonte externa de mentira: devolve apenas as notas pedidas pelo teste."""
+
+    def __init__(self, ratings):
+        self.ratings = ratings
+
+    def lookup(self, title_original, title_pt="", year=0, content_type="filme"):
+        return {**super().lookup(title_original, title_pt, year, content_type), "ratings": self.ratings}
 
 
 FILTERS = {
@@ -107,7 +122,79 @@ class PipocaPlayTests(unittest.TestCase):
     def test_prompt_contains_independent_mood_and_platform(self):
         prompt = buildRecommendationPrompt(FILTERS)
         self.assertIn("Vibe/clima emocional desejado: Sombrio / Assustador", prompt)
-        self.assertIn("Plataforma de streaming: Livre (Qualquer)", prompt)
+        self.assertIn("Plataforma de streaming marcada: Livre (Qualquer)", prompt)
+
+    def test_platform_question_accepts_more_than_one_streaming(self):
+        cleaned = clean_filters({**FILTERS, "platform": ["Netflix", "Disney+", "Max (HBO)"]})
+        self.assertEqual(cleaned["platform"], "Netflix, Disney+, Max (HBO)")
+        # O mesmo conjunto também chega como texto quando vem do histórico salvo.
+        from_text = clean_filters({**FILTERS, "platform": "Netflix, Disney+, Max (HBO)"})
+        self.assertEqual(from_text, cleaned)
+
+    def test_platform_multi_choice_drops_duplicates_and_blanks(self):
+        cleaned = clean_filters({**FILTERS, "platform": ["Netflix", " Netflix ", "", "Disney+"]})
+        self.assertEqual(cleaned["platform"], "Netflix, Disney+")
+
+    def test_any_platform_wins_over_the_other_marks(self):
+        cleaned = clean_filters({**FILTERS, "platform": ["Netflix", "Livre (Qualquer)"]})
+        self.assertEqual(cleaned["platform"], "Livre (Qualquer)")
+
+    def test_platform_multi_choice_still_rejects_invented_services(self):
+        with self.assertRaises(ValueError):
+            clean_filters({**FILTERS, "platform": ["Netflix", "Streaming do vizinho"]})
+        with self.assertRaises(ValueError):
+            clean_filters({**FILTERS, "platform": []})
+        with self.assertRaises(ValueError):
+            clean_filters({**FILTERS, "platform": ""})
+
+    def test_platform_multi_choice_has_a_ceiling(self):
+        too_many = [
+            "Netflix", "Disney+", "Max (HBO)", "Apple TV+", "Paramount+", "Amazon Prime Video",
+        ]
+        self.assertGreater(len(too_many), MAX_PLATFORMS_PER_SEARCH)
+        with self.assertRaises(ValueError):
+            clean_filters({**FILTERS, "platform": too_many})
+
+    def test_prompt_tells_the_engine_to_honour_every_marked_platform(self):
+        prompt = buildRecommendationPrompt({**FILTERS, "platform": "Netflix, Disney+"})
+        self.assertIn("Plataforma de streaming marcada: Netflix, Disney+", prompt)
+        self.assertIn("marcou 2 plataformas ao mesmo tempo (Netflix, Disney+)", prompt)
+        self.assertIn("pelo menos uma dessas", prompt)
+        single = buildRecommendationPrompt({**FILTERS, "platform": "Netflix"})
+        self.assertIn("marcou uma única plataforma (Netflix)", single)
+        self.assertNotIn("plataformas ao mesmo tempo", single)
+
+    def test_ratings_cover_the_published_review_platforms(self):
+        ratings = RECOMMENDATION_SCHEMA["properties"]["recommendations"]["items"]["properties"]["ratings"]
+        for source in ("imdb", "rotten_tomatoes_critics", "google_users", "mercado_livre_filmes"):
+            self.assertIn(source, ratings["required"])
+        # O modo estrito da API exige toda propriedade declarada em required.
+        self.assertEqual(sorted(ratings["required"]), sorted(ratings["properties"]))
+        # O catálogo de fontes é a única origem do schema, do prompt e da tela.
+        self.assertEqual(ratings["required"], [source["key"] for source in RATING_SOURCES])
+        self.assertEqual(ratings["properties"]["imdb"]["maximum"], 10)
+        self.assertEqual(ratings["properties"]["google_users"]["maximum"], 100)
+        self.assertEqual(ratings["properties"]["mercado_livre_filmes"]["maximum"], 5)
+
+    def test_prompt_lists_every_rating_source_with_its_own_scale(self):
+        prompt = buildRecommendationPrompt(FILTERS)
+        for label, scale in (("IMDb", 10), ("Google (% de usuários que gostaram)", 100), ("Mercado Livre Filmes", 5)):
+            self.assertIn(f"{label} de 0 a {scale}", prompt)
+        self.assertIn("Use 0 em toda fonte que você não souber com segurança", prompt)
+
+    def test_external_ratings_override_what_the_model_remembered(self):
+        result = {"recommendations": [{"title_original": "Example", "ratings": {"imdb": 8.1, "tmdb": 1.0}}]}
+        with patch("metadata.get_metadata_provider", lambda: _FakeMetadataProvider({"tmdb": 7.4})):
+            enriched = enrich_result(result)
+        ratings = enriched["recommendations"][0]["ratings"]
+        self.assertEqual(ratings["tmdb"], 7.4)
+        self.assertEqual(ratings["imdb"], 8.1)
+
+    def test_enrichment_keeps_ratings_when_there_is_no_external_source(self):
+        result = {"recommendations": [{"title_original": "Example", "ratings": {"imdb": 8.1}}]}
+        with patch("metadata.get_metadata_provider", NullMetadataProvider):
+            enriched = enrich_result(result)
+        self.assertEqual(enriched["recommendations"][0]["ratings"], {"imdb": 8.1})
 
     def test_validate_requires_exactly_three_ordered_recommendations(self):
         item = {
@@ -627,11 +714,14 @@ class PipocaPlayTests(unittest.TestCase):
 
     def test_plans_catalog_has_the_three_published_prices(self):
         catalog = {plan["id"]: plan for plan in public_plans()}
-        self.assertEqual(catalog["silver"]["price"], 15.00)
+        self.assertEqual(catalog["silver"]["price"], 10.00)
+        self.assertEqual(catalog["silver"]["price_label"], "R$ 10,00")
         self.assertEqual(catalog["silver"]["daily_credits"], 2)
-        self.assertEqual(catalog["gold"]["price"], 25.00)
+        self.assertEqual(catalog["gold"]["price"], 15.00)
+        self.assertEqual(catalog["gold"]["price_label"], "R$ 15,00")
         self.assertEqual(catalog["gold"]["daily_credits"], 5)
-        self.assertEqual(catalog["diamante"]["price"], 30.00)
+        self.assertEqual(catalog["diamante"]["price"], 20.00)
+        self.assertEqual(catalog["diamante"]["price_label"], "R$ 20,00")
         self.assertTrue(catalog["diamante"]["unlimited"])
 
     def test_recommendation_is_blocked_without_a_confirmed_payment(self):
@@ -724,6 +814,61 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["account"]["credits_remaining"], 1)
         self.assertEqual(seen["feedback"][0]["title_original"], "The Matrix")
+
+    def test_request_carries_every_marked_streaming_into_the_prompt(self):
+        session, _ = self._client_session("silver")
+        seen = {}
+
+        def fake_call(filters, feedback=None):
+            seen["prompt"] = buildRecommendationPrompt(filters, feedback)
+            seen["platform"] = filters["platform"]
+            return json.dumps({"recommendations": []})
+
+        body = {"filters": {**FILTERS, "platform": ["Netflix", "Disney+", "Max (HBO)"]}}
+        with patch("recommender.call_openai", fake_call):
+            status, _, _ = api_core.recommend(session, body)
+        self.assertEqual(status, 200)
+        self.assertEqual(seen["platform"], "Netflix, Disney+, Max (HBO)")
+        self.assertIn("marcou 3 plataformas ao mesmo tempo", seen["prompt"])
+        self.assertIn("Netflix, Disney+, Max (HBO)", seen["prompt"])
+
+    def test_request_with_an_unofficial_streaming_never_reaches_the_engine(self):
+        session, user_id = self._client_session("silver")
+        body = {"filters": {**FILTERS, "platform": ["Netflix", "Streaming do vizinho"]}}
+
+        def must_not_run(filters, feedback=None):  # pragma: no cover - só falha se chamada
+            raise AssertionError("O motor não pode ser chamado com filtro inválido.")
+
+        with patch("recommender.call_openai", must_not_run):
+            status, payload, _ = api_core.recommend(session, body)
+        self.assertEqual(status, 400)
+        self.assertIn("opções oficiais", payload["error"])
+        # Filtro recusado antes do débito: o crédito do dia continua intacto.
+        self.assertEqual(get_account(user_id)["credits_remaining"], 2)
+
+    def test_missing_engine_key_is_reported_without_naming_the_provider(self):
+        from recommender import call_openai
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            with self.assertRaises(RuntimeError) as raised:
+                call_openai(FILTERS)
+        message = str(raised.exception)
+        self.assertIn("motor de recomendação", message)
+        for secret in ("OPENAI", "OpenAI", "ChatGPT"):
+            self.assertNotIn(secret, message)
+
+    def test_engine_failures_never_name_the_provider_to_the_client(self):
+        session, _ = self._client_session("silver")
+
+        def broken(filters, feedback=None):
+            raise RuntimeError("Não foi possível conectar ao motor de recomendação.")
+
+        with patch("recommender.call_openai", broken):
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 502)
+        # Qual motor está por trás da curadoria é informação interna.
+        for secret in ("OpenAI", "openai", "ChatGPT", "GPT"):
+            self.assertNotIn(secret, payload["error"])
 
     def test_credit_comes_back_when_the_engine_fails(self):
         session, user_id = self._client_session("silver")
