@@ -153,7 +153,7 @@
       <div class="tablewrap">
         <table>
           <thead>
-            <tr><th>E-mail</th><th>Situação</th><th>Papel</th><th>Cadastro</th><th>Ações</th></tr>
+            <tr><th>E-mail</th><th>Situação</th><th>Papel</th><th>Plano</th><th>Cadastro</th><th>Ações</th></tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
@@ -312,6 +312,7 @@ function renderStats(){
     ["Pendentes", data.pending],
     ["Liberados", data.approved],
     ["Rejeitados", data.rejected],
+    ["Assinantes ativos", data.subscribers || 0],
     ["Administradores", data.admins || 0],
     ["Total", data.total]
   ].forEach(([key, value]) => {
@@ -322,6 +323,24 @@ function renderStats(){
     cell.appendChild(k); cell.appendChild(v);
     box.appendChild(cell);
   });
+}
+
+const PLAN_LABEL = { silver: "Silver", gold: "Gold", diamante: "Diamante" };
+
+/* Liberação manual de plano: usada quando o pagamento é resolvido fora do fluxo
+   automático da Asaas (estorno, cortesia, suporte). */
+function grantPlan(user){
+  const answer = window.prompt(
+    "Liberar qual plano para " + user.email + "?\n\nDigite: silver, gold ou diamante",
+    user.plan || "gold"
+  );
+  if(answer === null) return;
+  const plan = String(answer).trim().toLowerCase();
+  if(!PLAN_LABEL[plan]){
+    window.alert("Plano inválido. Use silver, gold ou diamante.");
+    return;
+  }
+  act({ action: "grant_plan", user_id: user.id, plan: plan });
 }
 
 function actionButton(label, className, handler){
@@ -368,6 +387,24 @@ function renderRows(){
     role.appendChild(roleTag);
     tr.appendChild(role);
 
+    const plan = document.createElement("td");
+    const planTag = document.createElement("span");
+    planTag.className = "tag " + (user.subscription_active ? "approved" : (user.subscription_status === "pending" ? "pending" : "rejected"));
+    planTag.textContent = user.subscription_active
+      ? (PLAN_LABEL[user.plan] || user.plan || "Ativo")
+      : (user.subscription_status === "pending" ? "Aguardando pagamento" : "Sem plano");
+    plan.appendChild(planTag);
+    if(user.subscription_active && user.expires_at){
+      const until = document.createElement("div");
+      until.className = "mono";
+      until.style.fontSize = "10px";
+      until.style.color = "var(--cream-dim)";
+      until.style.marginTop = "4px";
+      until.textContent = "até " + formatDate(user.expires_at);
+      plan.appendChild(until);
+    }
+    tr.appendChild(plan);
+
     const created = document.createElement("td");
     created.textContent = formatDate(user.created_at);
     tr.appendChild(created);
@@ -398,6 +435,14 @@ function renderRows(){
       actions.appendChild(actionButton("Voltar p/ pendente", "", () => act({ action: "pending", user_id: user.id })));
     }
     actions.appendChild(actionButton("Nova senha", "", () => resetPassword(user)));
+    actions.appendChild(actionButton("Liberar plano", "ok", () => grantPlan(user)));
+    if(user.subscription_active){
+      actions.appendChild(actionButton("Cancelar plano", "no", () => {
+        if(window.confirm("Cancelar a assinatura de " + user.email + "?")){
+          act({ action: "revoke_plan", user_id: user.id });
+        }
+      }));
+    }
     actions.appendChild(actionButton(
       user.role === "admin" ? "Tornar cliente" : "Tornar admin",
       "",

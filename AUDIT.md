@@ -45,3 +45,41 @@ A camada de armazenamento passou a detectar quatro backends, nesta ordem: `postg
 O acesso administrativo ganhou página dedicada em `/admin`, com login próprio, contadores, busca, filtro por situação e as ações de liberar, rejeitar, voltar para pendente, redefinir senha, promover, rebaixar, excluir e criar acesso já liberado. Além do administrador raiz definido por `ADMIN_EMAIL`/`ADMIN_PASSWORD`, contas gravadas na base podem receber o papel `admin` e entrar pelo mesmo painel. O administrador logado é impedido, no backend e na interface, de retirar o próprio acesso. O painel exibe um bloco de diagnóstico com o backend em uso e as variáveis encontradas, e mostra o passo a passo da Vercel quando nenhum banco está conectado.
 
 As rotas de autenticação e administração passaram a compartilhar `api_core.py`, chamado tanto por `server.py` quanto pelas funções em `api/`, eliminando a duplicação que fazia o servidor local e o runtime serverless divergirem. A suíte `test_app.py` subiu de 11 para 27 testes, cobrindo o backend Postgres com driver falso, a recusa de gravação em modo serverless, o ciclo completo de ações administrativas, a proteção da própria conta, o payload de `/api/health` e as respostas de login.
+
+## Rodada 2 — assinatura, créditos, marcações e checkout
+
+### Diagnóstico
+
+O deploy publicado (commit `919e061`) tinha landing page, cadastro com aprovação, painel `/admin` e o motor de sete filtros, mas **nenhuma** das funcionalidades de monetização e personalização pedidas: não havia catálogo de planos, contagem de créditos, marcações do usuário, checkout, integração com a Asaas, controle do botão voltar, encerramento de sessão ao sair da página nem exibição da senha digitada. O código também não continha qualquer referência à Asaas — a integração precisou ser escrita do zero.
+
+### Correções aplicadas
+
+Foram criados `plans.py` (catálogo Silver/Gold/Diamante), `billing.py` (cliente da API Asaas, validação de CPF/CNPJ, assinatura mensal, URL de fatura e leitura do webhook) e `recommender.py` (motor extraído de `server.py`, agora compartilhado sem divergência entre o servidor local e as funções serverless). O `user_store.py` ganhou assinatura, ciclo de 30 dias, créditos diários no fuso de Brasília e as marcações por título; o `api_core.py` ganhou as rotas de conta, planos, marcações, checkout, conferência de pagamento, webhook e a rota de recomendação com débito de crédito e devolução em caso de falha do motor.
+
+Na interface, o cliente sem assinatura cai na vitrine de planos, paga pela Asaas e só recebe indicações após a confirmação; cada card traz *gostei*, *não gostei* e *já assisti*, gravados na conta e injetados no prompt; a tela **Marcações** permite remover item por item; a navegação usa a History API para o botão voltar nativo; a sessão virou cookie de sessão do navegador com logout no `pagehide`; e os campos de senha ganharam o ícone de olho.
+
+### Validação
+
+`python3 -m unittest test_app` — 51 testes, todos verdes, incluindo consumo e reposição de créditos por plano, bloqueio sem pagamento, webhook com e sem token válido, suspensão por inadimplência e remoção individual de marcações.
+
+Fluxo HTTP completo executado contra o servidor real com Asaas e OpenAI simulados: cadastro → aprovação pelo admin → login → bloqueio sem plano → checkout → webhook de confirmação → duas consultas do plano Silver → bloqueio por falta de crédito → marcação enviada ao prompt → remoção da marcação → sessão encerrada ao sair.
+
+Interface validada em Chromium (390×844, sem erros de JavaScript no console): olho da senha, vitrine com os três preços, checkout com recusa de CPF inválido, espera pela confirmação, liberação após o webhook, contador de créditos no topo, marcação nos cards, histórico de marcações, aviso de limite diário, remoção individual e retorno pelo botão voltar. Recarregar a página desconecta o cliente e exige novo login, como especificado.
+
+## Rodada 3 — tipo de produção (filme, série ou mescla)
+
+Foi acrescentada a **primeira pergunta do questionário**: *O que você quer ver hoje?* — **Filme**, **Série** ou **Mesclar (filmes e séries)** —, passando o fluxo de sete para oito filtros. O tipo escolhido é a restrição mais forte do prompt: em "Mesclar", a lista traz pelo menos um filme e pelo menos uma série.
+
+O schema da resposta passou a exigir `content_type` (`filme`/`serie`) e `seasons` em cada indicação; a validação normaliza um `content_type` ausente para `filme`. O card mostra o selo do formato e, em séries, o número de temporadas e a duração média por episódio. O `metadata.py` passou a consultar `/search/tv` e `/tv/{id}` para séries — buscar série na rota de filmes traria o pôster errado — e a busca de pôster na Wikipedia usa o sufixo `(TV series)`. O construtor de prompt duplicado que existia no navegador, sem nenhuma chamada, foi removido para não divergir do prompt real do backend.
+
+Validação: 56 testes automatizados verdes, incluindo as três respostas oficiais da nova pergunta, a recusa de resposta fora do catálogo, o texto do prompt em "Mesclar", o schema e a separação dos endpoints de série e filme no TMDB. O fluxo HTTP completo e as 31 verificações de interface em Chromium foram repetidos com as oito perguntas, com os cards exibindo corretamente `FILME`, `SÉRIE` e as temporadas.
+
+## Rodada 4 — build da Vercel quebrado pelo limite de funções
+
+O deploy de preview do PR falhou. A causa: cada arquivo em `api/` vira uma função serverless, e o plano Hobby da Vercel aceita no máximo 12 por deploy. A `main` tinha 9 funções e publicava normalmente; as seis rotas novas (planos, conta, marcações e as três de cobrança) levaram o total a 15, e o build passou a ser recusado antes de qualquer código rodar.
+
+A correção foi concentrar todo o `/api` em **uma única função**: `router.py` resolve método e caminho e devolve `(status, payload, headers)`; `api/index.py` é o invólucro HTTP dessa função na Vercel, alcançado pela reescrita `/api/:path*` → `/api/index` no `vercel.json`; e o `server.py` passou a usar o mesmo roteador, de modo que produção e desenvolvimento compartilham a resolução de rotas. O deploy foi de 15 para 1 função. O `maxDuration` subiu de 15s para 60s, alinhando o limite da função ao timeout de 45s da chamada à OpenAI — antes, uma resposta lenta era cortada pela plataforma.
+
+Um 404 de roteamento passou a devolver o caminho recebido, o que torna imediato o diagnóstico caso alguma reescrita altere a rota em produção.
+
+Validação: 62 testes automatizados, incluindo uma bateria que exige que cada rota publicada exista no roteador, a recusa de método errado e a checagem de que o deploy tem uma única função. O fluxo HTTP completo foi executado duas vezes — pelo servidor local e **pela própria função serverless de `api/index.py`**, servida com o mesmo handler que a Vercel usa — e as 31 verificações de interface em Chromium foram repetidas, todas verdes.
