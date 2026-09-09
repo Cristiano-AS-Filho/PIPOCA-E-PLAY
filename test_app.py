@@ -40,7 +40,9 @@ from user_store import (  # noqa: E402
     consume_credit,
     get_account,
     list_feedback,
+    list_history,
     remove_feedback,
+    remove_history,
     set_feedback,
     admin_summary,
     admin_users,
@@ -652,6 +654,8 @@ class PipocaPlayTests(unittest.TestCase):
             ("GET", "/api/feedback"),
             ("POST", "/api/feedback"),
             ("DELETE", "/api/feedback"),
+            ("GET", "/api/history"),
+            ("DELETE", "/api/history"),
             ("POST", "/api/billing/checkout"),
             ("GET", "/api/billing/status"),
             ("GET", "/api/billing/webhook"),
@@ -814,6 +818,35 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["account"]["credits_remaining"], 1)
         self.assertEqual(seen["feedback"][0]["title_original"], "The Matrix")
+
+    def test_recommendation_result_is_registered_in_the_customer_history(self):
+        """Toda consulta bem-sucedida precisa ficar salva na conta, não só no navegador."""
+        session, user_id = self._client_session("gold")
+        result = {
+            "interpretation": "Você quer algo tenso e curto.",
+            "best_choice": {"title_pt": "Matrix", "reason": "Combina com a vibe."},
+            "recommendations": [{"title_pt": "Matrix", "rank": 1}],
+        }
+
+        with patch("recommender.call_openai", lambda filters, feedback=None: json.dumps(result)):
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 200)
+
+        history = list_history(user_id)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["interpretation"], result["interpretation"])
+        self.assertEqual(history[0]["best_choice"]["title_pt"], "Matrix")
+        self.assertTrue(history[0]["id"])
+
+        status, payload, _ = api_core.history_overview(session)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["history"]), 1)
+
+        status, payload, _ = api_core.history_delete(session, {"id": history[0]["id"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["history"], [])
+        with self.assertRaises(LookupError):
+            remove_history(user_id, "nao-existe")
 
     def test_request_carries_every_marked_streaming_into_the_prompt(self):
         session, _ = self._client_session("silver")

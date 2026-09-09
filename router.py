@@ -103,6 +103,18 @@ def handle(method, path, query=None, body=None, headers=None):
             return api_core.feedback_delete(session, body) if _remove_requested(body) else api_core.feedback_save(session, body)
         return METHOD_NOT_ALLOWED
 
+    # -- histórico de resultados ----------------------------------------------
+    if path == "/api/history":
+        session = _session(headers)
+        if method == "GET":
+            return api_core.history_overview(session)
+        if method == "DELETE":
+            return api_core.history_delete(session, body)
+        if method == "POST":
+            # "remove" também chega por POST: alguns proxies descartam corpo em DELETE.
+            return api_core.history_delete(session, body) if _remove_requested(body) else METHOD_NOT_ALLOWED
+        return METHOD_NOT_ALLOWED
+
     # -- cobrança ------------------------------------------------------------
     if path == "/api/billing/checkout":
         return api_core.billing_checkout(_session(headers), body) if method == "POST" else METHOD_NOT_ALLOWED

@@ -25,6 +25,7 @@ from user_store import (
     StorageError,
     SubscriptionRequired,
     activate_subscription,
+    add_history,
     admin_summary,
     admin_users,
     consume_credit,
@@ -36,9 +37,11 @@ from user_store import (
     get_account,
     get_status_by_token,
     list_feedback,
+    list_history,
     refund_credit,
     register_user,
     remove_feedback,
+    remove_history,
     set_feedback,
     set_subscription_status,
     set_user_password,
@@ -408,6 +411,39 @@ def feedback_delete(session, body):
 
 
 # ---------------------------------------------------------------------------
+# Histórico de resultados: a conta guarda as últimas consultas já respondidas
+# ---------------------------------------------------------------------------
+
+
+def history_overview(session):
+    user_id, error = _requires_account(session)
+    if error:
+        return (HTTPStatus.OK, {"history": []}, None) if session else error
+    try:
+        return HTTPStatus.OK, {"history": list_history(user_id)}, None
+    except LookupError as lookup_error:
+        return HTTPStatus.NOT_FOUND, {"error": str(lookup_error)}, None
+    except StorageError as storage_error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(storage_error)}, None
+
+
+def history_delete(session, body):
+    """Remove uma consulta do histórico do cliente."""
+    user_id, error = _requires_account(session)
+    if error:
+        return error
+    history_id = _text(body, "id", "history_id")
+    if not history_id:
+        return HTTPStatus.BAD_REQUEST, {"error": "Informe qual consulta deve ser removida."}, None
+    try:
+        return HTTPStatus.OK, {"history": remove_history(user_id, history_id), "removed": True}, None
+    except LookupError as lookup_error:
+        return HTTPStatus.NOT_FOUND, {"error": str(lookup_error)}, None
+    except StorageError as storage_error:
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(storage_error)}, None
+
+
+# ---------------------------------------------------------------------------
 # Checkout (Asaas)
 # ---------------------------------------------------------------------------
 
@@ -569,4 +605,9 @@ def recommend(session, body):
             except (LookupError, StorageError):
                 pass
         return HTTPStatus.BAD_GATEWAY, {"error": str(error), "account": account}, None
+    if user_id:
+        try:
+            add_history(user_id, filters, json.loads(text))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
     return HTTPStatus.OK, {"text": text, "account": account}, None

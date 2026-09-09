@@ -1169,3 +1169,91 @@ def clear_feedback(user_id: str) -> list[dict]:
 
     _mutate(user_id, apply)
     return []
+
+
+# ---------------------------------------------------------------------------
+# Histórico de resultados (consultas já respondidas pelo motor)
+# ---------------------------------------------------------------------------
+
+MAX_HISTORY_ITEMS = 60
+
+
+def _history(user: dict) -> list[dict]:
+    items = user.get("history")
+    if not isinstance(items, list):
+        items = []
+        user["history"] = items
+    return items
+
+
+def _public_history(item: dict) -> dict:
+    return {
+        "id": str(item.get("id", "")),
+        "filters": item.get("filters") if isinstance(item.get("filters"), dict) else {},
+        "interpretation": str(item.get("interpretation", "")),
+        "best_choice": item.get("best_choice") if isinstance(item.get("best_choice"), dict) else None,
+        "recommendations": item.get("recommendations") if isinstance(item.get("recommendations"), list) else [],
+        "created_at": item.get("created_at"),
+    }
+
+
+def list_history(user_id: str) -> list[dict]:
+    user = find_user_by_id(user_id)
+    if not user:
+        raise LookupError("Usuário não encontrado.")
+    items = sorted(_history(user), key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return [_public_history(item) for item in items]
+
+
+def add_history(user_id: str, filters: dict, payload: dict) -> None:
+    """Grava o resultado de uma consulta na conta do cliente.
+
+    Chamado pelo próprio servidor logo após uma recomendação bem-sucedida, para
+    que o histórico fique registrado na conta mesmo se a tela fechar antes de
+    o navegador conseguir salvá-lo por conta própria.
+    """
+
+    def apply(target: dict) -> None:
+        items = _history(target)
+        items.append(
+            {
+                "id": secrets.token_urlsafe(12),
+                "filters": dict(filters or {}),
+                "interpretation": str((payload or {}).get("interpretation", "")),
+                "best_choice": (payload or {}).get("best_choice"),
+                "recommendations": (payload or {}).get("recommendations") or [],
+                "created_at": _now(),
+            }
+        )
+        if len(items) > MAX_HISTORY_ITEMS:
+            items.sort(key=lambda item: str(item.get("created_at") or ""))
+            del items[: len(items) - MAX_HISTORY_ITEMS]
+
+    try:
+        _mutate(user_id, apply)
+    except (LookupError, StorageError):
+        pass
+
+
+def remove_history(user_id: str, history_id: str) -> list[dict]:
+    """Apaga uma consulta do histórico do cliente."""
+    removed = {"done": False}
+
+    def apply(target: dict) -> None:
+        items = _history(target)
+        remaining = [item for item in items if str(item.get("id")) != str(history_id)]
+        removed["done"] = len(remaining) != len(items)
+        target["history"] = remaining
+
+    _mutate(user_id, apply)
+    if not removed["done"]:
+        raise LookupError("Consulta não encontrada no histórico.")
+    return list_history(user_id)
+
+
+def clear_history(user_id: str) -> list[dict]:
+    def apply(target: dict) -> None:
+        target["history"] = []
+
+    _mutate(user_id, apply)
+    return []
