@@ -39,12 +39,49 @@ class BillingError(RuntimeError):
     """Falha ao falar com a Asaas ou configuração ausente."""
 
 
+# Nomes aceitos para a chave, na ordem de prioridade. Vale o mesmo critério do
+# banco de contas: aceitar os apelidos mais comuns evita um deploy sem checkout
+# só porque a variável foi criada com outro nome no painel da Vercel.
+API_KEY_ENV_VARS = (
+    "ASAAS_API_KEY",
+    "ASAAS_ACCESS_TOKEN",
+    "ASAAS_API_TOKEN",
+    "ASAAS_TOKEN",
+    "ASAAS_KEY",
+)
+WEBHOOK_TOKEN_ENV_VARS = (
+    "ASAAS_WEBHOOK_TOKEN",
+    "ASAAS_WEBHOOK_SECRET",
+)
+
+
+def _first_env(names: tuple[str, ...]) -> tuple[str, str] | None:
+    """Primeira variável preenchida da lista, como (nome, valor)."""
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return name, value
+    return None
+
+
+def api_key_source() -> tuple[str, str] | None:
+    return _first_env(API_KEY_ENV_VARS)
+
+
 def api_key() -> str:
-    return os.environ.get("ASAAS_API_KEY", "").strip()
+    found = api_key_source()
+    return found[1] if found else ""
 
 
 def webhook_token() -> str:
-    return os.environ.get("ASAAS_WEBHOOK_TOKEN", "").strip()
+    found = _first_env(WEBHOOK_TOKEN_ENV_VARS)
+    return found[1] if found else ""
+
+
+def key_looks_valid(value: str = "") -> bool:
+    """As chaves da Asaas começam com ``$aact_``. Um valor sem esse prefixo
+    quase sempre é expansão de shell tendo comido o ``$`` da variável."""
+    return (value or api_key()).startswith("$aact_")
 
 
 def is_sandbox() -> bool:
@@ -65,14 +102,42 @@ def is_configured() -> bool:
     return bool(api_key())
 
 
+SETUP_HINT = (
+    "Abra o projeto na Vercel em Settings → Environment Variables, crie "
+    "ASAAS_API_KEY com a chave da Asaas marcando o ambiente Production, e "
+    "faça um novo deploy: variáveis criadas depois do último deploy só valem "
+    "no deploy seguinte."
+)
+
+
 def diagnostics() -> dict:
-    """Resumo sem segredos, usado pelo /api/health e pelo painel admin."""
-    return {
-        "configured": is_configured(),
+    """Resumo sem segredos, usado pelo /api/health e pelo painel admin.
+
+    Informa qual variável foi encontrada — nunca o valor dela — para que um
+    deploy sem checkout seja diagnosticado direto no navegador.
+    """
+    source = api_key_source()
+    diagnostics_payload = {
+        "configured": bool(source),
         "environment": "sandbox" if is_sandbox() else "production",
         "webhook_token_configured": bool(webhook_token()),
         "webhook_path": "/api/billing/webhook",
+        "api_key_source_env_var": source[0] if source else "",
+        "accepted_env_vars": list(API_KEY_ENV_VARS),
     }
+    if not source:
+        diagnostics_payload["error"] = (
+            "Nenhuma chave da Asaas foi encontrada neste deploy. " + SETUP_HINT
+        )
+        return diagnostics_payload
+    if not key_looks_valid(source[1]):
+        diagnostics_payload["error"] = (
+            f"A variável {source[0]} existe, mas o valor não começa com \"$aact_\", "
+            "como toda chave da Asaas. Se você usou a CLI ou um arquivo .env, o "
+            "shell provavelmente comeu o cifrão: cole a chave entre aspas simples, "
+            "ou pelo painel da Vercel."
+        )
+    return diagnostics_payload
 
 
 # ---------------------------------------------------------------------------
@@ -83,10 +148,7 @@ def diagnostics() -> dict:
 def _request(method: str, path: str, payload: dict | None = None, params: dict | None = None) -> dict:
     key = api_key()
     if not key:
-        raise BillingError(
-            "O checkout não está configurado neste deploy. Defina ASAAS_API_KEY nas "
-            "variáveis de ambiente do projeto e faça um novo deploy."
-        )
+        raise BillingError("O checkout não está configurado neste deploy. " + SETUP_HINT)
     url = base_url() + path
     if params:
         url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})

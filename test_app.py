@@ -776,6 +776,47 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertFalse(account["subscription_active"])
         self.assertEqual(account["subscription_status"], "pending")
 
+    def test_billing_diagnostics_explain_a_missing_key(self):
+        for name in billing.API_KEY_ENV_VARS:
+            os.environ.pop(name, None)
+        report = billing.diagnostics()
+        self.assertFalse(report["configured"])
+        self.assertEqual(report["api_key_source_env_var"], "")
+        self.assertIn("Environment Variables", report["error"])
+        self.assertIn("ASAAS_API_KEY", report["accepted_env_vars"])
+
+    def test_billing_accepts_the_usual_alternative_variable_names(self):
+        for name in billing.API_KEY_ENV_VARS:
+            os.environ.pop(name, None)
+        with patch.dict(os.environ, {"ASAAS_TOKEN": "$aact_prod_alternativa"}):
+            report = billing.diagnostics()
+            self.assertTrue(report["configured"])
+            self.assertEqual(report["api_key_source_env_var"], "ASAAS_TOKEN")
+            self.assertNotIn("error", report)
+
+    def test_billing_flags_a_key_that_lost_the_dollar_sign(self):
+        for name in billing.API_KEY_ENV_VARS:
+            os.environ.pop(name, None)
+        with patch.dict(os.environ, {"ASAAS_API_KEY": "aact_prod_sem_cifrao"}):
+            report = billing.diagnostics()
+            self.assertTrue(report["configured"])
+            self.assertIn("$aact_", report["error"])
+
+    def test_unconfigured_checkout_answers_with_the_setup_steps(self):
+        session, _ = self._client_session()
+        for name in billing.API_KEY_ENV_VARS:
+            os.environ.pop(name, None)
+        status, payload, _ = api_core.billing_checkout(
+            session, {"plan": "gold", "name": "Cliente Teste", "document": "529.982.247-25"}
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "billing_unconfigured")
+
+    def test_admin_config_reports_the_billing_setup(self):
+        from auth import config_status
+
+        self.assertIn("billing", config_status())
+
     def test_checkout_rejects_an_invalid_document(self):
         session, _ = self._client_session()
         with patch.dict(os.environ, {"ASAAS_API_KEY": "$aact_hmlg_test"}):
