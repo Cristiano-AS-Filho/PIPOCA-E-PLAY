@@ -55,6 +55,7 @@ def root_admin_configured() -> bool:
 
 
 def config_status():
+    import billing  # noqa: PLC0415  (import tardio evita ciclo na carga do módulo)
     from user_store import admin_summary, storage_diagnostics
 
     storage = storage_diagnostics()
@@ -67,6 +68,7 @@ def config_status():
         "allowed_user_count": summary["approved"],
         "pending_user_count": summary["pending"],
         "rejected_user_count": summary["rejected"],
+        "billing": billing.diagnostics(),
         "storage_mode": storage["mode"],
         "storage": storage,
         "persistent_storage_configured": storage["persistent"],

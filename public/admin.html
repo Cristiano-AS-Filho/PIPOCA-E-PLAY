@@ -282,11 +282,27 @@ function renderDiagnostics(){
     ["ADMIN_EMAIL/ADMIN_PASSWORD", config && config.admin_credentials_configured ? "configurados" : "não configurados"],
     ["Administradores na base", config ? String(config.stored_admin_count) : "—"]
   ];
+  const billing = (config && config.billing) || null;
+  rows.push(["Checkout Asaas", billing && billing.configured ? "configurado" : "NÃO configurado"]);
+  if(billing && billing.configured){
+    rows.push(["Chave da Asaas em uso", billing.api_key_source_env_var]);
+    rows.push(["Ambiente da Asaas", billing.environment]);
+    rows.push(["Token do webhook", billing.webhook_token_configured ? "configurado" : "não configurado"]);
+  }
   if(storage && storage.postgres_source_env_var){
     rows.push(["Variável do Postgres em uso", storage.postgres_source_env_var]);
   }
   if(storage && storage.postgres_dsn_preview){
     rows.push(["Prévia da conexão (sem senha)", storage.postgres_dsn_preview]);
+  }
+  if(billing && billing.error){
+    const alert = document.createElement("div");
+    alert.className = "banner warn";
+    const title = document.createElement("strong");
+    title.textContent = "Checkout indisponível";
+    alert.appendChild(title);
+    alert.appendChild(document.createTextNode(billing.error));
+    box.appendChild(alert);
   }
   const grid = document.createElement("div");
   grid.className = "stats";

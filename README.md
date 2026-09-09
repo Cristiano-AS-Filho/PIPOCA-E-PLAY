@@ -29,6 +29,8 @@ O fluxo de cobrança é:
 3. A confirmação chega por **webhook** (`POST /api/billing/webhook`). A tela de espera também consulta `GET /api/billing/status`, de modo que o acesso é liberado mesmo se o webhook atrasar.
 4. `PAYMENT_OVERDUE`, `PAYMENT_REFUNDED`, estorno ou `SUBSCRIPTION_DELETED` suspendem o acesso na hora.
 
+Se o cliente vir *"O checkout ainda não está configurado neste deploy"*, a chave da Asaas não chegou à função. Abra `GET /api/health` (ou o bloco de diagnóstico do painel `/admin`): o campo `billing` diz qual variável foi encontrada — nunca o valor dela — e explica o que falta. Três causas cobrem quase todos os casos: a variável não existe, existe só nos ambientes *Preview*/*Development* em vez de *Production*, ou foi criada **depois** do último deploy — nesse caso é preciso publicar de novo, porque a Vercel congela as variáveis no momento do build. São aceitos os nomes `ASAAS_API_KEY` (preferido), `ASAAS_ACCESS_TOKEN`, `ASAAS_API_TOKEN`, `ASAAS_TOKEN` e `ASAAS_KEY`. Toda chave da Asaas começa com `$aact_`; se o valor gravado perdeu o cifrão, foi o shell expandindo a variável — cole a chave pelo painel da Vercel, ou entre aspas simples na CLI.
+
 Na Asaas, em **Integrações → Webhooks**, aponte a URL para `https://SEU-DOMINIO/api/billing/webhook`, marque os eventos de cobrança e use no campo *Token de autenticação* o mesmo valor de `ASAAS_WEBHOOK_TOKEN`. Notificações com token diferente são recusadas com HTTP 401.
 
 Pelo painel `/admin` é possível **liberar um plano manualmente** (cortesia, suporte, pagamento resolvido fora do fluxo) e **cancelar** uma assinatura ativa.
