@@ -1169,3 +1169,84 @@ def clear_feedback(user_id: str) -> list[dict]:
 
     _mutate(user_id, apply)
     return []
+
+
+# ---------------------------------------------------------------------------
+# Histórico de buscas
+# ---------------------------------------------------------------------------
+#
+# Antes, o histórico só existia no localStorage do navegador: o mesmo cliente
+# via listas diferentes no celular e no computador. Cada busca concluída passa
+# a ficar gravada na conta, no mesmo banco usado por assinatura e marcações.
+
+MAX_HISTORY_ITEMS = 50
+
+
+def _history(user: dict) -> list[dict]:
+    items = user.get("history")
+    if not isinstance(items, list):
+        items = []
+        user["history"] = items
+    return items
+
+
+def _public_history(item: dict) -> dict:
+    return {
+        "id": str(item.get("id", "")),
+        "created_at": item.get("created_at"),
+        "filters": item.get("filters") if isinstance(item.get("filters"), dict) else {},
+        "interpretation": str(item.get("interpretation", "")),
+        "bestChoice": item.get("best_choice") if isinstance(item.get("best_choice"), dict) else None,
+        "recommendations": item.get("recommendations") if isinstance(item.get("recommendations"), list) else [],
+    }
+
+
+def list_history(user_id: str) -> list[dict]:
+    user = find_user_by_id(user_id)
+    if not user:
+        raise LookupError("Usuário não encontrado.")
+    items = sorted(_history(user), key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return [_public_history(item) for item in items]
+
+
+def add_history(user_id: str, entry: dict) -> list[dict]:
+    """Registra uma consulta concluída no histórico da conta logada."""
+    filters = entry.get("filters") if isinstance(entry.get("filters"), dict) else {}
+    recommendations = entry.get("recommendations") if isinstance(entry.get("recommendations"), list) else []
+    best_choice = entry.get("best_choice") if isinstance(entry.get("best_choice"), dict) else None
+    interpretation = str(entry.get("interpretation", ""))[:2000]
+
+    def apply(target: dict) -> None:
+        items = _history(target)
+        items.insert(
+            0,
+            {
+                "id": secrets.token_urlsafe(12),
+                "created_at": _now(),
+                "filters": filters,
+                "interpretation": interpretation,
+                "best_choice": best_choice,
+                "recommendations": recommendations,
+            },
+        )
+        if len(items) > MAX_HISTORY_ITEMS:
+            del items[MAX_HISTORY_ITEMS:]
+
+    _mutate(user_id, apply)
+    return list_history(user_id)
+
+
+def remove_history(user_id: str, history_id: str) -> list[dict]:
+    """Apaga uma busca do histórico da conta logada."""
+    removed = {"done": False}
+
+    def apply(target: dict) -> None:
+        items = _history(target)
+        remaining = [item for item in items if str(item.get("id")) != str(history_id)]
+        removed["done"] = len(remaining) != len(items)
+        target["history"] = remaining
+
+    _mutate(user_id, apply)
+    if not removed["done"]:
+        raise LookupError("Busca não encontrada no histórico.")
+    return list_history(user_id)

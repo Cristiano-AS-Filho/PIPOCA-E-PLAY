@@ -40,7 +40,9 @@ from user_store import (  # noqa: E402
     consume_credit,
     get_account,
     list_feedback,
+    list_history,
     remove_feedback,
+    remove_history,
     set_feedback,
     admin_summary,
     admin_users,
@@ -652,6 +654,9 @@ class PipocaPlayTests(unittest.TestCase):
             ("GET", "/api/feedback"),
             ("POST", "/api/feedback"),
             ("DELETE", "/api/feedback"),
+            ("GET", "/api/history"),
+            ("POST", "/api/history"),
+            ("DELETE", "/api/history"),
             ("POST", "/api/billing/checkout"),
             ("GET", "/api/billing/status"),
             ("GET", "/api/billing/webhook"),
@@ -785,6 +790,50 @@ class PipocaPlayTests(unittest.TestCase):
         set_feedback(user_id, {"title_pt": "Matrix", "title_original": "The Matrix", "year": 1999, "opinion": "liked"})
         set_feedback(user_id, {"title_pt": "Matrix", "title_original": "The Matrix", "year": 1999, "opinion": "", "watched": False})
         self.assertEqual(list_feedback(user_id), [])
+
+    def test_search_history_is_stored_on_the_account_not_the_browser(self):
+        """A busca fica gravada na conta: qualquer aparelho logado enxerga a mesma lista."""
+        session, user_id = self._client_session("gold")
+        self.assertEqual(list_history(user_id), [])
+
+        def fake_call(filters, feedback=None):
+            return json.dumps(
+                {
+                    "interpretation": "Você quer algo tenso e curto.",
+                    "best_choice": {"title_pt": "O Farol", "reason": "Combina com a vibe."},
+                    "recommendations": [
+                        {"rank": 1, "title_pt": "O Farol", "title_original": "The Lighthouse", "year": 2019,
+                         "synopsis": "Dois faroleiros isolados enlouquecem aos poucos.",
+                         "awards": {"oscars_won": 0, "highlight": "Indicado ao Oscar de Fotografia"}}
+                    ],
+                }
+            )
+
+        with patch("recommender.call_openai", fake_call):
+            status, _, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 200)
+
+        stored = list_history(user_id)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["bestChoice"]["title_pt"], "O Farol")
+        self.assertEqual(stored[0]["recommendations"][0]["synopsis"], "Dois faroleiros isolados enlouquecem aos poucos.")
+
+        # Uma segunda "sessão" (outro aparelho) lendo a mesma conta enxerga a mesma busca.
+        status, payload, _ = api_core.history_overview(session)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["history"]), 1)
+
+        status, payload, _ = api_core.history_delete(session, {"id": stored[0]["id"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["history"], [])
+        with self.assertRaises(LookupError):
+            remove_history(user_id, "nao-existe")
+
+    def test_history_route_requires_login(self):
+        status, payload, _ = router.handle("GET", "/api/history", {}, {}, {})
+        self.assertEqual(status, 401)
+        status, _, _ = router.handle("POST", "/api/history", {}, {"id": "x"}, {})
+        self.assertEqual(status, 401)
 
     def test_prompt_carries_the_user_marks_to_the_engine(self):
         section = build_feedback_section([

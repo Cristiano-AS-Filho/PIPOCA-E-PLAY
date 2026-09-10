@@ -115,3 +115,27 @@ A tela de resultado deixou de estampar `MOTOR: CHATGPT`. Junto com o rótulo, fo
 `python3 -m unittest test_app` — **81 testes verdes**, entre eles: marcação múltipla vinda como lista e como texto, remoção de duplicatas e vazios, precedência de *Livre (Qualquer)*, recusa de serviço inventado, teto de cinco serviços, as três redações do prompt de plataforma, o catálogo de avaliações governando o schema, a nota externa sobrescrevendo a do modelo, os três preços novos e a garantia de que nenhuma mensagem de erro entregue ao cliente nomeia o provedor do motor.
 
 Interface exercitada em Chromium (430×900, sem erro de JavaScript vindo da aplicação): marcação de três serviços com as logos, aviso ao tentar o sexto, *Livre (Qualquer)* limpando as demais, resumo exibindo "Netflix, Disney+", as nove pílulas de avaliação sem truncamento, os oito links de conferência, o subtítulo do resultado sem qualquer menção ao motor e o botão do WhatsApp visível e apontando para `wa.me/5511934252085`.
+
+## Rodada 6 — histórico por conta e sinopse/premiações somem do card
+
+### Diagnóstico
+
+O deploy publicado trocou `public/app.html` e `public/index.html` pelo layout gerado no Claude Web Design (commit `d3f84c9`), sem repassar todo o comportamento anterior. Dois problemas vieram dessa troca:
+
+O **histórico de buscas** continuava gravado só em `window.localStorage`, com a mesma convenção de chave da versão anterior — cada navegador/aparelho enxergava uma lista diferente, mesmo com a mesma conta logada em ambos.
+
+O card de resultado passou a exibir `why_it_matches` (o "por que combina") mas **descartava silenciosamente** `synopsis` e o bloco `awards` que o backend já preenchia (o schema de `recommender.py` sempre exige os dois, com ou sem `TMDB_API_KEY`) — a tela simplesmente não tinha marcação para eles. O pôster depende de `TMDB_API_KEY`; sem essa variável configurada na Vercel, `metadata.py` devolve `poster_url` vazio de propósito (para não inventar uma imagem), e o card cai no gradiente de fallback.
+
+### Correções aplicadas
+
+`user_store.py` ganhou `add_history`/`list_history`/`remove_history`, no mesmo formato de `feedback`: histórico por `user_id`, até 50 buscas, removível uma a uma. `api_core.recommend` grava a busca na conta assim que a recomendação é validada — antes de qualquer chamada do navegador — e `router.py` publica `GET/POST/DELETE /api/history`. `public/app.html` (o `/app`) passou a carregar o histórico de `/api/history` ao entrar e depois de cada busca, com o `localStorage` mantido só como modo de demonstração (sessão inalcançável).
+
+Os cards de resultado (tela de busca e histórico) ganharam um parágrafo de **Sinopse** (só quando diferente do texto de "por que combina", para não duplicar) e uma linha de **premiações** com o destaque e a contagem de Oscars, quando o backend os preenche.
+
+### Validação
+
+`python3 -m unittest test_app` — 83 testes verdes, incluindo a gravação da busca na conta ao chamar `/api/recommend`, a leitura por uma segunda "sessão" da mesma conta, a remoção individual e o bloqueio de `/api/history` sem login.
+
+Fluxo completo em Chromium (Playwright), servidor local com um motor de recomendação simulado: login, oito perguntas, card exibindo sinopse e o destaque de premiação, aba Histórico mostrando a busca; um **segundo contexto de navegador**, com `localStorage` vazio e a mesma sessão, abriu a aba Histórico e viu a mesma busca — confirmando que a lista agora vem da conta, não do navegador. Apagar pelo card removeu o item também via `/api/history`. Sem console de erros JavaScript em nenhuma etapa.
+
+Pôster: a amarração `poster_url → background-image` foi confirmada (o estilo chega ao DOM com a URL do TMDB); a imagem não teve como carregar no sandbox de teste, sem saída de rede — isso é esperado ali e não indica um problema de código. Em produção, sem imagem no pôster o motivo mais provável é `TMDB_API_KEY` ausente nas variáveis de ambiente da Vercel.
