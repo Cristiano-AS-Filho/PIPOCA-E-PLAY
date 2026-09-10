@@ -220,3 +220,37 @@ No front-end (`public/app.html`), `verifyPoster`/`_posterCache` saíram: como o 
 De ponta a ponta contra o servidor local, com o motor e a rede de imagens simulados (a rede real está bloqueada neste sandbox): as três indicações saíram com imagem — a do link bom como `model`, a do link morto e a sem link como `wikipedia` — e o mesmo resultado chegou por HTTP em `/api/recommend`.
 
 Em Chromium (Playwright), logado e percorrendo as oito perguntas até o Top 3: os três cartões pintaram `background-image` (`url("https://cdn.exemplo.test/posters/bom.jpg")` no primeiro, a capa da Wikipedia nos outros dois) e o navegador buscou de fato as duas imagens — o pôster vindo da resposta do motor apareceu direto, sem a espera de validação da rodada anterior.
+
+## Rodada 10 — o cartão passa a trazer a arte oficial do título
+
+### Diagnóstico
+
+O relato veio com um PDF da tela publicada: os três cartões traziam o selo **"Capa ilustrativa (gerada por IA)"** e o quadro do pôster vazio. O selo é a prova do que aconteceu — ele só aparece quando `poster_source === "generated"` **e** `poster_url` não está vazio. Ou seja, a cadeia caiu até o último recurso nas três indicações, e a capa gerada ainda por cima não pintou.
+
+Os títulos do PDF (*De Volta à Ação*, *Um Tira da Pesada 4: Axel Foley*, *Lift: Roubo nas Alturas*) são três lançamentos grandes da Netflix, todos com verbete na Wikipedia e arte publicada em loja. Nenhuma fonte de arte real acertou, por três motivos somados:
+
+1. **O motor devolvia `poster_url` vazio.** Até a Rodada 9 o prompt mandava deixar o campo vazio na dúvida ("Só preencha quando tiver certeza… caso contrário, deixe poster_url como string vazia"), e é exatamente isso que um modelo honesto faz com endereços de imagem. A única fonte que conhecia o título calava.
+2. **A Wikipedia era consultada adivinhando o título exato do verbete** (`page/summary` de "Fulano (filme de 2024)", "Fulano (film)", "Fulano"). Verbete real com outro nome — que é a regra, não a exceção — dava 404 e a coleta seguia.
+3. **Não havia nenhuma fonte de arte oficial de verdade**, só a Wikipedia. Sem ela, sobrava a capa gerada — que não atende o pedido de todo modo: o usuário quer **a imagem do filme**, não uma ilustração inspirada nele.
+
+E a capa gerada, além de não ser o que se pede, chegava como uma `data:image/png;base64,…` de vários MB embutida na resposta: pesada para trafegar, e o tipo declarado (`image/png`) era um chute sobre os bytes recebidos, sem nenhuma conferência.
+
+### Correções aplicadas
+
+`metadata.py` ganhou uma fonte de arte oficial de verdade e passou a achar o verbete por busca:
+
+- **Busca pública do iTunes** (`itunes.apple.com/search`, sem chave), 2ª na fila: consulta a loja **brasileira** com o título em português e depois a americana com o original; `media=movie&entity=movie` para filme e `media=tvShow&entity=tvSeason` para série. É a fonte com melhor cobertura de arte oficial. A miniatura de 100px que a busca devolve é reescrita para `600x900bb.jpg` — como a reescrita é nossa, ela é confirmada, e sem resposta vale a miniatura original, que veio da própria API.
+- **Wikipedia por busca** (`action=query&generator=search&prop=pageimages`), 3ª na fila, em português e depois em inglês: acha o verbete pelo nome em vez de adivinhar o título exato, que era como as tentativas anteriores erravam.
+- **Conferência de título e ano** em ambas (`_titles_match`, `_entry_matches`): com o ano conhecido ele é obrigatório, senão *Um Tira da Pesada 4* casaria com o original de 1984. A comparação ignora acento, pontuação e caixa, aceita subtítulo a mais e — só junto do ano — a numeração da sequência, porque as lojas publicam "Um Tira da Pesada: Axel Foley" onde o motor diz "Um Tira da Pesada 4: Axel Foley". Sem correspondência, a fonte devolve vazio: **arte do filme errado é pior que cartão sem arte**.
+- **Capa gerada como último recurso, agora comprimida** (`output_format: jpeg`, `output_compression: 60`) e com o tipo lido dos **bytes recebidos** (`_data_uri`), não do formato pedido. Uma capa acima de `MAX_DATA_URI_LENGTH` é descartada em vez de arriscar estourar o limite de corpo da função.
+- **Logs** (`_log`, silenciados em teste) dizem no painel da Vercel por que um cartão caiu na capa ilustrativa — era o dado que faltava para diagnosticar isto sem adivinhação.
+
+A ordem final da coleta é: motor → iTunes → Wikipedia → capa gerada, cada endereço confirmado antes de virar pôster, as três indicações em paralelo sob o prazo comum da Rodada 9.
+
+### Validação
+
+`python3 -m unittest test_app` — 107 testes verdes (7 novos nesta rodada). O principal é a **regressão do relato**: os três títulos exatos do PDF passam pela cadeia inteira, com só o transporte HTTP simulado (nenhuma função do módulo é mockada) e as respostas no formato real das APIs — os três saem com arte oficial (`itunes`, `itunes`, `wikipedia`), a capa gerada nunca é chamada, a miniatura vira `600x900bb.jpg`, e o quarto *Tira da Pesada* traz a arte de 2024, não a de 1984. Também cobertos: o verbete de outro título sendo recusado, a busca do iTunes pedindo temporada quando é série, a miniatura valendo quando o tamanho ampliado não responde, e a capa gerada declarando o tipo real dos bytes e tendo teto de tamanho.
+
+Fluxo completo em Chromium (Playwright) contra o servidor local, com o motor e as APIs de pôster simuladas no transporte: `/api/recommend` devolveu `itunes`, `itunes` e `wikipedia`; os três cartões pintaram `background-image` com esses endereços, o navegador buscou de fato as três imagens, e o selo "Capa ilustrativa (gerada por IA)" **não apareceu em nenhum** — porque nenhum caiu na capa gerada.
+
+Uma ressalva honesta: a rede externa está bloqueada neste ambiente, então iTunes e Wikipedia foram exercitados contra o formato real de resposta, não contra os servidores reais. O comportamento em produção depende de essas duas APIs responderem do runtime da Vercel; os logs `[poster]` foram acrescentados exatamente para que isso apareça no painel caso não respondam.

@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import tempfile
@@ -6,6 +7,7 @@ import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 
 TEST_STORE = Path(tempfile.gettempdir()) / "pipoca-play-test-users.json"
@@ -58,6 +60,11 @@ from user_store import (  # noqa: E402
     update_user_status,
 )
 
+
+# PNG de 1x1 usado onde o teste precisa de bytes de imagem de verdade.
+PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 FILTERS = {
     "content_type": "Filme",
@@ -188,7 +195,9 @@ class PipocaPlayTests(unittest.TestCase):
     def test_ratings_pass_through_unchanged_without_an_external_catalog(self):
         """Sem TMDB (removido do projeto), a nota que o motor deu é a que fica."""
         result = {"recommendations": [{"title_original": "Example", "ratings": {"imdb": 8.1, "tmdb": 6.5}}]}
-        with patch("metadata._wikipedia_poster", return_value=""), patch("metadata._generate_poster_image", return_value=""):
+        with patch("metadata._itunes_poster", return_value=""), \
+             patch("metadata._wikipedia_poster", return_value=""), \
+             patch("metadata._generate_poster_image", return_value=""):
             enriched = enrich_result(result)
         self.assertEqual(enriched["recommendations"][0]["ratings"], {"imdb": 8.1, "tmdb": 6.5})
 
@@ -221,12 +230,26 @@ class PipocaPlayTests(unittest.TestCase):
             "poster_url": "https://image.tmdb.org/t/p/w500/inventado.jpg",
         }]}
         with patch("metadata._image_responds", return_value=False), \
-             patch("metadata._wikipedia_poster", return_value="https://upload.wikimedia.org/real.jpg"), \
+             patch("metadata._itunes_poster", return_value="https://is1-ssl.mzstatic.com/a/600x900bb.jpg"), \
+             patch("metadata._wikipedia_poster") as wiki, \
              patch("metadata._generate_poster_image") as gen:
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
-        self.assertEqual(item["poster_url"], "https://upload.wikimedia.org/real.jpg")
-        self.assertEqual(item["poster_source"], "wikipedia")
+        self.assertEqual(item["poster_url"], "https://is1-ssl.mzstatic.com/a/600x900bb.jpg")
+        self.assertEqual(item["poster_source"], "itunes")
+        wiki.assert_not_called()
+        gen.assert_not_called()
+
+    def test_itunes_art_is_preferred_over_wikipedia(self):
+        """A arte oficial da loja vem antes da imagem do verbete."""
+        result = {"recommendations": [{"title_original": "Example", "poster_url": ""}]}
+        with patch("metadata._itunes_poster", return_value="https://is1-ssl.mzstatic.com/a/600x900bb.jpg"), \
+             patch("metadata._wikipedia_poster") as wiki, \
+             patch("metadata._generate_poster_image") as gen:
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_source"], "itunes")
+        wiki.assert_not_called()
         gen.assert_not_called()
 
     def test_engine_poster_in_plain_http_is_collected_as_https(self):
@@ -278,10 +301,11 @@ class PipocaPlayTests(unittest.TestCase):
         wiki.assert_not_called()
         gen.assert_not_called()
 
-    def test_wikipedia_poster_is_used_when_the_engine_link_is_invalid(self):
-        """2ª tentativa: uma imagem real e gratuita da Wikipedia."""
+    def test_wikipedia_poster_is_used_when_the_earlier_sources_fail(self):
+        """3ª tentativa: uma imagem real e gratuita da Wikipedia."""
         result = {"recommendations": [{"title_original": "Example", "poster_url": "não sei o link"}]}
-        with patch("metadata._wikipedia_poster", return_value="https://upload.wikimedia.org/real.jpg"), \
+        with patch("metadata._itunes_poster", return_value=""), \
+             patch("metadata._wikipedia_poster", return_value="https://upload.wikimedia.org/real.jpg"), \
              patch("metadata._generate_poster_image") as gen:
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
@@ -292,7 +316,8 @@ class PipocaPlayTests(unittest.TestCase):
     def test_generated_poster_is_the_last_resort(self):
         """3ª tentativa: nunca fica sem imagem — gera uma capa ilustrativa por IA."""
         result = {"recommendations": [{"title_original": "Example", "poster_url": ""}]}
-        with patch("metadata._wikipedia_poster", return_value=""), \
+        with patch("metadata._itunes_poster", return_value=""), \
+             patch("metadata._wikipedia_poster", return_value=""), \
              patch("metadata._generate_poster_image", return_value="data:image/png;base64,abc"):
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
@@ -301,7 +326,9 @@ class PipocaPlayTests(unittest.TestCase):
 
     def test_poster_ends_up_empty_only_when_every_source_fails(self):
         result = {"recommendations": [{"title_original": "Example", "poster_url": ""}]}
-        with patch("metadata._wikipedia_poster", return_value=""), patch("metadata._generate_poster_image", return_value=""):
+        with patch("metadata._itunes_poster", return_value=""), \
+             patch("metadata._wikipedia_poster", return_value=""), \
+             patch("metadata._generate_poster_image", return_value=""):
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
         self.assertEqual(item["poster_url"], "")
@@ -339,7 +366,8 @@ class PipocaPlayTests(unittest.TestCase):
             return "https://upload.wikimedia.org/real.jpg"
 
         result = {"recommendations": [{"title_original": f"Example {i}", "poster_url": ""} for i in range(3)]}
-        with patch("metadata._wikipedia_poster", side_effect=slow_wikipedia), \
+        with patch("metadata._itunes_poster", return_value=""), \
+             patch("metadata._wikipedia_poster", side_effect=slow_wikipedia), \
              patch("metadata._generate_poster_image") as gen:
             enriched = enrich_result(result)
         self.assertTrue(started.is_set(), "as três indicações deveriam ser resolvidas ao mesmo tempo")
@@ -349,7 +377,8 @@ class PipocaPlayTests(unittest.TestCase):
 
     def test_a_failing_poster_never_brings_down_the_recommendation(self):
         result = {"recommendations": [{"title_original": "Example", "poster_url": ""}]}
-        with patch("metadata._wikipedia_poster", side_effect=RuntimeError("rede caiu")):
+        with patch("metadata._itunes_poster", return_value=""), \
+             patch("metadata._wikipedia_poster", side_effect=RuntimeError("rede caiu")):
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
         self.assertEqual(item["poster_url"], "")
@@ -752,7 +781,7 @@ class PipocaPlayTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return json.dumps({"data": [{"b64_json": "QUJD"}]}).encode("utf-8")
+                return json.dumps({"data": [{"b64_json": PNG_BASE64}]}).encode("utf-8")
 
         def fake_urlopen(request, timeout=None):
             seen["url"] = request.full_url
@@ -765,7 +794,23 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(seen["url"], "https://api.openai.com/v1/images/generations")
         self.assertEqual(seen["body"]["model"], "gpt-image-1")
         self.assertIn("O Farol", seen["body"]["prompt"])
-        self.assertEqual(data_uri, "data:image/png;base64,QUJD")
+        # A capa viaja embutida na resposta: é pedida comprimida de propósito.
+        self.assertEqual(seen["body"]["output_format"], "jpeg")
+        self.assertLessEqual(seen["body"]["output_compression"], 80)
+        self.assertEqual(data_uri, "data:image/png;base64," + PNG_BASE64)
+
+    def test_generated_cover_declares_the_real_image_type_and_has_a_ceiling(self):
+        """O tipo sai dos bytes, não do formato pedido; e uma capa gigante é
+        descartada antes de estourar o corpo da resposta da função."""
+        import metadata as metadata_module
+
+        self.assertTrue(metadata_module._data_uri(PNG_BASE64).startswith("data:image/png;base64,"))
+        jpeg = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 40).decode()
+        self.assertTrue(metadata_module._data_uri(jpeg).startswith("data:image/jpeg;base64,"))
+        # Bytes que não são imagem nenhuma não viram pôster.
+        self.assertEqual(metadata_module._data_uri(base64.b64encode(b"nao sou imagem").decode()), "")
+        with patch.object(metadata_module, "MAX_DATA_URI_LENGTH", 40):
+            self.assertEqual(metadata_module._data_uri(PNG_BASE64), "")
 
     def test_generate_poster_image_is_empty_without_an_openai_key(self):
         import metadata as metadata_module
@@ -773,10 +818,34 @@ class PipocaPlayTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
             self.assertEqual(metadata_module._generate_poster_image("Título", 2020, [], "filme"), "")
 
-    def test_wikipedia_poster_uses_the_summary_thumbnail(self):
+    def test_the_three_titles_that_came_back_without_art_now_get_the_real_poster(self):
+        """Regressão do relato do usuário: os três cartões vinham só com a capa
+        gerada por IA. Aqui a cadeia inteira roda contra o formato real das
+        respostas das APIs públicas — nada do módulo é simulado, só o transporte.
+        """
         import metadata as metadata_module
 
+        itunes_br = {
+            "De Volta à Ação": {"results": [{
+                "trackName": "De Volta à Ação", "releaseDate": "2025-01-17T08:00:00Z",
+                "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/v4/volta/source/100x100bb.jpg"}]},
+            # A loja publica sem o "4" que o motor colocou no título.
+            "Um Tira da Pesada 4: Axel Foley": {"results": [
+                {"trackName": "Um Tira da Pesada", "releaseDate": "1984-12-05T08:00:00Z",
+                 "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/v4/1984/source/100x100bb.jpg"},
+                {"trackName": "Um Tira da Pesada: Axel Foley", "releaseDate": "2024-07-03T07:00:00Z",
+                 "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/v4/axel/source/100x100bb.jpg"}]},
+            "Lift: Roubo nas Alturas": {"results": []},
+        }
+        wiki_pt = {"Lift: Roubo nas Alturas filme 2024": {"query": {"pages": [{
+            "index": 1, "title": "Lift: Roubo nas Alturas",
+            "original": {"source": "https://upload.wikimedia.org/wikipedia/pt/9/9a/Lift.jpg"}}]}}}
+
         class FakeResponse:
+            def __init__(self, body, status=200, content_type="application/json"):
+                self._body, self.status = body, status
+                self.headers = {"Content-Type": content_type}
+
             def __enter__(self):
                 return self
 
@@ -784,31 +853,46 @@ class PipocaPlayTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return json.dumps({"type": "standard", "thumbnail": {"source": "https://upload.wikimedia.org/poster.jpg"}}).encode("utf-8")
+                return json.dumps(self._body).encode("utf-8")
 
-        with patch("metadata.urllib.request.urlopen", lambda request, timeout=None: FakeResponse()):
-            image = metadata_module._wikipedia_poster("The Lighthouse", "O Farol", 2019, "filme")
-        self.assertEqual(image, "https://upload.wikimedia.org/poster.jpg")
+        def fake_urlopen(request, timeout=None):
+            url = request.full_url
+            query = parse_qs(urlparse(url).query)
+            if url.startswith("https://itunes.apple.com/search"):
+                if query.get("country", [""])[0] != "BR":
+                    return FakeResponse({"results": []})
+                return FakeResponse(itunes_br.get(query.get("term", [""])[0], {"results": []}))
+            if "wikipedia.org/w/api.php" in url:
+                body = wiki_pt.get(query.get("gsrsearch", [""])[0]) if "pt.wikipedia" in url else None
+                return FakeResponse(body or {"query": {"pages": []}})
+            if "mzstatic.com" in url or "upload.wikimedia.org" in url:
+                return FakeResponse({}, 206, "image/jpeg")
+            return FakeResponse({}, 404, "text/html")
 
-    def test_wikipedia_disambiguation_pages_are_skipped(self):
-        import metadata as metadata_module
+        result = {"recommendations": [
+            {"rank": 1, "content_type": "filme", "title_original": "Back in Action",
+             "title_pt": "De Volta à Ação", "year": 2025, "genres": ["Ação"], "poster_url": ""},
+            {"rank": 2, "content_type": "filme", "title_original": "Beverly Hills Cop: Axel F",
+             "title_pt": "Um Tira da Pesada 4: Axel Foley", "year": 2024, "genres": ["Ação"], "poster_url": ""},
+            {"rank": 3, "content_type": "filme", "title_original": "Lift",
+             "title_pt": "Lift: Roubo nas Alturas", "year": 2024, "genres": ["Ação"], "poster_url": ""},
+        ]}
+        with patch("metadata.urllib.request.urlopen", fake_urlopen), \
+             patch("metadata._generate_poster_image") as gen:
+            enriched = metadata_module.enrich_result(result)
 
-        class FakeResponse:
-            def __enter__(self):
-                return self
+        items = enriched["recommendations"]
+        self.assertEqual([item["poster_source"] for item in items], ["itunes", "itunes", "wikipedia"])
+        # Nenhum cartão pode sobrar sem imagem, e nenhum cai na capa gerada.
+        self.assertTrue(all(item["poster_url"] for item in items))
+        gen.assert_not_called()
+        # A miniatura de 100px vira a arte cheia.
+        self.assertTrue(items[0]["poster_url"].endswith("/600x900bb.jpg"))
+        # O quarto filme não pode trazer a arte do original de 1984.
+        self.assertIn("axel", items[1]["poster_url"])
 
-            def __exit__(self, *args):
-                return False
-
-            def read(self):
-                return json.dumps({"type": "disambiguation"}).encode("utf-8")
-
-        with patch("metadata.urllib.request.urlopen", lambda request, timeout=None: FakeResponse()):
-            image = metadata_module._wikipedia_poster("Ambiguous Title", "", 0, "filme")
-        self.assertEqual(image, "")
-
-    def test_wikipedia_is_asked_in_portuguese_before_english(self):
-        """O público é brasileiro: a capa do lançamento nacional vem primeiro."""
+    def test_wikipedia_finds_the_entry_by_search_instead_of_guessing_the_title(self):
+        """Adivinhar "Título (filme de 2024)" era o que fazia a Wikipedia errar."""
         import metadata as metadata_module
 
         asked = []
@@ -821,7 +905,10 @@ class PipocaPlayTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return json.dumps({"type": "standard"}).encode("utf-8")
+                return json.dumps({"query": {"pages": [
+                    {"index": 1, "title": "O Farol (filme)",
+                     "original": {"source": "https://upload.wikimedia.org/poster.jpg"}},
+                ]}}).encode("utf-8")
 
         def fake_urlopen(request, timeout=None):
             asked.append(request.full_url)
@@ -829,20 +916,156 @@ class PipocaPlayTests(unittest.TestCase):
 
         with patch("metadata.urllib.request.urlopen", fake_urlopen):
             image = metadata_module._wikipedia_poster("The Lighthouse", "O Farol", 2019, "filme")
-        self.assertEqual(image, "")
+        self.assertEqual(image, "https://upload.wikimedia.org/poster.jpg")
+        # O público é brasileiro: o verbete em português vem primeiro.
         self.assertIn("pt.wikipedia.org", asked[0])
-        self.assertIn("O_Farol_%28filme_de_2019%29", asked[0])
-        self.assertTrue(any("en.wikipedia.org" in url and "The_Lighthouse" in url for url in asked))
-        # A lista de tentativas é limitada: cada uma custa uma ida à rede.
-        self.assertLessEqual(len(asked), metadata_module.MAX_WIKIPEDIA_CANDIDATES)
+        self.assertIn("generator=search", asked[0])
+        self.assertIn("prop=pageimages", asked[0])
+        self.assertIn("O+Farol+filme+2019", asked[0])
 
-    def test_wikipedia_uses_the_series_entry_for_series(self):
+    def test_wikipedia_falls_back_to_english_and_to_the_thumbnail(self):
         import metadata as metadata_module
 
-        candidates = metadata_module._wikipedia_candidates("Dark", "Dark", 2017, "serie")
-        self.assertEqual(candidates[0], ("pt", "Dark (série de televisão)"))
-        self.assertIn(("en", "Dark (TV series)"), candidates)
-        self.assertNotIn(("pt", "Dark (filme)"), candidates)
+        asked = []
+
+        class FakeResponse:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps(self.body).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            asked.append(request.full_url)
+            if "pt.wikipedia.org" in request.full_url:
+                return FakeResponse({"query": {"pages": [{"index": 1, "title": "O Farol"}]}})
+            return FakeResponse({"query": {"pages": [
+                {"index": 1, "title": "The Lighthouse (film)",
+                 "thumbnail": {"source": "https://upload.wikimedia.org/thumb.jpg"}},
+            ]}})
+
+        with patch("metadata.urllib.request.urlopen", fake_urlopen):
+            image = metadata_module._wikipedia_poster("The Lighthouse", "O Farol", 2019, "filme")
+        self.assertEqual(image, "https://upload.wikimedia.org/thumb.jpg")
+        self.assertTrue(any("en.wikipedia.org" in url and "The+Lighthouse" in url for url in asked))
+
+    def test_wikipedia_searches_use_the_series_wording_for_series(self):
+        import metadata as metadata_module
+
+        searches = metadata_module._wikipedia_searches("Dark", "Dark", 2017, "serie")
+        self.assertEqual(searches[0], ("pt", "Dark série de televisão 2017", "Dark"))
+        self.assertIn(("en", "Dark television series 2017", "Dark"), searches)
+
+    def test_wikipedia_ignores_an_entry_about_a_different_title(self):
+        """A busca sempre devolve algo: o pôster de outro filme é pior que nenhum."""
+        import metadata as metadata_module
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"query": {"pages": [
+                    {"index": 1, "title": "Farol de Alexandria",
+                     "original": {"source": "https://upload.wikimedia.org/outro.jpg"}},
+                ]}}).encode("utf-8")
+
+        with patch("metadata.urllib.request.urlopen", lambda request, timeout=None: FakeResponse()):
+            self.assertEqual(metadata_module._wikipedia_poster("The Lighthouse", "O Farol", 2019, "filme"), "")
+        # Um verbete com sufixo entre parênteses continua sendo o mesmo título.
+        self.assertTrue(metadata_module._entry_matches("O Farol (filme de 2019)", "O Farol"))
+        self.assertFalse(metadata_module._entry_matches("Farol de Alexandria", "O Farol"))
+
+    def test_itunes_search_takes_the_art_of_the_matching_title_and_year(self):
+        """A loja da Apple é a fonte de arte oficial sem chave."""
+        import metadata as metadata_module
+
+        asked = []
+        catalog = {"results": [
+            {"trackName": "Outro Filme", "releaseDate": "2024-01-01",
+             "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/x/source/100x100bb.jpg"},
+            {"trackName": "De Volta à Ação", "releaseDate": "2025-01-17",
+             "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/certo/source/100x100bb.jpg"},
+        ]}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps(catalog).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            asked.append(request.full_url)
+            return FakeResponse()
+
+        with patch("metadata.urllib.request.urlopen", fake_urlopen), \
+             patch("metadata._image_responds", return_value=True):
+            art = metadata_module._itunes_poster("Back in Action", "De Volta à Ação", 2025, "filme")
+        self.assertEqual(art, "https://is1-ssl.mzstatic.com/image/thumb/certo/source/600x900bb.jpg")
+        self.assertIn("itunes.apple.com/search", asked[0])
+        self.assertIn("country=BR", asked[0])
+        self.assertIn("media=movie", asked[0])
+
+    def test_itunes_search_asks_for_seasons_when_the_title_is_a_series(self):
+        import metadata as metadata_module
+
+        asked = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"results": []}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            asked.append(request.full_url)
+            return FakeResponse()
+
+        with patch("metadata.urllib.request.urlopen", fake_urlopen):
+            self.assertEqual(metadata_module._itunes_poster("Dark", "Dark", 2017, "serie"), "")
+        self.assertIn("media=tvShow", asked[0])
+        self.assertIn("entity=tvSeason", asked[0])
+
+    def test_itunes_never_returns_the_art_of_a_different_title(self):
+        """Um pôster do filme errado é pior que nenhum."""
+        import metadata as metadata_module
+
+        catalog = {"results": [
+            {"trackName": "Outro Filme Qualquer", "releaseDate": "2024-01-01",
+             "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/x/source/100x100bb.jpg"},
+        ]}
+        self.assertEqual(metadata_module._pick_itunes_result(catalog, "De Volta à Ação", 2025), "")
+        # Acento, caixa e subtítulo não impedem a correspondência.
+        combinado = {"results": [
+            {"trackName": "Um Tira da Pesada: Axel Foley", "releaseDate": "2024-07-03",
+             "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/ok/source/100x100bb.jpg"},
+        ]}
+        self.assertTrue(metadata_module._pick_itunes_result(combinado, "Um Tira da Pesada", 2024))
+
+    def test_itunes_keeps_the_original_art_when_the_bigger_size_is_missing(self):
+        """O tamanho ampliado é reescrita nossa: sem resposta, vale a miniatura."""
+        import metadata as metadata_module
+
+        small = "https://is1-ssl.mzstatic.com/image/thumb/x/source/100x100bb.jpg"
+        with patch("metadata._image_responds", return_value=False):
+            self.assertEqual(metadata_module._itunes_full_size(small), small)
 
     def test_image_probe_accepts_only_an_answer_that_is_really_an_image(self):
         """A confirmação do link do motor olha o tipo de conteúdo, não a extensão."""
