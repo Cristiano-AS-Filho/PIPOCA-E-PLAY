@@ -84,13 +84,24 @@ class AppHandler(SimpleHTTPRequestHandler):
         status, payload, headers = result
         self.send_json(status, payload, headers)
 
+    def clean_url(self, path):
+        """Reproduz o `cleanUrls` da Vercel: /admin serve admin.html, /app serve
+        app.html. Sem isso o servidor local devolveria 404 justamente nas duas
+        páginas que só existem como arquivo .html — o painel do administrador e
+        o ambiente logado."""
+        candidate = path.rstrip("/")
+        if not candidate or "." in Path(candidate).name:
+            return path
+        if (PUBLIC / (candidate.lstrip("/") + ".html")).is_file():
+            return candidate + ".html"
+        return path
+
     def do_GET(self):
         target = urlparse(self.path)
         if target.path.startswith("/api"):
             self.send_result(router.handle("GET", target.path, parse_qs(target.query), {}, self.headers))
             return
-        if target.path in {"/admin", "/admin/"}:
-            self.path = "/admin.html"
+        self.path = self.clean_url(target.path)
         super().do_GET()
 
     def do_POST(self):

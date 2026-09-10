@@ -61,6 +61,14 @@ O botão **voltar** nativo do celular percorre as telas da plataforma (planos, c
 
 O painel administrativo tem **página e login próprios** em `https://SEU-DOMINIO/admin`. Ele não depende da navegação da plataforma: abra o endereço, entre com as credenciais de administrador e você já cai na lista de acessos.
 
+São três os caminhos até ele, e nenhum depende de decorar o endereço:
+
+* **Entrando pela porta da frente.** O login da landing lê o papel devolvido por `POST /api/auth/login`: quem entra como administrador vai para `/admin`, quem entra como cliente segue para `/app`.
+* **Pelos links da landing.** “Entrar como administrador”, embaixo do formulário de login, e “Administração”, no rodapé.
+* **De dentro de `/app`.** O cabeçalho do ambiente logado mostra o botão **Administração** somente quando a sessão é de administrador — para o cliente ele nem chega a ser exibido.
+
+O desvio é apenas de navegação: quem manda é o backend. `/api/admin/status` e `/api/admin/users` exigem sessão com papel `admin` e respondem **403** para qualquer outra, então abrir `/admin` sem ser administrador devolve a tela de login do painel, nunca a lista de contas.
+
 Existem dois caminhos para ter uma conta de administrador:
 
 1. **Administrador raiz por variável de ambiente.** Defina `ADMIN_EMAIL` e `ADMIN_PASSWORD` no projeto. Esse acesso funciona mesmo com a base de contas vazia e é o que destrava o painel na primeira vez. Sem essas duas variáveis em produção, **nenhum** login de administrador é aceito.
@@ -108,7 +116,7 @@ A conexão direta (`db.<ref-do-projeto>.supabase.co:5432`, mostrada na aba "URI"
 4. Em desenvolvimento, `USER_STORE_FILE=data/users.json` cria a base local automaticamente.
 5. Defina `OPENAI_API_KEY` — é a única chave que a plataforma exige.
 6. Execute `python3 server.py` dentro desta pasta.
-7. Abra `http://127.0.0.1:8000` para a plataforma e `http://127.0.0.1:8000/admin` para o painel.
+7. Abra `http://127.0.0.1:8000` para a landing, `http://127.0.0.1:8000/app` para o ambiente logado e `http://127.0.0.1:8000/admin` para o painel. O servidor local reproduz o `cleanUrls` da Vercel, de modo que os três endereços são os mesmos em produção.
 
 A chave da OpenAI é lida apenas pelo servidor. O navegador envia os oito filtros para `POST /api/recommend` apenas depois do login.
 
@@ -118,7 +126,8 @@ Os testes rodam com `python3 -m unittest test_app`.
 
 | Rota | Método | Acesso | Uso |
 | --- | --- | --- | --- |
-| `/` | GET | público | Landing page e plataforma |
+| `/` | GET | público | Landing page |
+| `/app` | GET | público (a página), conteúdo só com sessão | Ambiente logado do cliente |
 | `/admin` | GET | público (a página), painel só com sessão admin | Painel do administrador |
 | `/api/health` | GET | público | Diagnóstico do deploy, sem segredos |
 | `/api/auth/register` | POST | público | Cadastro do cliente (entra como `pending`) |

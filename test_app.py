@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -76,6 +77,31 @@ FILTERS = {
     "companionship": "Sozinho(a)",
     "popularity": "Aclamados pela Crítica / Premiações (Oscar, Cannes)",
 }
+
+
+# ---------------------------------------------------------------------------
+# Páginas publicadas
+# ---------------------------------------------------------------------------
+
+PUBLIC = Path(__file__).parent / "public"
+BUNDLE_MARK = '<script type="__bundler/template">'
+
+
+def published_document(name):
+    """Devolve o documento de uma página do /public.
+
+    A landing e o ambiente logado saem do Claude Web Design empacotados: o HTML
+    inteiro viaja como uma string JSON dentro de <script type="__bundler/template">.
+    Ler o arquivo cru encontraria o texto escapado, então o teste desempacota
+    primeiro e verifica o documento que o navegador realmente monta.
+    """
+    text = (PUBLIC / name).read_text(encoding="utf-8")
+    if BUNDLE_MARK not in text:
+        return text
+    start = text.index(BUNDLE_MARK)
+    opening = text.index('"', start + len(BUNDLE_MARK))
+    closing = text.rindex('"', opening, text.index("</script>", opening)) + 1
+    return json.loads(text[opening:closing])
 
 
 class PipocaPlayTests(unittest.TestCase):
@@ -1642,6 +1668,79 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(listed["plan"], "gold")
         self.assertTrue(listed["subscription_active"])
         self.assertEqual(admin_summary()["subscribers"], 1)
+
+
+    # -----------------------------------------------------------------
+    # O painel do administrador precisa estar alcançável no deploy
+    # -----------------------------------------------------------------
+
+    def test_the_landing_page_sends_an_administrator_to_the_panel(self):
+        """Regressão: o site publicado mandava todo mundo para /app, inclusive o
+        administrador, e /app não tem nenhuma tela de controle de acesso — o
+        painel existia no deploy mas ninguém chegava nele pela porta da frente."""
+        doc = published_document("index.html")
+        self.assertIn('href="/admin"', doc, "a landing precisa linkar o painel")
+        self.assertIn("goToAdmin", doc, "falta o desvio para o painel")
+        self.assertIn(
+            "logged.role === 'admin'",
+            doc,
+            "o login precisa separar administrador de cliente antes de navegar",
+        )
+        self.assertIn("this.adminUrl()", doc)
+
+    def test_the_logged_in_environment_keeps_a_way_back_to_the_panel(self):
+        """Um administrador que caia em /app não pode ficar sem caminho de volta."""
+        doc = published_document("app.html")
+        self.assertIn("adminHref", doc)
+        self.assertIn('href="{{ adminHref }}"', doc, "falta o link para /admin no cabeçalho")
+        self.assertIn("adminDisplay", doc, "o atalho precisa sumir para quem não é admin")
+        self.assertIn("role === 'admin'", doc, "o atalho precisa depender do papel da sessão")
+
+    def test_the_admin_page_only_calls_routes_the_router_publishes(self):
+        """Toda rota citada em admin.html precisa existir: um 404 aqui deixaria o
+        painel aberto e inerte, que é pior do que não abrir."""
+        page = published_document("admin.html")
+        called = sorted(set(re.findall(r'"(/api/[a-z/]+)"', page)))
+        self.assertIn("/api/admin/status", called)
+        self.assertIn("/api/admin/users", called)
+        for path in called:
+            for method in ("GET", "POST"):
+                status = router.handle(method, path, {}, {}, {})[0]
+                self.assertNotEqual(status, 404, f"{method} {path} não existe no roteador")
+
+    def test_the_admin_panel_is_reachable_by_the_same_url_in_both_runtimes(self):
+        """A Vercel serve /admin e /app por `cleanUrls`. O servidor local precisa
+        fazer o mesmo, senão as duas páginas só existem em produção."""
+        config = json.loads((Path(__file__).parent / "vercel.json").read_text(encoding="utf-8"))
+        self.assertTrue(config["cleanUrls"], "sem cleanUrls a Vercel não serve /admin")
+        self.assertTrue((PUBLIC / "admin.html").is_file())
+        self.assertTrue((PUBLIC / "app.html").is_file())
+
+        import server
+
+        clean = server.AppHandler.clean_url
+        self.assertEqual(clean(None, "/admin"), "/admin.html")
+        self.assertEqual(clean(None, "/admin/"), "/admin.html")
+        self.assertEqual(clean(None, "/app"), "/app.html")
+        self.assertEqual(clean(None, "/"), "/")
+        self.assertEqual(clean(None, "/admin.html"), "/admin.html")
+        self.assertEqual(clean(None, "/nao-existe"), "/nao-existe")
+
+    def test_an_account_promoted_to_admin_opens_the_panel(self):
+        """O painel não é só do admin de ambiente: quem é promovido na base entra
+        pelo mesmo /admin, e quem não é admin continua barrado."""
+        record = create_user("promovido@test.local", "client-password")
+        client = {"email": record["email"], "role": "user", "user_id": record["id"]}
+        self.assertEqual(router.handle("GET", "/api/admin/status", {}, {}, {})[0], 403)
+        self.assertEqual(api_core.admin_overview(client)[0], 403)
+
+        update_user_role(record["id"], "admin")
+        session = read_session("pipoca_session=" + create_session(record["email"], "admin", record["id"]))
+        self.assertIsNotNone(session, "a sessão do admin promovido precisa sobreviver")
+        status, payload, _ = api_core.admin_overview(session)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["user"]["role"], "admin")
+        self.assertIn("promovido@test.local", [user["email"] for user in payload["users"]])
 
 
 if __name__ == "__main__":

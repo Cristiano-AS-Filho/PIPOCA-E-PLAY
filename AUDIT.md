@@ -254,3 +254,46 @@ A ordem final da coleta é: motor → iTunes → Wikipedia → capa gerada, cada
 Fluxo completo em Chromium (Playwright) contra o servidor local, com o motor e as APIs de pôster simuladas no transporte: `/api/recommend` devolveu `itunes`, `itunes` e `wikipedia`; os três cartões pintaram `background-image` com esses endereços, o navegador buscou de fato as três imagens, e o selo "Capa ilustrativa (gerada por IA)" **não apareceu em nenhum** — porque nenhum caiu na capa gerada.
 
 Uma ressalva honesta: a rede externa está bloqueada neste ambiente, então iTunes e Wikipedia foram exercitados contra o formato real de resposta, não contra os servidores reais. O comportamento em produção depende de essas duas APIs responderem do runtime da Vercel; os logs `[poster]` foram acrescentados exatamente para que isso apareça no painel caso não respondam.
+
+
+## Rodada 11 — o painel do administrador some do site publicado
+
+### Diagnóstico
+
+O relato: *"na main há a área de administrador e todas as funcionalidades de controle de acesso, mas não há no deploy"*. Confirmado, e a causa é uma regressão de navegação, não a falta do painel.
+
+Até o commit `d3f84c9` (*Publica o novo site gerado no Claude Web Design*), a `public/index.html` era uma SPA que **carregava a administração dentro dela**: tinha `.admin-shell`, `openAdmin()`, a tela `state.screen === "admin"` e, no login, `state.screen = sessionUser.role === "admin" ? "admin" : "wizard"`. Quem entrava como administrador caía na lista de acessos sem precisar saber de nenhum endereço.
+
+O site novo trocou essa página por uma landing mais o ambiente logado `/app`, e nessa troca:
+
+1. **A tela de administração embutida foi embora** — nada em `app.html` menciona administração além de `account.role !== 'admin'`, que só serve para não cobrar plano do admin.
+2. **O login passou a mandar todo mundo para `/app`.** O `submitAuth` terminava sempre em `self.goToApp()`, sem olhar o papel devolvido por `/api/auth/login`. O administrador entrava com a credencial certa, ganhava a sessão certa e era despejado no ambiente do cliente.
+3. **`/app` não tinha caminho de volta.** Sem link para `/admin` e sem qualquer leitura do papel, quem chegasse ali ficava preso.
+
+O painel em si — `public/admin.html`, com login próprio, contadores, busca, filtro e as dez ações — **nunca quebrou**: continua completo e em dia com o backend (`approve`, `reject`, `pending`, `delete`, `promote`, `demote`, `set_password`, `create`, `grant_plan`, `revoke_plan`). A landing até linkava `/admin` no rodapé e embaixo do formulário. O que faltava era o site levar o administrador até lá.
+
+Um segundo desencontro apareceu na verificação: **`/app` respondia 404 no servidor local**. A Vercel serve `/app` e `/admin` por `cleanUrls`, mas o `server.py` só conhecia `/admin`, então a página nova só existia em produção — exatamente o tipo de divergência que o roteador único da Rodada 4 tinha ido eliminar.
+
+### Correções aplicadas
+
+As duas páginas do Claude Web Design guardam o documento inteiro como uma string JSON dentro de `<script type="__bundler/template">`; a edição foi feita no documento desempacotado e reempacotada com o mesmo escape do bundler (`</` → `<\u002F`), de modo que o round-trip é byte-idêntico fora dos trechos alterados.
+
+* **`public/index.html`** ganhou `adminUrl()`/`goToAdmin()` e o login passou a separar os dois destinos: `logged.role === 'admin'` vai para `/admin`, o resto segue para `/app`. O ramo offline continua indo para `/app` — sem backend não há painel para abrir.
+* **`public/app.html`** calcula `isAdmin` a partir da sessão (`/api/auth/me`) e da conta (`/api/account`, que devolve `role: "admin"` também para o admin raiz, que não tem conta de cliente) e mostra no cabeçalho o botão **Administração** apontando para `/admin`. Para o cliente o atalho fica com `display: none`.
+* **`server.py`** passou a reproduzir o `cleanUrls` da Vercel de forma genérica: qualquer caminho sem extensão que tenha um `.html` correspondente em `public/` é servido por ele. `/admin` e `/app` deixam de ser um caso especial escrito à mão.
+
+Nada mudou no backend: o controle de acesso continua onde sempre esteve. `/api/admin/status` e `/api/admin/users` seguem exigindo sessão `admin` e respondendo 403 para qualquer outra — o desvio de navegação é conveniência, não permissão.
+
+### Validação
+
+`python3 -m unittest test_app` — **114 testes verdes** (5 novos). Os três que guardam a regressão foram executados também **contra a versão anterior das páginas** e falham lá, como devem: o link e o desvio da landing, o atalho condicional de `/app` e o `cleanUrls` do servidor local. Os outros dois cobrem que toda rota citada em `admin.html` existe no roteador (um 404 ali deixaria o painel aberto e inerte) e que uma conta promovida a `admin` na base abre o painel enquanto a mesma conta como `user` leva 403.
+
+Fluxo completo em Chromium (Playwright, 1280×900, sem erro de JavaScript vindo da aplicação), contra o servidor real:
+
+1. `admin@test.local` entra pelo formulário da landing → o navegador vai para `/admin`, o painel abre e o cabeçalho identifica a conta.
+2. Pelo painel, “Criar acesso liberado” cria `cliente@test.local` e a conta aparece na lista — o painel opera de verdade, não só abre.
+3. O mesmo administrador abre `/app` e encontra o botão **Administração** visível, apontando para `/admin`.
+4. O cliente entra pelo mesmo formulário → cai em `/app`, e o atalho de administração não é exibido para ele.
+5. O cliente digitando `/admin` na barra recebe a tela de login do painel, nunca a lista de contas.
+
+Uma observação fora do escopo desta rodada, registrada na verificação: a landing publicada carrega 16 `<image-slot>` vazios do editor de origem, com os botões *Replace*/*Edit* dentro do shadow DOM, e pede dois arquivos que não existem no deploy (`/assets/icons/arrow-right.svg` e `/.image-slots.state.json`, ambos 404). No 1280×900 os controles ficam fora da área visível, mas dois marcadores de imagem vazia aparecem sobre o texto do herói.
