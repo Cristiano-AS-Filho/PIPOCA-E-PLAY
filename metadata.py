@@ -16,7 +16,12 @@ aceitá-lo:
    é aceito quando o título (e o ano, quando conhecido) batem.
 3. A **Wikipedia**, em português e depois em inglês, pela API de busca com
    ``pageimages``: acha o verbete pelo nome em vez de adivinhar o título exato
-   ("Fulano (filme de 2024)"), que é como as tentativas anteriores erravam.
+   ("Fulano (filme de 2024)"), que é como as tentativas anteriores erravam. A
+   consulta precisa pedir ``pilicense=any`` e ``pilimit``: nos padrões da API
+   ("free" e uma página só) o pôster de um lançamento — que no verbete é
+   sempre um arquivo de uso justo, não uma imagem livre — simplesmente não
+   vinha, e títulos com verbete e pôster na Wikipedia, como *Ripley*, caíam na
+   capa gerada.
 4. Só quando nenhuma arte oficial aparece, uma capa ilustrativa gerada por IA na
    mesma conta da OpenAI já usada pelo motor. Nunca é a arte do título, por isso
    `poster_source` chega como "generated" e a tela rotula a imagem como tal. Ela
@@ -329,6 +334,9 @@ def _itunes_poster(title_original: str, title_pt: str, year, content_type: str, 
 
 ENTRY_SUFFIX = re.compile(r"\s*\([^)]*\)\s*$")
 
+# Quantos verbetes a busca traz — e quantos recebem imagem (``pilimit``).
+WIKIPEDIA_SEARCH_RESULTS = 3
+
 
 def _entry_matches(entry_title: str, wanted: str) -> bool:
     """O verbete achado precisa ser do título procurado.
@@ -336,7 +344,20 @@ def _entry_matches(entry_title: str, wanted: str) -> bool:
     A busca da Wikipedia sempre devolve *algo*; sem esta conferência o cartão
     poderia exibir o pôster de outro filme, que é pior que não exibir nenhum.
     """
-    return _titles_match(ENTRY_SUFFIX.sub("", str(entry_title or "")), wanted, loose=True)
+    return _entry_rank(entry_title, wanted) < 2
+
+
+def _entry_rank(entry_title: str, wanted: str) -> int:
+    """0 = o mesmo nome, 1 = variação aceitável, 2 = outro título.
+
+    Serve para desempatar: "Ripley" e "Ripley Under Ground" passam os dois pela
+    conferência (uma é prefixo da outra), e sem esta ordem o verbete errado
+    ganharia só por vir antes na busca.
+    """
+    stripped = ENTRY_SUFFIX.sub("", str(entry_title or ""))
+    if _normalize_title(stripped) and _normalize_title(stripped) == _normalize_title(wanted):
+        return 0
+    return 1 if _titles_match(stripped, wanted, loose=True) else 2
 
 
 def _wikipedia_page_image(language: str, search: str, wanted: str, timeout: float) -> str:
@@ -349,19 +370,35 @@ def _wikipedia_page_image(language: str, search: str, wanted: str, timeout: floa
         "formatversion": "2",
         "generator": "search",
         "gsrsearch": search,
-        "gsrlimit": "3",
+        "gsrlimit": str(WIKIPEDIA_SEARCH_RESULTS),
         "gsrnamespace": "0",
         "prop": "pageimages",
         "piprop": "original|thumbnail",
         "pithumbsize": "800",
+        # Sem estes dois a consulta volta sem imagem alguma para boa parte dos
+        # títulos, e era o que jogava o cartão na capa gerada:
+        # - ``pilicense`` vale "free" por padrão, e o pôster de um filme ou
+        #   série no verbete é um arquivo de uso justo, nunca de licença livre;
+        # - ``pilimit`` vale 1 por padrão, então de todos os resultados da busca
+        #   um só recebia a imagem, e não necessariamente o do título certo.
+        "pilicense": "any",
+        "pilimit": str(WIKIPEDIA_SEARCH_RESULTS),
     })
     data = _http_json(f"https://{language}.wikipedia.org/w/api.php?{query}", timeout)
     pages = ((data or {}).get("query") or {}).get("pages") if isinstance(data, dict) else None
     if not isinstance(pages, list):
         return ""
-    for page in sorted(pages, key=lambda item: item.get("index", 99) if isinstance(item, dict) else 99):
-        if not isinstance(page, dict) or not _entry_matches(page.get("title", ""), wanted):
+    candidates = []
+    for page in pages:
+        if not isinstance(page, dict):
             continue
+        rank = _entry_rank(page.get("title", ""), wanted)
+        if rank < 2:
+            index = page.get("index")
+            candidates.append((rank, index if isinstance(index, int) else 99, page))
+    # O verbete de mesmo nome ganha do que só começa igual; entre iguais, vale a
+    # ordem da própria busca.
+    for _, _, page in sorted(candidates, key=lambda item: (item[0], item[1])):
         for key in ("original", "thumbnail"):
             image = _looks_like_image_url((page.get(key) or {}).get("source", ""))
             if image:

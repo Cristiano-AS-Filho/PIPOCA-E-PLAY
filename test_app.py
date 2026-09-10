@@ -955,6 +955,65 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(image, "https://upload.wikimedia.org/thumb.jpg")
         self.assertTrue(any("en.wikipedia.org" in url and "The+Lighthouse" in url for url in asked))
 
+    def test_wikipedia_query_asks_for_the_non_free_poster_of_every_result(self):
+        """O caso Ripley: verbete e pôster existem, mas a consulta não os pedia.
+
+        ``pageimages`` só devolve imagem de licença livre (``pilicense=free``,
+        o padrão) e só para uma página (``pilimit=1``, o padrão). O pôster de um
+        filme ou série no verbete é sempre um arquivo de uso justo, então a
+        resposta vinha sem imagem nenhuma e o cartão caía na capa gerada.
+        """
+        import metadata as metadata_module
+
+        asked = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"query": {"pages": [
+                    {"index": 1, "title": "Ripley (TV series)",
+                     "original": {"source": "https://upload.wikimedia.org/wikipedia/en/ripley.jpg"}},
+                ]}}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            asked.append(request.full_url)
+            return FakeResponse()
+
+        with patch("metadata.urllib.request.urlopen", fake_urlopen):
+            image = metadata_module._wikipedia_poster("Ripley", "Ripley", 2024, "serie")
+        self.assertEqual(image, "https://upload.wikimedia.org/wikipedia/en/ripley.jpg")
+        for url in asked:
+            self.assertIn("pilicense=any", url)
+            self.assertIn("pilimit=3", url)
+
+    def test_wikipedia_prefers_the_entry_with_the_very_same_name(self):
+        """"Ripley Under Ground" começa igual; o verbete de mesmo nome ganha."""
+        import metadata as metadata_module
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"query": {"pages": [
+                    {"index": 1, "title": "Ripley Under Ground",
+                     "original": {"source": "https://upload.wikimedia.org/outro-livro.jpg"}},
+                    {"index": 2, "title": "Ripley (TV series)",
+                     "original": {"source": "https://upload.wikimedia.org/wikipedia/en/ripley.jpg"}},
+                ]}}).encode("utf-8")
+
+        with patch("metadata.urllib.request.urlopen", lambda request, timeout=None: FakeResponse()):
+            image = metadata_module._wikipedia_poster("Ripley", "Ripley", 2024, "serie")
+        self.assertEqual(image, "https://upload.wikimedia.org/wikipedia/en/ripley.jpg")
+
     def test_wikipedia_searches_use_the_series_wording_for_series(self):
         import metadata as metadata_module
 
