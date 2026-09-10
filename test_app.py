@@ -11,7 +11,6 @@ os.environ["AUTH_SECRET"] = "test-secret"
 os.environ["ADMIN_EMAIL"] = "admin@test.local"
 os.environ["ADMIN_PASSWORD"] = "admin-password"
 os.environ["ENVIRONMENT"] = "test"
-os.environ["TMDB_API_KEY"] = ""
 os.environ["USER_STORE_FILE"] = str(TEST_STORE)
 
 import billing  # noqa: E402
@@ -24,7 +23,7 @@ from recommender import (  # noqa: E402
     RATING_SOURCES,
     build_feedback_section,
 )
-from metadata import NullMetadataProvider, enrich_result  # noqa: E402
+from metadata import enrich_result  # noqa: E402
 from server import (  # noqa: E402
     RECOMMENDATION_SCHEMA,
     buildRecommendationPrompt,
@@ -56,16 +55,6 @@ from user_store import (  # noqa: E402
     update_user_role,
     update_user_status,
 )
-
-
-class _FakeMetadataProvider(NullMetadataProvider):
-    """Fonte externa de mentira: devolve apenas as notas pedidas pelo teste."""
-
-    def __init__(self, ratings):
-        self.ratings = ratings
-
-    def lookup(self, title_original, title_pt="", year=0, content_type="filme"):
-        return {**super().lookup(title_original, title_pt, year, content_type), "ratings": self.ratings}
 
 
 FILTERS = {
@@ -184,54 +173,55 @@ class PipocaPlayTests(unittest.TestCase):
             self.assertIn(f"{label} de 0 a {scale}", prompt)
         self.assertIn("Use 0 em toda fonte que você não souber com segurança", prompt)
 
-    def test_external_ratings_override_what_the_model_remembered(self):
-        result = {"recommendations": [{"title_original": "Example", "ratings": {"imdb": 8.1, "tmdb": 1.0}}]}
-        with patch("metadata.get_metadata_provider", lambda: _FakeMetadataProvider({"tmdb": 7.4})):
+    def test_ratings_pass_through_unchanged_without_an_external_catalog(self):
+        """Sem TMDB (removido do projeto), a nota que o motor deu é a que fica."""
+        result = {"recommendations": [{"title_original": "Example", "ratings": {"imdb": 8.1, "tmdb": 6.5}}]}
+        with patch("metadata._wikipedia_poster", return_value=""), patch("metadata._generate_poster_image", return_value=""):
             enriched = enrich_result(result)
-        ratings = enriched["recommendations"][0]["ratings"]
-        self.assertEqual(ratings["tmdb"], 7.4)
-        self.assertEqual(ratings["imdb"], 8.1)
+        self.assertEqual(enriched["recommendations"][0]["ratings"], {"imdb": 8.1, "tmdb": 6.5})
 
-    def test_enrichment_keeps_ratings_when_there_is_no_external_source(self):
-        result = {"recommendations": [{"title_original": "Example", "ratings": {"imdb": 8.1}}]}
-        with patch("metadata.get_metadata_provider", NullMetadataProvider):
-            enriched = enrich_result(result)
-        self.assertEqual(enriched["recommendations"][0]["ratings"], {"imdb": 8.1})
-
-    def test_engine_poster_is_used_without_tmdb(self):
-        """Sem TMDB configurado, o pôster vem da própria chamada do motor (ChatGPT)."""
+    def test_engine_poster_is_used_when_it_looks_like_a_real_image(self):
+        """1ª tentativa: o link que o próprio motor (ChatGPT) indicou."""
         result = {"recommendations": [{
             "title_original": "Example",
             "poster_url": "https://image.tmdb.org/t/p/w500/abc123.jpg",
         }]}
-        with patch("metadata.get_metadata_provider", NullMetadataProvider):
+        with patch("metadata._wikipedia_poster") as wiki, patch("metadata._generate_poster_image") as gen:
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
         self.assertEqual(item["poster_url"], "https://image.tmdb.org/t/p/w500/abc123.jpg")
         self.assertEqual(item["poster_source"], "model")
+        wiki.assert_not_called()
+        gen.assert_not_called()
 
-    def test_engine_poster_is_discarded_when_it_does_not_look_like_an_image(self):
+    def test_wikipedia_poster_is_used_when_the_engine_link_is_invalid(self):
+        """2ª tentativa: uma imagem real e gratuita da Wikipedia."""
         result = {"recommendations": [{"title_original": "Example", "poster_url": "não sei o link"}]}
-        with patch("metadata.get_metadata_provider", NullMetadataProvider):
+        with patch("metadata._wikipedia_poster", return_value="https://upload.wikimedia.org/real.jpg"), \
+             patch("metadata._generate_poster_image") as gen:
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "https://upload.wikimedia.org/real.jpg")
+        self.assertEqual(item["poster_source"], "wikipedia")
+        gen.assert_not_called()
+
+    def test_generated_poster_is_the_last_resort(self):
+        """3ª tentativa: nunca fica sem imagem — gera uma capa ilustrativa por IA."""
+        result = {"recommendations": [{"title_original": "Example", "poster_url": ""}]}
+        with patch("metadata._wikipedia_poster", return_value=""), \
+             patch("metadata._generate_poster_image", return_value="data:image/png;base64,abc"):
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "data:image/png;base64,abc")
+        self.assertEqual(item["poster_source"], "generated")
+
+    def test_poster_ends_up_empty_only_when_every_source_fails(self):
+        result = {"recommendations": [{"title_original": "Example", "poster_url": ""}]}
+        with patch("metadata._wikipedia_poster", return_value=""), patch("metadata._generate_poster_image", return_value=""):
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
         self.assertEqual(item["poster_url"], "")
         self.assertEqual(item["poster_source"], "")
-
-    def test_tmdb_poster_overrides_the_engine_poster_when_available(self):
-        class _PosterFromTMDB(NullMetadataProvider):
-            def lookup(self, *args, **kwargs):
-                return {**super().lookup(*args, **kwargs), "images": {"poster": "https://image.tmdb.org/t/p/w500/real.jpg", "backdrop": ""}}
-
-        result = {"recommendations": [{
-            "title_original": "Example",
-            "poster_url": "https://exemplo-inventado.com/poster.jpg",
-        }]}
-        with patch("metadata.get_metadata_provider", _PosterFromTMDB):
-            enriched = enrich_result(result)
-        item = enriched["recommendations"][0]
-        self.assertEqual(item["poster_url"], "https://image.tmdb.org/t/p/w500/real.jpg")
-        self.assertEqual(item["poster_source"], "tmdb")
 
     def test_validate_requires_exactly_three_ordered_recommendations(self):
         item = {
@@ -616,57 +606,74 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIn("aguardando", payload["error"])
 
-    def test_series_metadata_uses_the_tv_endpoints(self):
-        from metadata import TMDBMetadataProvider
+    def test_generate_poster_image_calls_the_images_endpoint(self):
+        """Último recurso do pôster: gera uma capa pela mesma conta da OpenAI."""
+        import metadata as metadata_module
 
-        seen = []
+        seen = {}
 
-        def fake_get(self, path, params):
-            seen.append((path, dict(params)))
-            if path.startswith("/search"):
-                return {"results": [{"id": 7, "poster_path": "/p.jpg", "backdrop_path": "/b.jpg"}]}
-            return {
-                "name": "Ruptura",
-                "original_name": "Severance",
-                "first_air_date": "2022-02-18",
-                "episode_run_time": [48],
-                "number_of_seasons": 2,
-                "genres": [{"name": "Drama"}],
-                "overview": "sinopse",
-            }
+        class FakeResponse:
+            def __enter__(self):
+                return self
 
-        with patch.object(TMDBMetadataProvider, "_get", fake_get):
-            metadata = TMDBMetadataProvider("chave").lookup("Severance", "Ruptura", 2022, "serie")
-        self.assertEqual(seen[0][0], "/search/tv")
-        self.assertEqual(seen[0][1]["first_air_date_year"], 2022)
-        self.assertEqual(seen[1][0], "/tv/7")
-        self.assertEqual(metadata["title_pt"], "Ruptura")
-        self.assertEqual(metadata["runtime_minutes"], 48)
-        self.assertEqual(metadata["seasons"], 2)
-        self.assertEqual(metadata["year"], 2022)
+            def __exit__(self, *args):
+                return False
 
-    def test_film_metadata_still_uses_the_movie_endpoints(self):
-        from metadata import TMDBMetadataProvider
+            def read(self):
+                return json.dumps({"data": [{"b64_json": "QUJD"}]}).encode("utf-8")
 
-        seen = []
+        def fake_urlopen(request, timeout=None):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
 
-        def fake_get(self, path, params):
-            seen.append(path)
-            if path.startswith("/search"):
-                return {"results": [{"id": 9, "poster_path": "/p.jpg"}]}
-            return {"title": "Cidade de Deus", "original_title": "Cidade de Deus", "release_date": "2002-08-30", "runtime": 130}
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            with patch("metadata.urllib.request.urlopen", fake_urlopen):
+                data_uri = metadata_module._generate_poster_image("O Farol", 2019, ["Suspense"], "filme")
+        self.assertEqual(seen["url"], "https://api.openai.com/v1/images/generations")
+        self.assertEqual(seen["body"]["model"], "gpt-image-1")
+        self.assertIn("O Farol", seen["body"]["prompt"])
+        self.assertEqual(data_uri, "data:image/png;base64,QUJD")
 
-        with patch.object(TMDBMetadataProvider, "_get", fake_get):
-            metadata = TMDBMetadataProvider("chave").lookup("Cidade de Deus", "Cidade de Deus", 2002, "filme")
-        self.assertEqual(seen[0], "/search/movie")
-        self.assertEqual(seen[1], "/movie/9")
-        self.assertEqual(metadata["runtime_minutes"], 130)
-        self.assertEqual(metadata["seasons"], 0)
+    def test_generate_poster_image_is_empty_without_an_openai_key(self):
+        import metadata as metadata_module
 
-    def test_metadata_provider_is_explicitly_unconfirmed_without_key(self):
-        metadata = NullMetadataProvider().lookup("Example")
-        self.assertFalse(metadata["availability_verified"])
-        self.assertEqual(metadata["availability"], [])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            self.assertEqual(metadata_module._generate_poster_image("Título", 2020, [], "filme"), "")
+
+    def test_wikipedia_poster_uses_the_summary_thumbnail(self):
+        import metadata as metadata_module
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"type": "standard", "thumbnail": {"source": "https://upload.wikimedia.org/poster.jpg"}}).encode("utf-8")
+
+        with patch("metadata.urllib.request.urlopen", lambda request, timeout=None: FakeResponse()):
+            image = metadata_module._wikipedia_poster("The Lighthouse", "O Farol", 2019, "filme")
+        self.assertEqual(image, "https://upload.wikimedia.org/poster.jpg")
+
+    def test_wikipedia_disambiguation_pages_are_skipped(self):
+        import metadata as metadata_module
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"type": "disambiguation"}).encode("utf-8")
+
+        with patch("metadata.urllib.request.urlopen", lambda request, timeout=None: FakeResponse()):
+            image = metadata_module._wikipedia_poster("Ambiguous Title", "", 0, "filme")
+        self.assertEqual(image, "")
 
     # -----------------------------------------------------------------
     # Roteador único (uma função serverless serve todo o /api)

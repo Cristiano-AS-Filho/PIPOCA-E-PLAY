@@ -161,3 +161,29 @@ Como o modelo pode errar mesmo com um link de forma válida, o front-end (`publi
 `python3 -m unittest test_app` — 86 testes verdes, incluindo o pôster do motor sendo aceito sem TMDB, um valor sem forma de URL de imagem sendo descartado, e o TMDB sobrescrevendo o pôster do motor quando encontra o título.
 
 Em Chromium (Playwright), com uma resposta do motor simulada contendo `poster_url` e sem `TMDB_API_KEY`: confirmado via `/api/history` que a indicação salva carrega `poster_source: "model"`; com o link do pôster interceptado e respondido com uma imagem real, o card passou a exibi-lo após o carregamento (antes e depois checados via `background-image` no DOM); sem essa interceptação (rede real bloqueada no sandbox), o card permaneceu no gradiente em vez de mostrar uma imagem quebrada.
+
+## Rodada 8 — remove o TMDB; pôster nunca mais fica vazio
+
+### Diagnóstico
+
+O pedido foi direto: o projeto não terá `TMDB_API_KEY` disponível, e o pôster deve vir **unicamente** da própria chamada do motor — nunca vazio, gerando uma imagem ou buscando na internet quando necessário. Uma busca real por imagem no Google exigiria uma chave própria da API do Google (Custom Search), o que reintroduziria exatamente o problema que o pedido queria evitar (uma chave que o projeto não vai ter). A alternativa combinada com o usuário: tentar uma imagem real e gratuita na Wikipedia (API pública, sem chave) antes de gerar qualquer coisa por IA, e só gerar como último recurso — sempre rotulado como capa ilustrativa, nunca como o pôster oficial.
+
+### Correções aplicadas
+
+`TMDBMetadataProvider`, `NullMetadataProvider`, `ContentMetadataProvider` e `get_metadata_provider` foram removidos de `metadata.py` — não há mais nenhum catálogo externo nem chave associada. `TMDB_API_KEY` saiu do `.env.example`, do README e de qualquer variável lida pelo backend.
+
+`metadata.py` ganhou `resolve_poster`, chamada por `enrich_result` para cada indicação, nesta ordem:
+
+1. **O link do próprio motor** (`poster_url` do schema, já pedido desde a Rodada 7), validado só na forma.
+2. **Wikipedia/Wikimedia** (`_wikipedia_poster` → API REST pública `page/summary`, sem chave): tenta o título original e o em português, com sufixos de desambiguação (`(TV series)`, `(<ano> film)`, `(film)`), e descarta páginas de desambiguação.
+3. **Geração por IA** (`_generate_poster_image`, último recurso): chama `POST /v1/images/generations` da própria conta OpenAI já usada pelo motor (mesma `OPENAI_API_KEY`, nenhuma chave nova) pedindo uma arte de capa sem texto, título ou logotipo, e sem representar atores reais; devolve uma `data:image/png;base64,...` embutida na própria resposta.
+
+`poster_source` acompanha a origem (`"model"`, `"wikipedia"`, `"generated"` ou `""` só se as três tentativas falharem — o que só acontece sem `OPENAI_API_KEY`, que já é obrigatória para a plataforma existir). Como a disponibilidade em streaming também dependia do TMDB para ser "confirmada", `where_to_watch` deixou de ser sempre zerado sem uma fonte externa: agora mantém o que o próprio motor respondeu (já era isso que o prompt pedia), só marcado como não confirmado.
+
+No front-end (`public/app.html`), pôster de fonte `"wikipedia"` ou `"generated"` é exibido direto (o backend já confirmou a imagem antes de devolver); só `"model"` continua passando pela validação assíncrona no navegador (`verifyPoster`/`trustedPosterUrl`) antes de aparecer, porque é a única fonte que o próprio motor pode ter errado sem qualquer confirmação. Uma capa gerada por IA ganhou um selo "Capa ilustrativa (gerada por IA)" sobre o pôster, para nunca ser confundida com a arte oficial.
+
+### Validação
+
+`python3 -m unittest test_app` — 87 testes verdes: a cadeia completa (motor → Wikipedia → geração) testada isoladamente em cada camada, incluindo a chamada real ao endpoint de geração de imagem com `urlopen` simulado, a leitura do resumo da Wikipedia e o descarte de páginas de desambiguação, e a garantia de que o pôster só fica vazio se as três fontes falharem.
+
+Fluxo completo em Chromium (Playwright) contra o servidor local, com `_wikipedia_poster` e `_generate_poster_image` simulados (a rede real para Wikipedia e OpenAI está bloqueada neste ambiente de sandbox): a indicação sem link do motor recebeu o pôster da Wikipedia e a indicação sem nenhuma das duas recebeu a capa gerada (uma imagem real embutida em base64, que carregou de verdade no navegador) — ambas exibidas **imediatamente**, sem a espera de validação que só o pôster de fonte `"model"` tem; o selo "Capa ilustrativa" apareceu somente sobre a capa gerada; e `/api/history` confirmou `poster_source` correto (`"model"`, `"wikipedia"`, `"generated"`) para cada uma das três indicações.

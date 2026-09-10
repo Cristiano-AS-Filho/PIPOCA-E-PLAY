@@ -12,7 +12,7 @@ A pergunta **"onde pretende assistir"** aceita **mais de uma marcação**: o cli
 
 Cada indicação mostra as notas de **nove fontes de avaliação**: IMDb, Rotten Tomatoes (crítica e público), Metacritic, Google, TMDB, Letterboxd, AdoroCinema e Mercado Livre Filmes. Cada fonte tem a sua própria escala, e a fonte que o motor não souber com segurança volta como `0` e simplesmente não vira pílula na tela — nunca uma nota estimada. O bloco "conferir na fonte" leva a esses mesmos serviços.
 
-O enriquecimento factual é separado da IA. Quando `TMDB_API_KEY` está configurada, o adaptador consulta posters, backdrops, duração, gêneros, disponibilidade no Brasil e a nota do próprio TMDB, que **prevalece sobre a nota lembrada pelo modelo**. Sem essa chave, o sistema informa explicitamente que a disponibilidade não foi confirmada e oferece os links de conferência; o modelo nunca é tratado como banco de dados.
+O projeto não usa nenhum catálogo externo (TMDB e afins): a disponibilidade em streaming vem inteiramente do que o próprio motor respondeu, sempre marcada como não confirmada, com os links de "conferir na fonte" ao lado. O pôster nunca fica vazio, mas também não depende de nenhuma chave extra: primeiro tenta o link que o motor indicou (validado e testado no navegador antes de aparecer, para nunca exibir uma imagem quebrada); sem um link que funcione, busca uma imagem real e gratuita na Wikipedia; só como último recurso gera uma capa ilustrativa por IA — que a tela rotula como tal, nunca como o pôster oficial.
 
 Qual motor de IA está por trás da curadoria é **informação interna**: nenhuma tela — nem a de resultado, nem a de erro — nomeia o provedor. As mensagens de falha descrevem o problema como "motor de recomendação", e o detalhe técnico fica apenas no encadeamento da exceção, nos logs do servidor.
 
@@ -106,7 +106,7 @@ A conexão direta (`db.<ref-do-projeto>.supabase.co:5432`, mostrada na aba "URI"
 2. Mantenha `ENVIRONMENT` diferente de `production` para executar localmente. O admin de desenvolvimento usa `admin@pipocaplay.com` / `admin123`; troque esses valores antes de qualquer uso real.
 3. Defina `AUTH_SECRET`, `ADMIN_EMAIL` e `ADMIN_PASSWORD` com valores privados e fortes. Não publique `.env`.
 4. Em desenvolvimento, `USER_STORE_FILE=data/users.json` cria a base local automaticamente.
-5. Defina `OPENAI_API_KEY` e, se disponível, `TMDB_API_KEY`.
+5. Defina `OPENAI_API_KEY` — é a única chave que a plataforma exige.
 6. Execute `python3 server.py` dentro desta pasta.
 7. Abra `http://127.0.0.1:8000` para a plataforma e `http://127.0.0.1:8000/admin` para o painel.
 
@@ -160,7 +160,6 @@ O arquivo `vercel.json` e a função em `api/index.py` deixam o repositório pro
 | `ASAAS_API_KEY` | Sim | Chave da Asaas; sem ela ninguém consegue assinar. |
 | `ASAAS_ENV` | Não | `sandbox` ou `production`; em branco, deduzido pela chave. |
 | `ASAAS_WEBHOOK_TOKEN` | Recomendada | Mesmo token do webhook na Asaas; protege `/api/billing/webhook`. |
-| `TMDB_API_KEY` | Não | Habilita enriquecimento de catálogo e disponibilidade no Brasil. |
 | `ENVIRONMENT=production` | Recomendada | Desativa credenciais padrão de desenvolvimento e ativa cookies seguros. |
 
 O cadastro de clientes segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão, e só quem tem assinatura confirmada pela Asaas e crédito disponível no dia consegue usar o motor de recomendação. Toda rota administrativa exige uma sessão com papel `admin`. Depois do deploy, confira `GET /api/health`: se `storage.persistent` vier `false`, o banco ainda não está conectado. Recuperação de senha pelo próprio cliente, e-mail transacional e auditoria de ações administrativas permanecem como evoluções futuras.

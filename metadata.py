@@ -1,185 +1,166 @@
-"""Camada de enriquecimento de conteúdo.
+"""Resolução do pôster de cada indicação.
 
-O MVP funciona sem chave de catálogo, mas quando TMDB_API_KEY está configurada
-esta camada substitui os campos factuais sensíveis por dados obtidos de uma fonte
-externa. O modelo não é tratado como banco de dados.
+O projeto não tem (nem terá) uma chave de catálogo como o TMDB: o pôster
+nunca fica vazio, mas sem depender de nenhuma chave além da já obrigatória
+da OpenAI. A ordem de tentativa é sempre esta:
+
+1. O link que o próprio motor (ChatGPT) indicar na resposta, validado só na
+   forma (precisa parecer de fato uma URL de imagem) — o modelo pode errar
+   o link, então o front-end ainda testa se a imagem carrega antes de
+   exibi-la.
+2. Uma imagem real e gratuita da Wikipedia/Wikimedia, buscada pelo título
+   (API pública, sem chave).
+3. Como último recurso, uma capa ilustrativa gerada por IA, na mesma conta
+   da OpenAI já usada pelo motor. Nunca é a arte oficial do título, por isso
+   `poster_source` chega como "generated" para a tela rotular como tal.
+
+Disponibilidade em streaming não tem mais uma fonte externa que a confirme:
+o campo `where_to_watch` que o motor preencheu é mantido como está, apenas
+marcado como não confirmado.
 """
+
+from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 
-IMAGE_BASE = "https://image.tmdb.org/t/p/w780"
-
-
-class ContentMetadataProvider:
-    def lookup(self, title_original: str, title_pt: str = "", year: int = 0, content_type: str = "filme"):
-        raise NotImplementedError
-
-
-class NullMetadataProvider(ContentMetadataProvider):
-    def lookup(self, title_original: str, title_pt: str = "", year: int = 0, content_type: str = "filme"):
-        return {
-            "images": {"poster": "", "backdrop": ""},
-            "availability": [],
-            "ratings": {},
-            "metadata_source": "Fonte externa não configurada",
-            "availability_verified": False,
-        }
-
-
-class TMDBMetadataProvider(ContentMetadataProvider):
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-
-    def _get(self, path: str, params: dict):
-        query = {"api_key": self.api_key, **params}
-        url = "https://api.themoviedb.org/3" + path + "?" + urllib.parse.urlencode(query)
-        request = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(request, timeout=8) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-    def lookup(self, title_original: str, title_pt: str = "", year: int = 0, content_type: str = "filme"):
-        # Séries e filmes vivem em endpoints diferentes no TMDB: buscar série na
-        # rota de filmes traria o pôster errado (ou nenhum).
-        is_series = str(content_type).lower().startswith("seri")
-        search_path = "/search/tv" if is_series else "/search/movie"
-        detail_path = "/tv" if is_series else "/movie"
-        year_param = "first_air_date_year" if is_series else "year"
-
-        query = title_original or title_pt
-        if not query:
-            return NullMetadataProvider().lookup(title_original, title_pt, year, content_type)
-        params = {"query": query, "language": "pt-BR", "include_adult": "false"}
-        if year:
-            params[year_param] = year
-        data = self._get(search_path, params)
-        results = data.get("results") or []
-        if not results and title_pt and title_pt != title_original:
-            data = self._get(search_path, {"query": title_pt, "language": "pt-BR", "include_adult": "false"})
-            results = data.get("results") or []
-        if not results:
-            return NullMetadataProvider().lookup(title_original, title_pt, year, content_type)
-
-        movie = results[0]
-        movie_id = movie.get("id")
-        details = self._get(f"{detail_path}/{movie_id}", {"language": "pt-BR", "append_to_response": "watch/providers,external_ids"})
-        providers = (details.get("watch/providers") or {}).get("results", {}).get("BR", {})
-        availability = []
-        for item in providers.get("flatrate", []) or []:
-            if item.get("provider_name"):
-                availability.append({"platform": item["provider_name"], "type": "subscription", "url": providers.get("link", "")})
-        for item in providers.get("rent", []) or []:
-            if item.get("provider_name"):
-                availability.append({"platform": item["provider_name"], "type": "rent", "url": providers.get("link", "")})
-        for item in providers.get("buy", []) or []:
-            if item.get("provider_name"):
-                availability.append({"platform": item["provider_name"], "type": "buy", "url": providers.get("link", "")})
-
-        genres = [genre.get("name", "") for genre in details.get("genres", []) if genre.get("name")]
-        if is_series:
-            original_title = details.get("original_name") or title_original
-            local_title = details.get("name") or title_pt
-            first_air = details.get("first_air_date") or "0"
-            episode_runtimes = [item for item in (details.get("episode_run_time") or []) if item]
-            runtime = int(episode_runtimes[0]) if episode_runtimes else 0
-            seasons = int(details.get("number_of_seasons") or 0)
-        else:
-            original_title = details.get("original_title") or title_original
-            local_title = details.get("title") or title_pt
-            first_air = details.get("release_date") or "0"
-            runtime = int(details.get("runtime") or 0)
-            seasons = 0
-        return {
-            "images": {
-                "poster": (IMAGE_BASE + movie["poster_path"]) if movie.get("poster_path") else "",
-                "backdrop": (IMAGE_BASE + movie["backdrop_path"]) if movie.get("backdrop_path") else "",
-            },
-            "title_original": original_title,
-            "title_pt": local_title,
-            "year": int(first_air[:4] or 0),
-            "runtime_minutes": runtime,
-            "seasons": seasons,
-            "genres": genres[:3],
-            "synopsis": details.get("overview") or "",
-            "availability": availability[:6],
-            # A nota do TMDB vem da própria fonte externa, nunca do modelo.
-            "ratings": {"tmdb": round(float(details.get("vote_average") or 0), 1)},
-            "metadata_source": "TMDB",
-            "availability_verified": bool(availability),
-        }
-
-
-def get_metadata_provider() -> ContentMetadataProvider:
-    key = os.environ.get("TMDB_API_KEY", "").strip()
-    return TMDBMetadataProvider(key) if key else NullMetadataProvider()
-
-
 POSTER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+MAX_DATA_URI_LENGTH = 6_000_000  # ~4,5 MB de imagem em base64
+MAX_HTTP_URL_LENGTH = 500
 
 
-def _clean_model_poster_url(value) -> str:
-    """Aceita o pôster que o próprio motor (ChatGPT) indicou, com uma checagem
-    de forma mínima. Isto não confirma que a imagem existe — o modelo pode
-    errar ou inventar um link — então o front-end ainda testa se ela carrega
-    antes de exibir; aqui só descartamos o que já chega claramente inválido."""
+def _looks_like_image_url(value) -> str:
+    """Só aceita uma URL com forma plausível de imagem; o resto vira vazio."""
     url = str(value or "").strip()
-    if not url.startswith(("http://", "https://")) or len(url) > 500:
+    if url.startswith("data:image/"):
+        return url if len(url) <= MAX_DATA_URI_LENGTH else ""
+    if url.startswith(("http://", "https://")) and len(url) <= MAX_HTTP_URL_LENGTH:
+        path = url.split("?", 1)[0].split("#", 1)[0].lower()
+        if path.endswith(POSTER_EXTENSIONS):
+            return url
+    return ""
+
+
+def _wikipedia_summary_image(title: str) -> str:
+    if not title:
         return ""
-    path = url.split("?", 1)[0].split("#", 1)[0].lower()
-    return url if path.endswith(POSTER_EXTENSIONS) else ""
+    url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(title.replace(" ", "_"))
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": "PipocaPlay/1.0 (busca de pôster)"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=6) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(data, dict) or data.get("type") == "disambiguation":
+        return ""
+    thumbnail = (data.get("thumbnail") or {}).get("source", "")
+    original = (data.get("originalimage") or {}).get("source", "")
+    return _looks_like_image_url(thumbnail) or _looks_like_image_url(original)
+
+
+def _wikipedia_poster(title_original: str, title_pt: str, year, content_type: str) -> str:
+    """Tenta achar uma imagem real e gratuita na Wikipedia para o título."""
+    is_series = str(content_type).lower().startswith("seri")
+    year = int(year or 0)
+    candidates = []
+    for base in (title_original, title_pt):
+        base = str(base or "").strip()
+        if not base:
+            continue
+        if is_series:
+            candidates.append(f"{base} (TV series)")
+        else:
+            if year:
+                candidates.append(f"{base} ({year} film)")
+            candidates.append(f"{base} (film)")
+        candidates.append(base)
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        image = _wikipedia_summary_image(candidate)
+        if image:
+            return image
+    return ""
+
+
+def _generate_poster_image(title: str, year, genres, content_type: str) -> str:
+    """Último recurso: uma capa ilustrativa gerada pela mesma conta da OpenAI
+    já usada pelo motor de recomendação. Nunca é a arte oficial do título."""
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key or not title:
+        return ""
+    kind = "série de TV" if str(content_type).lower().startswith("seri") else "filme"
+    genre_hint = ", ".join([str(g) for g in (genres or []) if g][:2]) or "drama"
+    year_hint = f" ({int(year)})" if year else ""
+    prompt = (
+        f'Arte de capa ilustrativa e original, estilo pôster de cinema, inspirada no clima '
+        f'do {kind} "{title}"{year_hint}, gênero {genre_hint}. Composição vertical, cores '
+        "fortes, cena atmosférica. Não inclua nenhum texto, título, letra ou logotipo na imagem "
+        "— represente o clima da obra, não seus personagens ou atores reais."
+    )
+    payload = {"model": "gpt-image-1", "prompt": prompt, "size": "1024x1536", "quality": "low", "n": 1}
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/images/generations",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=55) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return ""
+    items = result.get("data") or []
+    b64 = items[0].get("b64_json", "") if items else ""
+    return f"data:image/png;base64,{b64}" if b64 else ""
+
+
+def resolve_poster(recommendation: dict) -> tuple[str, str]:
+    """Devolve ``(poster_url, poster_source)``, tentando cada fonte na ordem
+    do módulo até achar uma imagem — nunca fica vazio quando a OpenAI está
+    configurada (o requisito mínimo do resto da aplicação)."""
+    candidate = _looks_like_image_url(recommendation.get("poster_url"))
+    if candidate:
+        return candidate, "model"
+
+    wiki = _wikipedia_poster(
+        recommendation.get("title_original", ""),
+        recommendation.get("title_pt", ""),
+        recommendation.get("year", 0),
+        recommendation.get("content_type", "filme"),
+    )
+    if wiki:
+        return wiki, "wikipedia"
+
+    generated = _generate_poster_image(
+        recommendation.get("title_pt") or recommendation.get("title_original", ""),
+        recommendation.get("year", 0),
+        recommendation.get("genres"),
+        recommendation.get("content_type", "filme"),
+    )
+    return (generated, "generated") if generated else ("", "")
 
 
 def enrich_result(result: dict) -> dict:
-    provider = get_metadata_provider()
+    """Resolve o pôster de cada indicação. Sem catálogo externo (TMDB foi
+    removido do projeto), o restante dos campos vem inteiramente do motor —
+    disponibilidade nunca é tratada como confirmada por uma fonte externa."""
     for recommendation in result.get("recommendations", []):
-        try:
-            metadata = provider.lookup(
-                recommendation.get("title_original", ""),
-                recommendation.get("title_pt", ""),
-                recommendation.get("year", 0),
-                recommendation.get("content_type", "filme"),
-            )
-        except Exception:
-            metadata = NullMetadataProvider().lookup(
-                recommendation.get("title_original", ""),
-                recommendation.get("title_pt", ""),
-                recommendation.get("year", 0),
-                recommendation.get("content_type", "filme"),
-            )
-        ratings = recommendation.get("ratings")
-        if not isinstance(ratings, dict):
-            ratings = {}
-        # Nota vinda de fonte externa vale mais que a nota lembrada pelo modelo.
-        for source, value in (metadata.get("ratings") or {}).items():
-            if value:
-                ratings[source] = value
-        recommendation["ratings"] = ratings
-        # O TMDB, quando configurado, é a fonte mais confiável. Sem TMDB (ou
-        # sem resultado para o título), usamos o pôster que o próprio motor
-        # indicou — poster_source avisa o front-end que essa URL ainda não
-        # foi confirmada por uma fonte externa.
-        poster_from_source = metadata["images"].get("poster", "")
-        if poster_from_source:
-            recommendation["poster_url"] = poster_from_source
-            recommendation["poster_source"] = "tmdb"
-        else:
-            candidate = _clean_model_poster_url(recommendation.get("poster_url"))
-            recommendation["poster_url"] = candidate
-            recommendation["poster_source"] = "model" if candidate else ""
-        recommendation["backdrop_url"] = metadata["images"].get("backdrop", "")
-        recommendation["metadata_source"] = metadata.get("metadata_source", "")
-        recommendation["availability_verified"] = metadata.get("availability_verified", False)
-        recommendation["availability_note"] = "" if metadata.get("availability_verified") else "Disponibilidade não confirmada no momento."
-        if metadata.get("availability"):
-            recommendation["where_to_watch"] = [
-                {"platform": item["platform"], "type": item["type"]} for item in metadata["availability"] if item.get("platform")
-            ]
-        else:
+        if not isinstance(recommendation.get("ratings"), dict):
+            recommendation["ratings"] = {}
+        if not isinstance(recommendation.get("where_to_watch"), list):
             recommendation["where_to_watch"] = []
-        for key in ("title_original", "title_pt", "year", "runtime_minutes", "seasons", "genres", "synopsis"):
-            value = metadata.get(key)
-            if value not in (None, "", 0, []):
-                recommendation[key] = value
+
+        poster_url, poster_source = resolve_poster(recommendation)
+        recommendation["poster_url"] = poster_url
+        recommendation["poster_source"] = poster_source
+        recommendation["availability_verified"] = False
+        recommendation["availability_note"] = "Disponibilidade não confirmada no momento."
     return result
