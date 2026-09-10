@@ -116,6 +116,21 @@ def get_metadata_provider() -> ContentMetadataProvider:
     return TMDBMetadataProvider(key) if key else NullMetadataProvider()
 
 
+POSTER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _clean_model_poster_url(value) -> str:
+    """Aceita o pôster que o próprio motor (ChatGPT) indicou, com uma checagem
+    de forma mínima. Isto não confirma que a imagem existe — o modelo pode
+    errar ou inventar um link — então o front-end ainda testa se ela carrega
+    antes de exibir; aqui só descartamos o que já chega claramente inválido."""
+    url = str(value or "").strip()
+    if not url.startswith(("http://", "https://")) or len(url) > 500:
+        return ""
+    path = url.split("?", 1)[0].split("#", 1)[0].lower()
+    return url if path.endswith(POSTER_EXTENSIONS) else ""
+
+
 def enrich_result(result: dict) -> dict:
     provider = get_metadata_provider()
     for recommendation in result.get("recommendations", []):
@@ -141,7 +156,18 @@ def enrich_result(result: dict) -> dict:
             if value:
                 ratings[source] = value
         recommendation["ratings"] = ratings
-        recommendation["poster_url"] = metadata["images"].get("poster", "")
+        # O TMDB, quando configurado, é a fonte mais confiável. Sem TMDB (ou
+        # sem resultado para o título), usamos o pôster que o próprio motor
+        # indicou — poster_source avisa o front-end que essa URL ainda não
+        # foi confirmada por uma fonte externa.
+        poster_from_source = metadata["images"].get("poster", "")
+        if poster_from_source:
+            recommendation["poster_url"] = poster_from_source
+            recommendation["poster_source"] = "tmdb"
+        else:
+            candidate = _clean_model_poster_url(recommendation.get("poster_url"))
+            recommendation["poster_url"] = candidate
+            recommendation["poster_source"] = "model" if candidate else ""
         recommendation["backdrop_url"] = metadata["images"].get("backdrop", "")
         recommendation["metadata_source"] = metadata.get("metadata_source", "")
         recommendation["availability_verified"] = metadata.get("availability_verified", False)

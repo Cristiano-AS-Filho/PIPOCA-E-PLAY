@@ -198,6 +198,41 @@ class PipocaPlayTests(unittest.TestCase):
             enriched = enrich_result(result)
         self.assertEqual(enriched["recommendations"][0]["ratings"], {"imdb": 8.1})
 
+    def test_engine_poster_is_used_without_tmdb(self):
+        """Sem TMDB configurado, o pôster vem da própria chamada do motor (ChatGPT)."""
+        result = {"recommendations": [{
+            "title_original": "Example",
+            "poster_url": "https://image.tmdb.org/t/p/w500/abc123.jpg",
+        }]}
+        with patch("metadata.get_metadata_provider", NullMetadataProvider):
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "https://image.tmdb.org/t/p/w500/abc123.jpg")
+        self.assertEqual(item["poster_source"], "model")
+
+    def test_engine_poster_is_discarded_when_it_does_not_look_like_an_image(self):
+        result = {"recommendations": [{"title_original": "Example", "poster_url": "não sei o link"}]}
+        with patch("metadata.get_metadata_provider", NullMetadataProvider):
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "")
+        self.assertEqual(item["poster_source"], "")
+
+    def test_tmdb_poster_overrides_the_engine_poster_when_available(self):
+        class _PosterFromTMDB(NullMetadataProvider):
+            def lookup(self, *args, **kwargs):
+                return {**super().lookup(*args, **kwargs), "images": {"poster": "https://image.tmdb.org/t/p/w500/real.jpg", "backdrop": ""}}
+
+        result = {"recommendations": [{
+            "title_original": "Example",
+            "poster_url": "https://exemplo-inventado.com/poster.jpg",
+        }]}
+        with patch("metadata.get_metadata_provider", _PosterFromTMDB):
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "https://image.tmdb.org/t/p/w500/real.jpg")
+        self.assertEqual(item["poster_source"], "tmdb")
+
     def test_validate_requires_exactly_three_ordered_recommendations(self):
         item = {
             "rank": 1,

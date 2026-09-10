@@ -139,3 +139,25 @@ Os cards de resultado (tela de busca e histórico) ganharam um parágrafo de **S
 Fluxo completo em Chromium (Playwright), servidor local com um motor de recomendação simulado: login, oito perguntas, card exibindo sinopse e o destaque de premiação, aba Histórico mostrando a busca; um **segundo contexto de navegador**, com `localStorage` vazio e a mesma sessão, abriu a aba Histórico e viu a mesma busca — confirmando que a lista agora vem da conta, não do navegador. Apagar pelo card removeu o item também via `/api/history`. Sem console de erros JavaScript em nenhuma etapa.
 
 Pôster: a amarração `poster_url → background-image` foi confirmada (o estilo chega ao DOM com a URL do TMDB); a imagem não teve como carregar no sandbox de teste, sem saída de rede — isso é esperado ali e não indica um problema de código. Em produção, sem imagem no pôster o motivo mais provável é `TMDB_API_KEY` ausente nas variáveis de ambiente da Vercel.
+
+## Rodada 7 — pôster também sai da própria chamada do motor (ChatGPT)
+
+### Diagnóstico
+
+O pedido foi explícito: o pôster não deveria depender de `TMDB_API_KEY` — deveria vir da própria chamada da API do ChatGPT. Antes desta rodada, `poster_url` só existia como campo *derivado* em `metadata.py`; o schema de `recommender.py` nunca pedia ao modelo uma URL de imagem, então sem TMDB configurado o pôster ficava sempre vazio, por desenho.
+
+O risco de pedir isso ao modelo é conhecido: uma LLM de texto pode "lembrar" uma URL de imagem que parece plausível mas não existe ou não carrega — diferente de avaliações e disponibilidade, aqui o preço de errar é só visual (um pôster que não aparece), não um dado incorreto exibido como fato.
+
+### Correções aplicadas
+
+`recommender.py` passou a exigir `poster_url` no schema de cada indicação (`RECOMMENDATION_SCHEMA`) e o prompt ganhou uma instrução dedicada (`_poster_prompt_line`): preencher com um link direto e público (`.jpg`/`.jpeg`/`.png`/`.webp`) só quando o modelo tiver certeza de que é real, e deixar vazio caso contrário — a proibição geral de "não invente URLs" foi restrita ao pôster, com a mesma exigência de honestidade.
+
+`metadata.py` (`enrich_result`) continua preferindo o TMDB quando `TMDB_API_KEY` está configurada e o título é encontrado (`poster_source: "tmdb"`); sem isso, usa o `poster_url` que o próprio motor indicou, com uma checagem de forma mínima (`_clean_model_poster_url`: precisa começar com `http(s)://` e terminar em extensão de imagem) e marca `poster_source: "model"`.
+
+Como o modelo pode errar mesmo com um link de forma válida, o front-end (`public/app.html`) nunca exibe um pôster de fonte `"model"` direto: `verifyPoster` carrega a imagem de verdade num `Image()` do navegador antes de confiar nela (`trustedPosterUrl`), e só troca o gradiente pela imagem depois que ela carregar — nunca aparece um ícone de imagem quebrada. Pôster de fonte `"tmdb"` (já confirmado por uma fonte externa) continua sendo exibido direto, sem essa espera.
+
+### Validação
+
+`python3 -m unittest test_app` — 86 testes verdes, incluindo o pôster do motor sendo aceito sem TMDB, um valor sem forma de URL de imagem sendo descartado, e o TMDB sobrescrevendo o pôster do motor quando encontra o título.
+
+Em Chromium (Playwright), com uma resposta do motor simulada contendo `poster_url` e sem `TMDB_API_KEY`: confirmado via `/api/history` que a indicação salva carrega `poster_source: "model"`; com o link do pôster interceptado e respondido com uma imagem real, o card passou a exibi-lo após o carregamento (antes e depois checados via `background-image` no DOM); sem essa interceptação (rede real bloqueada no sandbox), o card permaneceu no gradiente em vez de mostrar uma imagem quebrada.

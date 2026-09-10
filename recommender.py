@@ -101,7 +101,7 @@ RECOMMENDATION_SCHEMA = {
                     "rank", "content_type", "title_original", "title_pt", "year",
                     "runtime_minutes", "seasons", "age_rating_br", "genres", "vibe_tags",
                     "synopsis", "why_it_matches", "match_score", "ratings", "awards",
-                    "where_to_watch",
+                    "where_to_watch", "poster_url",
                 ],
                 "properties": {
                     "rank": {"type": "integer", "minimum": 1, "maximum": 3},
@@ -126,6 +126,7 @@ RECOMMENDATION_SCHEMA = {
                             "highlight": {"type": "string"},
                         },
                     },
+                    "poster_url": {"type": "string"},
                     "where_to_watch": {
                         "type": "array",
                         "items": {
@@ -292,6 +293,16 @@ def build_platform_section(platform_value):
     )
 
 
+def _poster_prompt_line():
+    return (
+        "Preencha poster_url com o link direto e público da imagem do pôster oficial do título "
+        "(terminado em .jpg, .jpeg, .png ou .webp — por exemplo, um link no formato "
+        "https://image.tmdb.org/t/p/w500/<caminho>.jpg, ou uma imagem de capa hospedada pela "
+        "Wikipedia/Wikimedia). Só preencha quando tiver certeza de que o link é real e funciona; "
+        "caso contrário, deixe poster_url como string vazia — nunca invente um link de imagem."
+    )
+
+
 def buildRecommendationPrompt(filters, feedback=None):
     return f"""Atue como um especialista em cinema e séries, recomendador personalizado para o público brasileiro. Responda em pt-BR.
 
@@ -315,7 +326,9 @@ Selecione exatamente três títulos reais do tipo pedido, ordenados da maior par
 
 {_ratings_prompt_line()}
 
-Não invente avaliações, plataformas, disponibilidade, URLs, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado.{build_feedback_section(feedback)}"""
+{_poster_prompt_line()}
+
+Não invente avaliações, plataformas, disponibilidade, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado.{build_feedback_section(feedback)}"""
 
 
 def validate_recommendation_payload(payload):
