@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -15,6 +16,11 @@ from metadata import enrich_result
 
 
 CONTENT_TYPE_OPTIONS = ("Filme", "Série", "Mesclar (filmes e séries)")
+
+# A função serverless que serve /api morre aos 60s (``vercel.json``). Este é o
+# tempo total que a chamada tem para responder o motor e coletar os pôsteres:
+# o que sobrar depois da resposta do motor é o prazo da coleta de imagens.
+REQUEST_BUDGET_SECONDS = 52
 
 OFFICIAL_FILTER_OPTIONS = {
     "content_type": set(CONTENT_TYPE_OPTIONS),
@@ -294,12 +300,23 @@ def build_platform_section(platform_value):
 
 
 def _poster_prompt_line():
+    """Instrução do pôster.
+
+    O servidor confere o endereço antes de exibi-lo e troca de fonte quando ele
+    não responde (ver ``metadata.py``), então aqui pedimos o melhor link que o
+    modelo conhecer em vez de pedir silêncio na dúvida: um link errado não custa
+    nada, um campo vazio custa a única fonte que sabe o pôster do título.
+    """
     return (
-        "Preencha poster_url com o link direto e público da imagem do pôster oficial do título "
-        "(terminado em .jpg, .jpeg, .png ou .webp — por exemplo, um link no formato "
-        "https://image.tmdb.org/t/p/w500/<caminho>.jpg, ou uma imagem de capa hospedada pela "
-        "Wikipedia/Wikimedia). Só preencha quando tiver certeza de que o link é real e funciona; "
-        "caso contrário, deixe poster_url como string vazia — nunca invente um link de imagem."
+        "Preencha poster_url com o link direto e público do arquivo de imagem do pôster oficial "
+        "do título, sempre em https e terminado em .jpg, .jpeg, .png ou .webp — por exemplo, um "
+        "link no formato https://image.tmdb.org/t/p/w500/<caminho>.jpg ou o arquivo de capa "
+        "hospedado em https://upload.wikimedia.org/<caminho>.jpg. Precisa ser o endereço da "
+        "imagem em si: nunca uma página HTML, um resultado de busca, um link de vídeo ou o "
+        "endereço da página do filme. O servidor testa o endereço antes de exibi-lo e busca outra "
+        "fonte sozinho quando ele não responde, então indique o melhor link que você conhecer "
+        "para aquele título em vez de deixar o campo vazio; use string vazia só quando não "
+        "conhecer nenhum endereço de imagem para ele."
     )
 
 
@@ -393,6 +410,7 @@ def call_openai(filters, feedback=None):
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=45) as response:
             result = json.loads(response.read().decode("utf-8"))
@@ -416,5 +434,6 @@ def call_openai(filters, feedback=None):
         structured = validate_recommendation_payload(json.loads(text))
     except (json.JSONDecodeError, TypeError, ValueError) as error:
         raise RuntimeError("O motor de recomendação retornou um JSON inválido.") from error
-    enriched = enrich_result(structured)
+    # O pôster é coletado com o tempo que sobrou da requisição.
+    enriched = enrich_result(structured, deadline=started + REQUEST_BUDGET_SECONDS)
     return json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))

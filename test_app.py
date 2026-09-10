@@ -1,6 +1,8 @@
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -167,6 +169,16 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(ratings["properties"]["google_users"]["maximum"], 100)
         self.assertEqual(ratings["properties"]["mercado_livre_filmes"]["maximum"], 5)
 
+    def test_prompt_asks_the_engine_for_the_poster_image_address(self):
+        """O pôster é coletado da própria resposta do motor: o prompt pede o link."""
+        prompt = buildRecommendationPrompt(FILTERS)
+        self.assertIn("Preencha poster_url com o link direto e público do arquivo de imagem", prompt)
+        self.assertIn("sempre em https", prompt)
+        self.assertIn("nunca uma página HTML", prompt)
+        # O servidor confere o link, então o modelo não precisa se calar na dúvida.
+        self.assertIn("em vez de deixar o campo vazio", prompt)
+        self.assertIn("poster_url", RECOMMENDATION_SCHEMA["properties"]["recommendations"]["items"]["required"])
+
     def test_prompt_lists_every_rating_source_with_its_own_scale(self):
         prompt = buildRecommendationPrompt(FILTERS)
         for label, scale in (("IMDb", 10), ("Google (% de usuários que gostaram)", 100), ("Mercado Livre Filmes", 5)):
@@ -186,11 +198,83 @@ class PipocaPlayTests(unittest.TestCase):
             "title_original": "Example",
             "poster_url": "https://image.tmdb.org/t/p/w500/abc123.jpg",
         }]}
-        with patch("metadata._wikipedia_poster") as wiki, patch("metadata._generate_poster_image") as gen:
+        with patch("metadata._image_responds", return_value=True) as probe, \
+             patch("metadata._wikipedia_poster") as wiki, \
+             patch("metadata._generate_poster_image") as gen:
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
         self.assertEqual(item["poster_url"], "https://image.tmdb.org/t/p/w500/abc123.jpg")
         self.assertEqual(item["poster_source"], "model")
+        # A coleta confirma o endereço antes de aceitá-lo como pôster.
+        self.assertEqual(probe.call_args[0][0], "https://image.tmdb.org/t/p/w500/abc123.jpg")
+        wiki.assert_not_called()
+        gen.assert_not_called()
+
+    def test_engine_poster_that_does_not_answer_gives_way_to_the_next_source(self):
+        """O link do motor tem forma de imagem mas está morto: a coleta segue.
+
+        Sem esta checagem no servidor, um link inventado vencia as fontes que
+        funcionam e o cartão do usuário ficava sem pôster nenhum.
+        """
+        result = {"recommendations": [{
+            "title_original": "Example",
+            "poster_url": "https://image.tmdb.org/t/p/w500/inventado.jpg",
+        }]}
+        with patch("metadata._image_responds", return_value=False), \
+             patch("metadata._wikipedia_poster", return_value="https://upload.wikimedia.org/real.jpg"), \
+             patch("metadata._generate_poster_image") as gen:
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "https://upload.wikimedia.org/real.jpg")
+        self.assertEqual(item["poster_source"], "wikipedia")
+        gen.assert_not_called()
+
+    def test_engine_poster_in_plain_http_is_collected_as_https(self):
+        """A página é servida por HTTPS: em http:// o navegador bloquearia a imagem."""
+        result = {"recommendations": [{
+            "title_original": "Example",
+            "poster_url": "http://image.tmdb.org/t/p/w500/abc123.jpg",
+        }]}
+        with patch("metadata._image_responds", return_value=True), \
+             patch("metadata._wikipedia_poster") as wiki, \
+             patch("metadata._generate_poster_image") as gen:
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "https://image.tmdb.org/t/p/w500/abc123.jpg")
+        self.assertEqual(item["poster_source"], "model")
+        wiki.assert_not_called()
+        gen.assert_not_called()
+
+    def test_engine_poster_is_accepted_on_an_image_host_without_extension(self):
+        """Endereço de CDN de imagem com parâmetros continua sendo um pôster."""
+        import metadata as metadata_module
+
+        self.assertEqual(
+            metadata_module._looks_like_image_url("https://image.tmdb.org/t/p/w500/abc123?size=500"),
+            "https://image.tmdb.org/t/p/w500/abc123?size=500",
+        )
+        # Fora de um hospedeiro de imagem, sem extensão não é pôster.
+        self.assertEqual(metadata_module._looks_like_image_url("https://exemplo.com/filme"), "")
+
+    def test_engine_poster_on_an_internal_address_is_discarded(self):
+        """A URL vem do motor: um endereço interno nunca vira requisição do servidor."""
+        import metadata as metadata_module
+
+        for url in ("https://localhost/poster.jpg", "https://127.0.0.1/poster.jpg",
+                    "https://10.0.0.5/poster.jpg", "https://192.168.0.9/poster.jpg",
+                    "https://172.16.3.2/poster.jpg"):
+            self.assertEqual(metadata_module._looks_like_image_url(url), "", url)
+
+    def test_engine_poster_embedded_as_data_uri_skips_the_network_check(self):
+        result = {"recommendations": [{"title_original": "Example", "poster_url": "data:image/png;base64,abc"}]}
+        with patch("metadata._image_responds") as probe, \
+             patch("metadata._wikipedia_poster") as wiki, \
+             patch("metadata._generate_poster_image") as gen:
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "data:image/png;base64,abc")
+        self.assertEqual(item["poster_source"], "model")
+        probe.assert_not_called()
         wiki.assert_not_called()
         gen.assert_not_called()
 
@@ -218,6 +302,54 @@ class PipocaPlayTests(unittest.TestCase):
     def test_poster_ends_up_empty_only_when_every_source_fails(self):
         result = {"recommendations": [{"title_original": "Example", "poster_url": ""}]}
         with patch("metadata._wikipedia_poster", return_value=""), patch("metadata._generate_poster_image", return_value=""):
+            enriched = enrich_result(result)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "")
+        self.assertEqual(item["poster_source"], "")
+
+    def test_poster_collection_stops_when_the_request_deadline_has_passed(self):
+        """A coleta do pôster nunca pode estourar o tempo da função e derrubar
+        a recomendação que o usuário já pagou."""
+        import metadata as metadata_module
+
+        result = {"recommendations": [{
+            "title_original": "Example",
+            "poster_url": "https://image.tmdb.org/t/p/w500/abc123.jpg",
+        }]}
+        with patch("metadata.urllib.request.urlopen") as urlopen:
+            enriched = enrich_result(result, deadline=time.monotonic() - 1)
+        item = enriched["recommendations"][0]
+        self.assertEqual(item["poster_url"], "")
+        self.assertEqual(item["poster_source"], "")
+        # Nenhuma das três fontes chega a abrir conexão fora do prazo.
+        urlopen.assert_not_called()
+        self.assertEqual(metadata_module._budget(time.monotonic() - 1, 5), 0.0)
+
+    def test_the_three_posters_are_collected_in_parallel(self):
+        """Três esperas de rede em sequência não cabem no tempo da função."""
+        running = []
+        started = threading.Event()
+
+        def slow_wikipedia(*args, **kwargs):
+            running.append(1)
+            if len(running) == 3:
+                started.set()
+            # Só devolve depois que as três indicações estiverem em voo.
+            started.wait(timeout=5)
+            return "https://upload.wikimedia.org/real.jpg"
+
+        result = {"recommendations": [{"title_original": f"Example {i}", "poster_url": ""} for i in range(3)]}
+        with patch("metadata._wikipedia_poster", side_effect=slow_wikipedia), \
+             patch("metadata._generate_poster_image") as gen:
+            enriched = enrich_result(result)
+        self.assertTrue(started.is_set(), "as três indicações deveriam ser resolvidas ao mesmo tempo")
+        for item in enriched["recommendations"]:
+            self.assertEqual(item["poster_source"], "wikipedia")
+        gen.assert_not_called()
+
+    def test_a_failing_poster_never_brings_down_the_recommendation(self):
+        result = {"recommendations": [{"title_original": "Example", "poster_url": ""}]}
+        with patch("metadata._wikipedia_poster", side_effect=RuntimeError("rede caiu")):
             enriched = enrich_result(result)
         item = enriched["recommendations"][0]
         self.assertEqual(item["poster_url"], "")
@@ -674,6 +806,89 @@ class PipocaPlayTests(unittest.TestCase):
         with patch("metadata.urllib.request.urlopen", lambda request, timeout=None: FakeResponse()):
             image = metadata_module._wikipedia_poster("Ambiguous Title", "", 0, "filme")
         self.assertEqual(image, "")
+
+    def test_wikipedia_is_asked_in_portuguese_before_english(self):
+        """O público é brasileiro: a capa do lançamento nacional vem primeiro."""
+        import metadata as metadata_module
+
+        asked = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"type": "standard"}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            asked.append(request.full_url)
+            return FakeResponse()
+
+        with patch("metadata.urllib.request.urlopen", fake_urlopen):
+            image = metadata_module._wikipedia_poster("The Lighthouse", "O Farol", 2019, "filme")
+        self.assertEqual(image, "")
+        self.assertIn("pt.wikipedia.org", asked[0])
+        self.assertIn("O_Farol_%28filme_de_2019%29", asked[0])
+        self.assertTrue(any("en.wikipedia.org" in url and "The_Lighthouse" in url for url in asked))
+        # A lista de tentativas é limitada: cada uma custa uma ida à rede.
+        self.assertLessEqual(len(asked), metadata_module.MAX_WIKIPEDIA_CANDIDATES)
+
+    def test_wikipedia_uses_the_series_entry_for_series(self):
+        import metadata as metadata_module
+
+        candidates = metadata_module._wikipedia_candidates("Dark", "Dark", 2017, "serie")
+        self.assertEqual(candidates[0], ("pt", "Dark (série de televisão)"))
+        self.assertIn(("en", "Dark (TV series)"), candidates)
+        self.assertNotIn(("pt", "Dark (filme)"), candidates)
+
+    def test_image_probe_accepts_only_an_answer_that_is_really_an_image(self):
+        """A confirmação do link do motor olha o tipo de conteúdo, não a extensão."""
+        import metadata as metadata_module
+
+        seen = {}
+
+        class FakeResponse:
+            def __init__(self, status, content_type):
+                self.status = status
+                self.headers = {"Content-Type": content_type}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def probe(status, content_type):
+            def fake_urlopen(request, timeout=None):
+                seen["headers"] = dict(request.headers)
+                seen["timeout"] = timeout
+                return FakeResponse(status, content_type)
+
+            with patch("metadata.urllib.request.urlopen", fake_urlopen):
+                return metadata_module._image_responds("https://image.tmdb.org/t/p/w500/abc.jpg", 5)
+
+        self.assertTrue(probe(206, "image/jpeg"))
+        self.assertTrue(probe(200, "image/webp; charset=binary"))
+        # Uma página HTML respondendo em vez da imagem não vira pôster.
+        self.assertFalse(probe(200, "text/html; charset=utf-8"))
+        self.assertFalse(probe(404, "image/jpeg"))
+        # Só o primeiro byte é pedido: a imagem não é baixada no servidor.
+        self.assertEqual(seen["headers"].get("Range"), "bytes=0-0")
+        self.assertEqual(seen["timeout"], 5)
+
+    def test_image_probe_answers_no_when_the_address_fails(self):
+        import metadata as metadata_module
+
+        def boom(request, timeout=None):
+            raise OSError("host inexistente")
+
+        with patch("metadata.urllib.request.urlopen", boom):
+            self.assertFalse(metadata_module._image_responds("https://image.tmdb.org/x.jpg", 5))
+        # Fora do prazo nem chega a tentar.
+        self.assertFalse(metadata_module._image_responds("https://image.tmdb.org/x.jpg", 0))
 
     # -----------------------------------------------------------------
     # Roteador único (uma função serverless serve todo o /api)

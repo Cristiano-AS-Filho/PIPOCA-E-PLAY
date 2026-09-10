@@ -187,3 +187,36 @@ No front-end (`public/app.html`), pôster de fonte `"wikipedia"` ou `"generated"
 `python3 -m unittest test_app` — 87 testes verdes: a cadeia completa (motor → Wikipedia → geração) testada isoladamente em cada camada, incluindo a chamada real ao endpoint de geração de imagem com `urlopen` simulado, a leitura do resumo da Wikipedia e o descarte de páginas de desambiguação, e a garantia de que o pôster só fica vazio se as três fontes falharem.
 
 Fluxo completo em Chromium (Playwright) contra o servidor local, com `_wikipedia_poster` e `_generate_poster_image` simulados (a rede real para Wikipedia e OpenAI está bloqueada neste ambiente de sandbox): a indicação sem link do motor recebeu o pôster da Wikipedia e a indicação sem nenhuma das duas recebeu a capa gerada (uma imagem real embutida em base64, que carregou de verdade no navegador) — ambas exibidas **imediatamente**, sem a espera de validação que só o pôster de fonte `"model"` tem; o selo "Capa ilustrativa" apareceu somente sobre a capa gerada; e `/api/history` confirmou `poster_source` correto (`"model"`, `"wikipedia"`, `"generated"`) para cada uma das três indicações.
+
+## Rodada 9 — a imagem coletada da resposta do motor chega ao cartão
+
+### Diagnóstico
+
+O pedido: o prompt enviado ao motor já pede o endereço da imagem do pôster, então esse dado precisa ser **coletado e inserido no output** do usuário. Analisando a cadeia da Rodada 8, três pontos da coleta impediam exatamente isso:
+
+1. **O link do motor vencia sem nenhuma confirmação.** `resolve_poster` aceitava o `poster_url` só pela forma (começar com `http(s)://` e terminar em extensão de imagem) e parava ali. Uma LLM erra endereços de imagem com facilidade — e, quando errava, a coleta já tinha terminado: as duas fontes que funcionam (Wikipedia e geração) nunca eram tentadas, e o cartão ficava no gradiente. O front-end até testava a imagem no navegador (`verifyPoster`), mas ao falhar não tinha para onde voltar.
+2. **`http://` era aceito como está.** O deploy é servido por HTTPS: um pôster em `http://` é bloqueado pelo navegador como conteúdo misto. O backend dava o link por bom, marcava `poster_source: "model"` e a imagem nunca aparecia — de novo sem cair para a próxima fonte.
+3. **A coleta podia estourar o tempo da função.** As três indicações eram resolvidas em sequência, cada uma com até seis idas à Wikipedia (6s cada) e uma geração de imagem de até 55s, dentro de uma função com `maxDuration` de 60s que já tinha gasto até 45s falando com o motor. No pior caso a recomendação inteira — já paga com um crédito — morria por timeout.
+
+O prompt também pedia silêncio na dúvida ("caso contrário, deixe `poster_url` como string vazia"), o que fazia o modelo devolver campo vazio justamente na única fonte que conhece o pôster do título.
+
+### Correções aplicadas
+
+`metadata.py` passou a tratar a resposta do motor como o ponto de coleta principal:
+
+- `_looks_like_image_url` normaliza antes de julgar: promove `http://` para `https://`, aceita também endereços sem extensão quando o hospedeiro só serve imagem (`tmdb.org`, `wikimedia.org`, `media-amazon.com` e afins) e descarta endereços internos (`localhost`, faixas privadas) — a URL vem do motor, não de uma fonte confiável.
+- `_image_responds` confirma o link **no servidor** antes de aceitá-lo: um `GET` com `Range: bytes=0-0`, que olha o status e o `Content-Type` sem baixar a imagem nem repassar o corpo. Só um "sim" faz o link virar pôster; um "não" devolve a coleta para a fila (Wikipedia → geração), que era o passo que faltava.
+- `_wikipedia_poster` passou a consultar a Wikipedia **em português antes da inglesa** (`(filme de <ano>)`, `(filme)`, `(série de televisão)`), onde costuma estar a capa do lançamento nacional, com a lista de tentativas limitada por `MAX_WIKIPEDIA_CANDIDATES`.
+- `enrich_result` aceita um `deadline` e resolve as três indicações **em paralelo** (`ThreadPoolExecutor`), com cada etapa encurtando o próprio tempo limite pelo que sobrou do prazo. `recommender.call_openai` marca o relógio antes de chamar o motor e passa `started + REQUEST_BUDGET_SECONDS` (52s, abaixo do `maxDuration` de 60s do `vercel.json`), então a busca da imagem usa o tempo que sobrou e nunca derruba a recomendação. Um pôster que falha é isolado (`_safe_resolve_poster`) e não leva a resposta junto.
+
+`recommender._poster_prompt_line` deixou de pedir silêncio na dúvida: como o servidor confere o endereço e troca de fonte sozinho quando ele não responde, o prompt agora pede o melhor link que o modelo conhecer, sempre em `https`, e explica que precisa ser o arquivo da imagem — nunca uma página HTML, um resultado de busca ou o endereço da página do filme.
+
+No front-end (`public/app.html`), `verifyPoster`/`_posterCache` saíram: como o backend confirma a imagem antes de devolvê-la, `trustedPosterUrl` lê o campo direto e o pôster de fonte `"model"` aparece **imediatamente**, sem a espera que antes deixava o cartão no gradiente. O gradiente do cartão continua atrás da imagem, então nada quebra se ela ainda assim não carregar.
+
+### Validação
+
+`python3 -m unittest test_app` — 100 testes verdes (13 novos), entre eles: o link do motor confirmado virando `poster_source: "model"`; o link com forma boa mas sem resposta **cedendo lugar à Wikipedia** (o caso que antes deixava o cartão vazio); `http://` chegando ao output como `https://`; endereço de CDN de imagem sem extensão aceito e endereço interno recusado; `data:` embutido pulando a checagem de rede; a sonda aceitando só resposta `200/206` com `Content-Type: image/*` e pedindo um único byte; a Wikipedia sendo consultada em português antes da inglesa; a coleta parando sem abrir conexão quando o prazo já passou; as três indicações resolvidas ao mesmo tempo; e uma falha de pôster não derrubando a recomendação.
+
+De ponta a ponta contra o servidor local, com o motor e a rede de imagens simulados (a rede real está bloqueada neste sandbox): as três indicações saíram com imagem — a do link bom como `model`, a do link morto e a sem link como `wikipedia` — e o mesmo resultado chegou por HTTP em `/api/recommend`.
+
+Em Chromium (Playwright), logado e percorrendo as oito perguntas até o Top 3: os três cartões pintaram `background-image` (`url("https://cdn.exemplo.test/posters/bom.jpg")` no primeiro, a capa da Wikipedia nos outros dois) e o navegador buscou de fato as duas imagens — o pôster vindo da resposta do motor apareceu direto, sem a espera de validação da rodada anterior.
