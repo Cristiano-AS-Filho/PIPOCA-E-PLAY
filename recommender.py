@@ -22,6 +22,18 @@ CONTENT_TYPE_OPTIONS = ("Filme", "Série", "Mesclar (filmes e séries)")
 # o que sobrar depois da resposta do motor é o prazo da coleta de imagens.
 REQUEST_BUDGET_SECONDS = 52
 
+# Teto de saída do motor. O modo estrito precisa fechar o JSON inteiro — três
+# indicações completas, com nove notas e um link de pôster cada — e os tokens de
+# raciocínio saem do mesmo teto. Apertado demais, a resposta chega cortada no
+# meio e o JSON não fecha: era isso que derrubava a busca "de vez em quando"
+# com "JSON inválido". O teto não é cobrado, só o que o modelo realmente gera.
+MAX_OUTPUT_TOKENS = 6000
+
+# Tempo máximo de uma chamada ao motor e o mínimo que precisa sobrar do
+# orçamento para valer a pena tentar de novo depois de uma resposta cortada.
+ENGINE_TIMEOUT_SECONDS = 45
+RETRY_MIN_SECONDS_LEFT = 18
+
 OFFICIAL_FILTER_OPTIONS = {
     "content_type": set(CONTENT_TYPE_OPTIONS),
     "genre": {"Livre (Qualquer)", "Ação", "Comédia", "Drama", "Ficção Científica", "Terror", "Romance", "Suspense / Thriller", "Animação", "Documentário", "Aventura", "Fantasia"},
@@ -163,6 +175,84 @@ ANY_PLATFORM = "Livre (Qualquer)"
 
 MAX_PLATFORMS_PER_SEARCH = 5
 
+# Onde assistir é o coração do produto: o cartão precisa dizer em qual serviço o
+# título está. O motor às vezes escreve "HBO Max" ou "prime video"; normalizar
+# aqui deixa o cartão coerente com o nome que o cliente marcou no questionário.
+PLATFORM_ALIASES = {
+    "netflix": "Netflix",
+    "prime video": "Amazon Prime Video",
+    "amazon prime": "Amazon Prime Video",
+    "amazon prime video": "Amazon Prime Video",
+    "prime video (amazon)": "Amazon Prime Video",
+    "disney+": "Disney+",
+    "disney plus": "Disney+",
+    "star+": "Disney+",
+    "star plus": "Disney+",
+    "max": "Max (HBO)",
+    "max (hbo)": "Max (HBO)",
+    "hbo max": "Max (HBO)",
+    "hbo": "Max (HBO)",
+    "apple tv+": "Apple TV+",
+    "apple tv plus": "Apple TV+",
+    "apple tv": "Apple TV+",
+    "paramount+": "Paramount+",
+    "paramount plus": "Paramount+",
+    "paramount": "Paramount+",
+}
+WHERE_TO_WATCH_TYPES = ("assinatura", "aluguel_compra", "cinema")
+MAX_WHERE_TO_WATCH_ITEMS = 4
+
+
+def canonical_platform(name) -> str:
+    """Nome exibido do serviço: apelidos conhecidos viram o nome oficial."""
+    cleaned = " ".join(str(name or "").split())[:60]
+    if not cleaned:
+        return ""
+    return PLATFORM_ALIASES.get(cleaned.lower(), cleaned)
+
+
+def _clean_where_entry(entry):
+    if not isinstance(entry, dict):
+        return None
+    platform = canonical_platform(entry.get("platform"))
+    if not platform:
+        return None
+    kind = str(entry.get("type", "") or "").strip().lower()
+    if kind not in WHERE_TO_WATCH_TYPES:
+        kind = "cinema" if "cinema" in platform.lower() else "assinatura"
+    return {"platform": platform, "type": kind}
+
+
+def _fallback_where_to_watch(filters):
+    """A plataforma marcada pelo cliente, quando ele marcou uma só.
+
+    O motor recebeu a marcação como restrição forte — as três indicações
+    precisam estar nela —, então repetir esse nome é dizer o que o próprio motor
+    afirmou ao escolher o título, e a tela continua exibindo a disponibilidade
+    como não confirmada. Com várias marcações não dá para saber qual delas exibe
+    cada título: aí o campo fica vazio em vez de chutar.
+    """
+    marked = [name for name in split_answers(filters.get("platform")) if name != ANY_PLATFORM]
+    if len(marked) != 1:
+        return []
+    entry = _clean_where_entry({"platform": marked[0], "type": "assinatura"})
+    return [entry] if entry else []
+
+
+def _apply_where_to_watch(payload, filters):
+    """Limpa ``where_to_watch`` e completa com a marcação quando o motor cala."""
+    fallback = _fallback_where_to_watch(filters if isinstance(filters, dict) else {})
+    for recommendation in payload.get("recommendations", []):
+        raw = recommendation.get("where_to_watch")
+        entries, seen = [], set()
+        for entry in raw if isinstance(raw, list) else []:
+            cleaned = _clean_where_entry(entry)
+            if cleaned and cleaned["platform"].lower() not in seen:
+                seen.add(cleaned["platform"].lower())
+                entries.append(cleaned)
+        recommendation["where_to_watch"] = (entries or [dict(item) for item in fallback])[:MAX_WHERE_TO_WATCH_ITEMS]
+    return payload
+
 
 def split_answers(value):
     """Lê um campo multivalorado como lista, aceitando texto ou lista."""
@@ -286,7 +376,8 @@ def build_platform_section(platform_value):
     if len(platforms) == 1:
         return (
             f"O usuário marcou uma única plataforma ({platforms[0]}): as três indicações precisam "
-            f"estar disponíveis nela, e não em outro serviço."
+            f"estar disponíveis nela, e não em outro serviço. Repita esse serviço em where_to_watch "
+            f"de cada indicação."
         )
     joined = ", ".join(platforms)
     return (
@@ -320,6 +411,27 @@ def _poster_prompt_line():
     )
 
 
+def _where_to_watch_prompt_line():
+    """Instrução de onde assistir.
+
+    Saber onde assistir é o motivo de o cliente estar aqui, então o campo não
+    pode voltar vazio "por precaução". A tela exibe a disponibilidade como não
+    confirmada e oferece o link para conferir na fonte — por isso pedimos o
+    melhor conhecimento do modelo em vez de silêncio.
+    """
+    return (
+        "Preencha where_to_watch de cada indicação com o serviço (ou os serviços) em que o título "
+        "está disponível no Brasil hoje, do melhor do seu conhecimento: platform recebe o nome do "
+        "serviço como o público brasileiro o conhece (Netflix, Amazon Prime Video, Disney+, "
+        "Max (HBO), Apple TV+, Paramount+, Globoplay e afins) e type recebe \"assinatura\" quando "
+        "está incluído no catálogo do serviço, \"aluguel_compra\" quando só sai alugando ou "
+        "comprando, e \"cinema\" quando ainda está em cartaz. Este campo não pode voltar vazio: a "
+        "tela informa ao cliente que a disponibilidade não está confirmada e oferece o link para "
+        "conferir na fonte, então um serviço provável é muito mais útil que um campo em branco. "
+        "Liste no máximo três serviços, do mais provável para o menos provável."
+    )
+
+
 def buildRecommendationPrompt(filters, feedback=None):
     return f"""Atue como um especialista em cinema e séries, recomendador personalizado para o público brasileiro. Responda em pt-BR.
 
@@ -337,7 +449,7 @@ O tipo de produção é a restrição mais forte de todas: com "Filme", as três
 
 {build_platform_section(filters['platform'])}
 
-Priorize gênero, vibe e plataformas marcadas; depois duração e companhia; por fim época e popularidade. Os filtros são preferências contextuais, não generalizações rígidas. A duração curta deve favorecer títulos de até 90 minutos; a faixa padrão, 90 a 120; a longa, acima de 120 — em séries, aplique a mesma faixa à duração média do episódio. Quando houver plataforma específica, trate disponibilidade como dado a ser validado por uma fonte externa, nunca como fato conhecido apenas pela IA. Para família com crianças, evite conteúdo inadequado quando a classificação for conhecida.
+Priorize gênero, vibe e plataformas marcadas; depois duração e companhia; por fim época e popularidade. Os filtros são preferências contextuais, não generalizações rígidas. A duração curta deve favorecer títulos de até 90 minutos; a faixa padrão, 90 a 120; a longa, acima de 120 — em séries, aplique a mesma faixa à duração média do episódio. Quando houver plataforma específica, a marcação é uma restrição de escolha: só indique títulos que você acredita estarem disponíveis nela. A tela sempre apresenta a disponibilidade como não confirmada, a ser conferida na fonte, então informe o serviço em where_to_watch mesmo sem certeza absoluta. Para família com crianças, evite conteúdo inadequado quando a classificação for conhecida.
 
 Selecione exatamente três títulos reais do tipo pedido, ordenados da maior para a menor compatibilidade, e explique por que cada um combina com o perfil. O match_score é a compatibilidade própria do sistema entre 0 e 100, não é nota do IMDb, da crítica ou de qualquer outra fonte. Não escolha simplesmente os títulos mais populares.
 
@@ -345,7 +457,9 @@ Selecione exatamente três títulos reais do tipo pedido, ordenados da maior par
 
 {_poster_prompt_line()}
 
-Não invente avaliações, plataformas, disponibilidade, preços, datas, classificação indicativa ou premiações. Quando não tiver certeza, use 0, string vazia ou array vazio. A resposta deve obedecer exatamente ao JSON solicitado.{build_feedback_section(feedback)}"""
+{_where_to_watch_prompt_line()}
+
+Não invente avaliações, preços, datas, classificação indicativa ou premiações: nesses campos, sem certeza, use 0 ou string vazia. A regra é outra em where_to_watch e poster_url, onde o melhor palpite informado vale mais que o campo vazio, porque a tela já avisa o cliente de que a disponibilidade não está confirmada. A resposta deve obedecer exatamente ao JSON solicitado.{build_feedback_section(feedback)}"""
 
 
 def validate_recommendation_payload(payload):
@@ -383,13 +497,8 @@ def extract_response_text(response):
     return "".join(parts).strip()
 
 
-def call_openai(filters, feedback=None):
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        # As mensagens de erro daqui chegam à tela do cliente: elas descrevem a
-        # falha sem revelar qual motor está por trás da recomendação.
-        raise RuntimeError("O motor de recomendação não está configurado no servidor.")
-    payload = {
+def _engine_payload(filters, feedback, max_output_tokens):
+    return {
         "model": os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
         "input": buildRecommendationPrompt(filters, feedback),
         "text": {
@@ -400,20 +509,23 @@ def call_openai(filters, feedback=None):
                 "schema": RECOMMENDATION_SCHEMA,
             }
         },
-        "max_output_tokens": 1800,
+        "max_output_tokens": max_output_tokens,
         "reasoning": {"effort": "low"},
         "store": False,
     }
+
+
+def _ask_engine(api_key, payload, timeout):
+    """Uma chamada ao motor. Erros de rede e HTTP sobem já traduzidos."""
     request = urllib.request.Request(
         "https://api.openai.com/v1/responses",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         details = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(
@@ -422,18 +534,64 @@ def call_openai(filters, feedback=None):
     except urllib.error.URLError as error:
         raise RuntimeError("Não foi possível conectar ao motor de recomendação.") from error
 
+
+def _read_engine_result(result):
+    """Devolve ``(payload, erro)``: o JSON já validado, ou o motivo da falha.
+
+    Resposta cortada pelo teto de tokens é o caso importante: o texto chega
+    incompleto e o JSON não fecha. Reconhecer isso aqui é o que permite tentar
+    de novo, em vez de entregar "JSON inválido" ao cliente.
+    """
     text = extract_response_text(result)
-    if not text:
-        status = result.get("status", "desconhecido")
-        reason = (result.get("incomplete_details") or {}).get("reason")
-        suffix = f" Motivo: {reason}." if reason else ""
-        raise RuntimeError(
-            f"O motor de recomendação não retornou texto final (status: {status}).{suffix}"
-        )
+    status = str(result.get("status", "") or "desconhecido")
+    reason = str((result.get("incomplete_details") or {}).get("reason") or "")
+
+    if status == "incomplete" or not text:
+        if reason == "max_output_tokens":
+            return None, "A resposta do motor de recomendação veio cortada antes de terminar."
+        if reason:
+            return None, f"O motor de recomendação não concluiu a resposta (motivo: {reason})."
+        if not text:
+            return None, f"O motor de recomendação não retornou texto final (status: {status})."
     try:
-        structured = validate_recommendation_payload(json.loads(text))
-    except (json.JSONDecodeError, TypeError, ValueError) as error:
-        raise RuntimeError("O motor de recomendação retornou um JSON inválido.") from error
+        return validate_recommendation_payload(json.loads(text)), ""
+    except json.JSONDecodeError:
+        # JSON que não fecha é quase sempre resposta truncada.
+        return None, "A resposta do motor de recomendação veio cortada antes de terminar."
+    except (TypeError, ValueError, RuntimeError) as error:
+        return None, f"O motor de recomendação devolveu uma resposta fora do formato esperado. {error}".strip()
+
+
+def call_openai(filters, feedback=None):
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        # As mensagens de erro daqui chegam à tela do cliente: elas descrevem a
+        # falha sem revelar qual motor está por trás da recomendação.
+        raise RuntimeError("O motor de recomendação não está configurado no servidor.")
+
+    started = time.monotonic()
+    deadline = started + REQUEST_BUDGET_SECONDS
+    max_output_tokens = MAX_OUTPUT_TOKENS
+    structured = None
+    problem = ""
+
+    for attempt in (1, 2):
+        remaining = deadline - time.monotonic()
+        result = _ask_engine(
+            api_key,
+            _engine_payload(filters, feedback, max_output_tokens),
+            timeout=max(min(ENGINE_TIMEOUT_SECONDS, remaining), 5),
+        )
+        structured, problem = _read_engine_result(result)
+        if structured is not None:
+            break
+        # Uma única segunda tentativa, e só quando ainda sobra tempo de função
+        # para ela e para a coleta de pôster: entregar nada é pior que esperar.
+        if attempt == 2 or (deadline - time.monotonic()) < RETRY_MIN_SECONDS_LEFT:
+            raise RuntimeError(f"{problem} Tente novamente.".strip())
+        max_output_tokens = min(int(max_output_tokens * 1.5), 16_000)
+
+    _apply_where_to_watch(structured, filters)
     # O pôster é coletado com o tempo que sobrou da requisição.
-    enriched = enrich_result(structured, deadline=started + REQUEST_BUDGET_SECONDS)
+    enriched = enrich_result(structured, deadline=deadline)
     return json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))

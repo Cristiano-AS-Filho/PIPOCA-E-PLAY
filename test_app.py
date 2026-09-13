@@ -25,9 +25,11 @@ from recommender import (  # noqa: E402
     CONTENT_TYPE_OPTIONS,
     MAX_PLATFORMS_PER_SEARCH,
     RATING_SOURCES,
+    canonical_platform,
     build_feedback_section,
 )
 from metadata import enrich_result  # noqa: E402
+import recommender  # noqa: E402
 from server import (  # noqa: E402
     RECOMMENDATION_SCHEMA,
     buildRecommendationPrompt,
@@ -1449,6 +1451,173 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertIn("opções oficiais", payload["error"])
         # Filtro recusado antes do débito: o crédito do dia continua intacto.
         self.assertEqual(get_account(user_id)["credits_remaining"], 2)
+
+    # -----------------------------------------------------------------
+    # Resposta do motor: truncamento e "onde assistir"
+    # -----------------------------------------------------------------
+
+    def _engine_json(self, **overrides):
+        """Resposta válida do motor, com os campos que o validador exige."""
+        def item(rank, title):
+            base = {
+                "rank": rank, "content_type": "filme", "title_original": title, "title_pt": title,
+                "year": 2020, "runtime_minutes": 100, "seasons": 0, "age_rating_br": 14,
+                "genres": ["Ação"], "vibe_tags": ["tenso"], "synopsis": "Sinopse.",
+                "why_it_matches": "Combina.", "match_score": 90 - rank,
+                "ratings": {source["key"]: 0 for source in RATING_SOURCES},
+                "awards": {"oscars_won": 0, "highlight": ""},
+                "where_to_watch": [], "poster_url": "",
+            }
+            base.update(overrides)
+            base["rank"] = rank
+            return base
+        return json.dumps({
+            "interpretation": "Você quer algo tenso.",
+            "best_choice": {"title_pt": "Um", "reason": "Combina."},
+            "recommendations": [item(1, "Um"), item(2, "Dois"), item(3, "Três")],
+        })
+
+    def _engine_response(self, text, status="completed", reason=""):
+        body = {"status": status, "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]}
+        if reason:
+            body["incomplete_details"] = {"reason": reason}
+        return body
+
+    def _fake_engine(self, responses):
+        """Substitui só o transporte HTTP: o resto de call_openai roda de verdade."""
+        sent = []
+
+        class FakeHTTP:
+            def __init__(self, body):
+                self.body = json.dumps(body).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout=None):
+            sent.append(json.loads(request.data.decode("utf-8")))
+            body = responses[min(len(sent) - 1, len(responses) - 1)]
+            return FakeHTTP(body)
+
+        return fake_urlopen, sent
+
+    def test_truncated_engine_answer_is_retried_instead_of_failing_as_invalid_json(self):
+        """Regressão do relato: a busca falhava 'às vezes' com JSON inválido.
+
+        A resposta vinha cortada pelo teto de tokens — JSON que não fecha.
+        """
+        cut = self._engine_json()[:200]  # mesma resposta, truncada no meio
+        fake_urlopen, sent = self._fake_engine([
+            self._engine_response(cut, status="incomplete", reason="max_output_tokens"),
+            self._engine_response(self._engine_json()),
+        ])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "chave-de-teste"}, clear=False):
+            with patch("recommender.urllib.request.urlopen", fake_urlopen):
+                with patch("recommender.enrich_result", lambda payload, deadline=None: payload):
+                    text = recommender.call_openai(FILTERS)
+        payload = json.loads(text)
+        self.assertEqual(len(payload["recommendations"]), 3)
+        # Tentou de novo e, na segunda, pediu mais espaço de saída.
+        self.assertEqual(len(sent), 2)
+        self.assertGreater(sent[1]["max_output_tokens"], sent[0]["max_output_tokens"])
+
+    def test_output_ceiling_fits_three_full_recommendations(self):
+        """O teto apertado era a causa raiz: 1800 não fechava o JSON inteiro."""
+        fake_urlopen, sent = self._fake_engine([self._engine_response(self._engine_json())])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "chave-de-teste"}, clear=False):
+            with patch("recommender.urllib.request.urlopen", fake_urlopen):
+                with patch("recommender.enrich_result", lambda payload, deadline=None: payload):
+                    recommender.call_openai(FILTERS)
+        self.assertEqual(len(sent), 1)
+        self.assertGreaterEqual(sent[0]["max_output_tokens"], 4000)
+
+    def test_a_second_cut_answer_reports_the_real_reason_to_the_client(self):
+        fake_urlopen, sent = self._fake_engine([
+            self._engine_response("{\"recommendations\": [", status="incomplete", reason="max_output_tokens"),
+        ])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "chave-de-teste"}, clear=False):
+            with patch("recommender.urllib.request.urlopen", fake_urlopen):
+                with self.assertRaises(RuntimeError) as raised:
+                    recommender.call_openai(FILTERS)
+        message = str(raised.exception)
+        self.assertIn("cortada", message)
+        self.assertNotIn("JSON inválido", message)
+        for secret in ("OpenAI", "openai", "ChatGPT", "GPT"):
+            self.assertNotIn(secret, message)
+        self.assertEqual(len(sent), 2)
+
+    def test_no_retry_when_the_request_budget_is_already_spent(self):
+        """Sem tempo de função sobrando, insistir só derrubaria a requisição."""
+        fake_urlopen, sent = self._fake_engine([
+            self._engine_response("{", status="incomplete", reason="max_output_tokens"),
+        ])
+        clock = {"t": 0.0}
+
+        def spent_clock():
+            value = clock["t"]
+            clock["t"] += 500.0  # cada leitura avança meio minuto longo: o tempo acabou
+            return value
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "chave-de-teste"}, clear=False):
+            with patch("recommender.urllib.request.urlopen", fake_urlopen):
+                with patch("recommender.time.monotonic", spent_clock):
+                    with self.assertRaises(RuntimeError):
+                        recommender.call_openai(FILTERS)
+        self.assertEqual(len(sent), 1)
+
+    def test_where_to_watch_is_filled_with_the_marked_platform_when_the_engine_is_silent(self):
+        """Regressão do relato: todo cartão dizia 'Onde assistir a confirmar'."""
+        fake_urlopen, _ = self._fake_engine([self._engine_response(self._engine_json())])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "chave-de-teste"}, clear=False):
+            with patch("recommender.urllib.request.urlopen", fake_urlopen):
+                with patch("recommender.enrich_result", lambda payload, deadline=None: payload):
+                    text = recommender.call_openai({**FILTERS, "platform": "Netflix"})
+        for recommendation in json.loads(text)["recommendations"]:
+            self.assertEqual(recommendation["where_to_watch"], [{"platform": "Netflix", "type": "assinatura"}])
+
+    def test_where_to_watch_keeps_and_normalizes_what_the_engine_answered(self):
+        answered = [{"platform": "hbo max", "type": "assinatura"}, {"platform": "apple tv", "type": "aluguel_compra"}]
+        fake_urlopen, _ = self._fake_engine([self._engine_response(self._engine_json(where_to_watch=answered))])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "chave-de-teste"}, clear=False):
+            with patch("recommender.urllib.request.urlopen", fake_urlopen):
+                with patch("recommender.enrich_result", lambda payload, deadline=None: payload):
+                    text = recommender.call_openai({**FILTERS, "platform": "Netflix"})
+        first = json.loads(text)["recommendations"][0]
+        self.assertEqual(
+            first["where_to_watch"],
+            [{"platform": "Max (HBO)", "type": "assinatura"}, {"platform": "Apple TV+", "type": "aluguel_compra"}],
+        )
+
+    def test_where_to_watch_stays_empty_when_several_platforms_were_marked(self):
+        """Com várias marcações não dá para saber qual exibe o título: nada de chute."""
+        fake_urlopen, _ = self._fake_engine([self._engine_response(self._engine_json())])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "chave-de-teste"}, clear=False):
+            with patch("recommender.urllib.request.urlopen", fake_urlopen):
+                with patch("recommender.enrich_result", lambda payload, deadline=None: payload):
+                    text = recommender.call_openai({**FILTERS, "platform": "Netflix, Disney+"})
+        self.assertEqual(json.loads(text)["recommendations"][0]["where_to_watch"], [])
+
+    def test_platform_names_are_normalized_to_what_the_client_marked(self):
+        self.assertEqual(canonical_platform("hbo max"), "Max (HBO)")
+        self.assertEqual(canonical_platform("PRIME VIDEO"), "Amazon Prime Video")
+        self.assertEqual(canonical_platform(" disney plus "), "Disney+")
+        self.assertEqual(canonical_platform("paramount"), "Paramount+")
+        # Serviço fora da lista oficial é mantido como o motor escreveu.
+        self.assertEqual(canonical_platform("Globoplay"), "Globoplay")
+        self.assertEqual(canonical_platform(""), "")
+
+    def test_prompt_requires_the_streaming_service_instead_of_an_empty_field(self):
+        prompt = buildRecommendationPrompt(FILTERS)
+        self.assertIn("where_to_watch", prompt)
+        self.assertIn("não pode voltar vazio", prompt)
+        # A instrução antiga mandava calar na dúvida e esvaziava todo cartão.
+        self.assertNotIn("Não invente avaliações, plataformas, disponibilidade", prompt)
 
     def test_missing_engine_key_is_reported_without_naming_the_provider(self):
         from recommender import call_openai
