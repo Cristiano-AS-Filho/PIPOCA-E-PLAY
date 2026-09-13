@@ -72,7 +72,7 @@
   .banner li{margin-bottom:3px;}
 
   .stats{display:grid;gap:10px;grid-template-columns:repeat(2,1fr);margin-bottom:18px;}
-  @media(min-width:720px){ .stats{grid-template-columns:repeat(5,1fr);} }
+  @media(min-width:720px){ .stats{grid-template-columns:repeat(3,1fr);} }
   .stat{background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:13px;}
   .stat .k{font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;font-size:9.5px;color:var(--cream-dim);margin-bottom:6px;}
   .stat .v{font-size:22px;font-weight:700;line-height:1;}
@@ -87,9 +87,9 @@
   tr:last-child td{border-bottom:none;}
   td.actions{white-space:nowrap;display:flex;gap:6px;flex-wrap:wrap;}
   .tag{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.6px;text-transform:uppercase;padding:4px 7px;border-radius:4px;border:1px solid;}
-  .tag.pending{color:#f3cd8e;border-color:rgba(242,169,59,.45);}
-  .tag.approved{color:#8ee2cc;border-color:rgba(60,140,122,.5);}
-  .tag.rejected{color:#e58a76;border-color:rgba(196,85,61,.45);}
+  .tag.warn{color:#f3cd8e;border-color:rgba(242,169,59,.45);}
+  .tag.ok{color:#8ee2cc;border-color:rgba(60,140,122,.5);}
+  .tag.off{color:#e58a76;border-color:rgba(196,85,61,.45);}
   .tag.admin{color:var(--ink);background:var(--marquee);border-color:var(--marquee);}
   .empty{padding:22px;text-align:center;color:var(--cream-dim);font-size:13px;}
   .foot{margin-top:22px;font-size:11.5px;color:var(--cream-dim);text-align:center;line-height:1.6;}
@@ -133,18 +133,15 @@
   <div id="panel" hidden>
     <section class="card">
       <h2>Acessos dos clientes</h2>
-      <p class="hint">Cada cadastro entra como <strong>pendente</strong> e só consegue usar a plataforma
-        depois que você liberar o acesso aqui.</p>
+      <p class="hint">Todo cadastro já entra ativo. Quem libera a geração de indicações é o
+        <strong>pagamento do plano</strong>, confirmado pela Asaas.</p>
 
       <div class="stats" id="stats"></div>
 
       <div class="toolbar">
         <input id="search" type="search" placeholder="Buscar por e-mail…" aria-label="Buscar por e-mail">
-        <select id="filter" aria-label="Filtrar por situação">
-          <option value="all">Todas as situações</option>
-          <option value="pending">Somente pendentes</option>
-          <option value="approved">Somente liberados</option>
-          <option value="rejected">Somente rejeitados</option>
+        <select id="filter" aria-label="Filtrar contas">
+          <option value="all">Todas as contas</option>
           <option value="admin">Somente administradores</option>
         </select>
         <button class="ghost" id="refresh">Atualizar</button>
@@ -153,7 +150,7 @@
       <div class="tablewrap">
         <table>
           <thead>
-            <tr><th>E-mail</th><th>Situação</th><th>Papel</th><th>Plano</th><th>Cadastro</th><th>Ações</th></tr>
+            <tr><th>E-mail</th><th>Papel</th><th>Plano</th><th>Cadastro</th><th>Ações</th></tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
@@ -163,7 +160,7 @@
 
     <section class="card">
       <h2>Criar acesso manualmente</h2>
-      <p class="hint">Cria uma conta já liberada, sem passar pela fila de aprovação. Combine com o cliente
+      <p class="hint">Cria a conta do cliente no lugar do cadastro na landing page. Combine com ele
         uma senha provisória: ela pode ser trocada depois por você, aqui mesmo.</p>
       <form id="create-form">
         <div class="row cols-3">
@@ -183,7 +180,7 @@
             </select>
           </div>
         </div>
-        <button type="submit">Criar acesso liberado</button>
+        <button type="submit">Criar acesso</button>
       </form>
     </section>
 
@@ -248,8 +245,6 @@ function formatDate(value){
   return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" }) +
     " " + date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
-
-const STATUS_LABEL = { pending: "Pendente", approved: "Liberado", rejected: "Rejeitado" };
 
 /* ---------------- storage / diagnóstico ---------------- */
 
@@ -323,14 +318,11 @@ function renderDiagnostics(){
 function renderStats(){
   const box = $("stats");
   box.innerHTML = "";
-  const data = summary || { total: 0, pending: 0, approved: 0, rejected: 0, admins: 0 };
+  const data = summary || { total: 0, admins: 0, subscribers: 0 };
   [
-    ["Pendentes", data.pending],
-    ["Liberados", data.approved],
-    ["Rejeitados", data.rejected],
+    ["Contas cadastradas", data.total || 0],
     ["Assinantes ativos", data.subscribers || 0],
-    ["Administradores", data.admins || 0],
-    ["Total", data.total]
+    ["Administradores", data.admins || 0]
   ].forEach(([key, value]) => {
     const cell = document.createElement("div");
     cell.className = "stat";
@@ -372,9 +364,8 @@ function renderRows(){
   const filter = $("filter").value;
   const visible = users.filter((user) => {
     if(term && !user.email.toLowerCase().includes(term)) return false;
-    if(filter === "all") return true;
     if(filter === "admin") return user.role === "admin";
-    return user.status === filter;
+    return true;
   });
 
   const body = $("rows");
@@ -389,23 +380,16 @@ function renderRows(){
     email.textContent = user.email;
     tr.appendChild(email);
 
-    const status = document.createElement("td");
-    const statusTag = document.createElement("span");
-    statusTag.className = "tag " + user.status;
-    statusTag.textContent = STATUS_LABEL[user.status] || user.status;
-    status.appendChild(statusTag);
-    tr.appendChild(status);
-
     const role = document.createElement("td");
     const roleTag = document.createElement("span");
-    roleTag.className = "tag " + (user.role === "admin" ? "admin" : "approved");
+    roleTag.className = "tag " + (user.role === "admin" ? "admin" : "ok");
     roleTag.textContent = user.role === "admin" ? "Admin" : "Cliente";
     role.appendChild(roleTag);
     tr.appendChild(role);
 
     const plan = document.createElement("td");
     const planTag = document.createElement("span");
-    planTag.className = "tag " + (user.subscription_active ? "approved" : (user.subscription_status === "pending" ? "pending" : "rejected"));
+    planTag.className = "tag " + (user.subscription_active ? "ok" : (user.subscription_status === "pending" ? "warn" : "off"));
     planTag.textContent = user.subscription_active
       ? (PLAN_LABEL[user.plan] || user.plan || "Ativo")
       : (user.subscription_status === "pending" ? "Aguardando pagamento" : "Sem plano");
@@ -440,15 +424,6 @@ function renderRows(){
       tr.appendChild(actions);
       body.appendChild(tr);
       return;
-    }
-    if(user.status !== "approved"){
-      actions.appendChild(actionButton("Liberar", "ok", () => act({ action: "approve", user_id: user.id })));
-    }
-    if(user.status !== "rejected"){
-      actions.appendChild(actionButton("Rejeitar", "no", () => act({ action: "reject", user_id: user.id })));
-    }
-    if(user.status !== "pending"){
-      actions.appendChild(actionButton("Voltar p/ pendente", "", () => act({ action: "pending", user_id: user.id })));
     }
     actions.appendChild(actionButton("Nova senha", "", () => resetPassword(user)));
     actions.appendChild(actionButton("Liberar plano", "ok", () => grantPlan(user)));
@@ -609,8 +584,7 @@ $("create-form").addEventListener("submit", async (event) => {
     action: "create",
     email: $("create-email").value,
     password: $("create-password").value,
-    role: $("create-role").value,
-    status: "approved"
+    role: $("create-role").value
   });
   if(created){
     $("create-email").value = "";

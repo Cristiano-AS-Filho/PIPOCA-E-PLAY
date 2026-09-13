@@ -33,7 +33,6 @@ PBKDF2_ITERATIONS = 260_000
 STORE_KEY = "pipoca-play:users"
 POSTGRES_TABLE = "pipoca_play_store"
 BLOB_PATH = os.environ.get("USER_STORE_BLOB_PATH", "pipoca-play/users.json").strip() or "pipoca-play/users.json"
-VALID_STATUSES = ("pending", "approved", "rejected")
 VALID_ROLES = ("user", "admin")
 _LOCK = threading.RLock()
 
@@ -628,41 +627,35 @@ def _user_role(user: dict) -> str:
     return role if role in VALID_ROLES else "user"
 
 
-def register_user(email: str, password: str, confirmation: str | None = None) -> tuple[dict, str, bool]:
+def register_user(email: str, password: str, confirmation: str | None = None) -> dict:
+    """Cadastro do cliente: a conta já nasce ativa.
+
+    Não existe mais fila de aprovação — quem controla o acesso ao resultado é o
+    pagamento, conferido em ``consume_credit``.
+    """
     normalized = validate_registration(email, password, confirmation)
     with _LOCK:
         users = load_users()
-        existing = find_user(normalized, users)
-        if existing and existing.get("status") in {"pending", "approved"}:
-            raise FileExistsError("Já existe um pedido ou uma conta com este e-mail.")
+        if find_user(normalized, users):
+            raise FileExistsError("Já existe uma conta com este e-mail.")
 
-        token = secrets.token_urlsafe(32)
         now = _now()
         record = {
-            "id": existing.get("id") if existing else secrets.token_urlsafe(16),
+            "id": secrets.token_urlsafe(16),
             "email": normalized,
             "password_hash": hash_password(password),
-            "status": "pending",
-            "role": _user_role(existing) if existing else "user",
-            "status_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
-            "created_at": existing.get("created_at", now) if existing else now,
+            "role": "user",
+            "created_at": now,
             "updated_at": now,
-            "approved_at": None,
-            "rejected_at": None,
         }
-        if existing:
-            users = [record if user.get("id") == existing.get("id") else user for user in users]
-        else:
-            users.append(record)
+        users.append(record)
         save_users(users)
-        return record, token, bool(existing)
+        return record
 
 
-def create_user(email: str, password: str, status: str = "approved", role: str = "user") -> dict:
-    """Criação direta pelo painel administrativo, já liberada."""
+def create_user(email: str, password: str, role: str = "user") -> dict:
+    """Criação direta pelo painel administrativo."""
     normalized = validate_registration(email, password)
-    if status not in VALID_STATUSES:
-        raise ValueError("Status de acesso inválido.")
     if role not in VALID_ROLES:
         raise ValueError("Papel de acesso inválido.")
     with _LOCK:
@@ -674,42 +667,23 @@ def create_user(email: str, password: str, status: str = "approved", role: str =
             "id": secrets.token_urlsafe(16),
             "email": normalized,
             "password_hash": hash_password(password),
-            "status": status,
             "role": role,
-            "status_token_hash": "",
             "created_at": now,
             "updated_at": now,
-            "approved_at": now if status == "approved" else None,
-            "rejected_at": now if status == "rejected" else None,
         }
         users.append(record)
         save_users(users)
         return _public_admin_user(record)
 
 
-def get_status_by_token(email: str, token: str) -> str | None:
-    if not isinstance(token, str) or not token:
-        return None
-    user = find_user(email)
-    if not user:
-        return None
-    stored = str(user.get("status_token_hash", ""))
-    if not stored:
-        return None
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    if not hmac_compare(token_hash, stored):
-        return None
-    return str(user.get("status", "pending"))
-
-
-def is_approved_user(email: str) -> bool:
-    user = find_user(email)
-    return bool(user and user.get("status") == "approved")
+def user_exists(email: str) -> bool:
+    """A conta ainda está na base? É o que mantém uma sessão válida."""
+    return bool(find_user(email))
 
 
 def is_admin_user(email: str) -> bool:
     user = find_user(email)
-    return bool(user and user.get("status") == "approved" and _user_role(user) == "admin")
+    return bool(user and _user_role(user) == "admin")
 
 
 def _public_admin_user(user: dict) -> dict:
@@ -719,12 +693,9 @@ def _public_admin_user(user: dict) -> dict:
     return {
         "id": str(user.get("id", "")),
         "email": str(user.get("email", "")),
-        "status": str(user.get("status", "pending")),
         "role": _user_role(user),
         "created_at": user.get("created_at"),
         "updated_at": user.get("updated_at"),
-        "approved_at": user.get("approved_at"),
-        "rejected_at": user.get("rejected_at"),
         "plan": str(billing.get("plan", "")),
         "subscription_status": str(billing.get("status", "none")),
         "subscription_active": subscription_is_active(user),
@@ -736,20 +707,13 @@ def _public_admin_user(user: dict) -> dict:
 
 def admin_users() -> list[dict]:
     users = load_users()
-    order = {"pending": 0, "approved": 1, "rejected": 2}
-    return [
-        _public_admin_user(user)
-        for user in sorted(users, key=lambda item: (order.get(item.get("status"), 3), item.get("created_at", "")))
-    ]
+    return [_public_admin_user(user) for user in sorted(users, key=lambda item: item.get("created_at", ""))]
 
 
 def admin_summary() -> dict:
     users = load_users()
     return {
         "total": len(users),
-        "pending": sum(user.get("status") == "pending" for user in users),
-        "approved": sum(user.get("status") == "approved" for user in users),
-        "rejected": sum(user.get("status") == "rejected" for user in users),
         "admins": sum(_user_role(user) == "admin" for user in users),
         "subscribers": sum(subscription_is_active(user) for user in users),
     }
@@ -767,29 +731,12 @@ def _mutate(user_id: str, apply) -> dict:
         return _public_admin_user(target)
 
 
-def update_user_status(user_id: str, status: str) -> dict:
-    if status not in VALID_STATUSES:
-        raise ValueError("Status de acesso inválido.")
-
-    def apply(target: dict) -> None:
-        now = _now()
-        target["status"] = status
-        target["approved_at"] = now if status == "approved" else None
-        target["rejected_at"] = now if status == "rejected" else None
-
-    return _mutate(user_id, apply)
-
-
 def update_user_role(user_id: str, role: str) -> dict:
     if role not in VALID_ROLES:
         raise ValueError("Papel de acesso inválido.")
 
     def apply(target: dict) -> None:
         target["role"] = role
-        if role == "admin" and target.get("status") != "approved":
-            target["status"] = "approved"
-            target["approved_at"] = _now()
-            target["rejected_at"] = None
 
     return _mutate(user_id, apply)
 
@@ -926,7 +873,6 @@ def account_snapshot(user: dict) -> dict:
     allowance = daily_credits(billing.get("plan", "")) if active else 0
     return {
         "email": str(user.get("email", "")),
-        "status": str(user.get("status", "pending")),
         "role": _user_role(user),
         "plan": plan["id"] if plan else "",
         "plan_name": plan["name"] if plan else "",

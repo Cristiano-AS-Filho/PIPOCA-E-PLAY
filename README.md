@@ -1,10 +1,10 @@
 # Pipoca & Play
 
-**Pipoca & Play** é uma plataforma SaaS de recomendação personalizada de filmes e séries. O cliente cria seu acesso com e-mail e senha, aguarda a validação do administrador, assina um dos três planos mensais e então responde aos oito filtros para receber exatamente três opções ordenadas por compatibilidade. Cada consulta consome um crédito do plano, e o que o cliente marca como *gostei*, *não gostei* ou *já assisti* passa a orientar as próximas indicações.
+**Pipoca & Play** é uma plataforma SaaS de recomendação personalizada de filmes e séries. O cliente cria seu acesso com e-mail e senha, assina um dos três planos mensais e então responde aos oito filtros para receber exatamente três opções ordenadas por compatibilidade. Cada consulta consome um crédito do plano, e o que o cliente marca como *gostei*, *não gostei* ou *já assisti* passa a orientar as próximas indicações.
 
 ## Funcionalidades disponíveis
 
-A experiência pública começa em uma **landing page** responsiva, com apresentação do produto e CTA de entrada. A autenticação usa sessão por cookie `HttpOnly`, `SameSite=Lax`, assinatura HMAC e expiração automática. O cadastro exige senha individual com hash PBKDF2, começa com status `pending` e pode ser acompanhado automaticamente pelo cliente. O papel `admin` abre um painel restrito para listar pedidos, aceitar, rejeitar ou excluir usuários.
+A experiência pública começa em uma **landing page** responsiva, com apresentação do produto e CTA de entrada. A autenticação usa sessão por cookie `HttpOnly`, `SameSite=Lax`, assinatura HMAC e expiração automática. O cadastro exige senha individual com hash PBKDF2 e **já entra ativo**: concluir o cadastro cria a sessão na hora, e quem controla o acesso ao resultado é o pagamento. O papel `admin` abre um painel restrito para acompanhar as contas, liberar ou cancelar planos, redefinir senhas e excluir acessos.
 
 A primeira pergunta define o tipo de produção — **Filme**, **Série** ou **Mesclar (filmes e séries)** — e é a restrição mais forte do prompt: em "Mesclar", a lista traz pelo menos um filme e pelo menos uma série, e cada indicação vem marcada com o seu formato. Os sete filtros originais do MVP foram preservados na sequência: gênero principal, humor/vibe do dia, tempo disponível, época do título, plataforma de streaming, companhia e popularidade/estilo. Para séries, a duração é a média por episódio e o card mostra o número de temporadas. O backend valida o JSON da IA e exige três recomendações ordenadas. A pontuação exibida é um **match próprio do sistema**, não uma nota de IMDb ou crítica.
 
@@ -20,7 +20,7 @@ Um **botão flutuante de WhatsApp** fica disponível em todas as telas e abre a 
 
 ## Planos, créditos e checkout
 
-O acesso à recomendação é pago. Depois de aprovado pelo administrador, o cliente escolhe um plano e só recebe indicações **quando a Asaas confirma o pagamento** — nem o checkout aberto nem uma fatura pendente liberam resultados.
+O acesso à recomendação é pago. Assim que conclui o cadastro, o cliente escolhe um plano e só recebe indicações **quando a Asaas confirma o pagamento** — nem o checkout aberto nem uma fatura pendente liberam resultados.
 
 | Plano | Preço mensal | Créditos | Ciclo |
 | --- | --- | --- | --- |
@@ -64,9 +64,9 @@ O painel administrativo tem **página e login próprios** em `https://SEU-DOMINI
 Existem dois caminhos para ter uma conta de administrador:
 
 1. **Administrador raiz por variável de ambiente.** Defina `ADMIN_EMAIL` e `ADMIN_PASSWORD` no projeto. Esse acesso funciona mesmo com a base de contas vazia e é o que destrava o painel na primeira vez. Sem essas duas variáveis em produção, **nenhum** login de administrador é aceito.
-2. **Administradores gravados na base.** Já dentro do painel, use “Tornar admin” em qualquer conta liberada, ou crie uma conta com o papel *Administrador* no bloco “Criar acesso manualmente”. Esses administradores entram pelo mesmo `/admin` com o e-mail e a senha deles.
+2. **Administradores gravados na base.** Já dentro do painel, use “Tornar admin” em qualquer conta, ou crie uma conta com o papel *Administrador* no bloco “Criar acesso manualmente”. Esses administradores entram pelo mesmo `/admin` com o e-mail e a senha deles.
 
-No painel você vê os contadores (pendentes, liberados, rejeitados, administradores, total), busca por e-mail, filtra por situação e, em cada conta, pode **liberar**, **rejeitar**, **voltar para pendente**, **definir uma nova senha**, **promover/rebaixar** e **excluir**. Há ainda um bloco para criar um acesso já liberado, sem passar pela fila de aprovação. Por segurança, o administrador logado não consegue rejeitar, excluir, despromover nem voltar a própria conta para pendente — outra conta de administrador precisa fazer isso.
+No painel você vê os contadores (contas cadastradas, assinantes ativos, administradores), busca por e-mail, filtra por papel e, em cada conta, pode **definir uma nova senha**, **liberar um plano**, **cancelar a assinatura**, **promover/rebaixar** e **excluir**. Há ainda um bloco para criar o acesso de um cliente direto pelo painel. Não existe aprovação de cadastro: todo cadastro já entra ativo e o pagamento é que libera o resultado. Por segurança, o administrador logado não consegue excluir nem despromover a própria conta — outra conta de administrador precisa fazer isso.
 
 O último bloco, **Diagnóstico do deploy**, mostra em qual armazenamento as contas estão sendo gravadas e quais variáveis o ambiente encontrou. A mesma informação, sem nenhum segredo, está disponível publicamente em `GET /api/health` — é o endereço mais rápido para descobrir por que um cadastro falhou.
 
@@ -121,11 +121,10 @@ Os testes rodam com `python3 -m unittest test_app`.
 | `/` | GET | público | Landing page e plataforma |
 | `/admin` | GET | público (a página), painel só com sessão admin | Painel do administrador |
 | `/api/health` | GET | público | Diagnóstico do deploy, sem segredos |
-| `/api/auth/register` | POST | público | Cadastro do cliente (entra como `pending`) |
+| `/api/auth/register` | POST | público | Cadastro do cliente (já cria a sessão) |
 | `/api/auth/login` | POST | público | Cria a sessão por cookie |
 | `/api/auth/logout` | POST | público | Encerra a sessão |
 | `/api/auth/me` | GET | público | Sessão atual |
-| `/api/auth/status` | GET | token do pedido | Acompanhamento do cadastro |
 | `/api/admin/status` | GET | admin | Configuração, contadores e lista de contas |
 | `/api/admin/users` | GET/POST | admin | Ações administrativas |
 | `/api/plans` | GET | público | Catálogo de planos e preços |
@@ -136,7 +135,7 @@ Os testes rodam com `python3 -m unittest test_app`.
 | `/api/billing/webhook` | POST | Asaas (token) | Confirma ou suspende a assinatura |
 | `/api/recommend` | POST | assinatura ativa | Motor de recomendação (consome 1 crédito) |
 
-As ações aceitas em `POST /api/admin/users` são `approve`, `reject`, `pending`, `delete`, `promote`, `demote`, `set_password`, `create`, `grant_plan` e `revoke_plan`.
+As ações aceitas em `POST /api/admin/users` são `delete`, `promote`, `demote`, `set_password`, `create`, `grant_plan` e `revoke_plan`.
 
 `POST /api/feedback` grava uma marcação (`title_pt`, `title_original`, `year`, `opinion` com `liked`/`disliked`/vazio e `watched`) e aceita `{"action":"remove","id":"..."}` para apagar uma marcação específica — o mesmo que `DELETE /api/feedback`.
 
@@ -162,6 +161,6 @@ O arquivo `vercel.json` e a função em `api/index.py` deixam o repositório pro
 | `ASAAS_WEBHOOK_TOKEN` | Recomendada | Mesmo token do webhook na Asaas; protege `/api/billing/webhook`. |
 | `ENVIRONMENT=production` | Recomendada | Desativa credenciais padrão de desenvolvimento e ativa cookies seguros. |
 
-O cadastro de clientes segue os estados `pending`, `approved` e `rejected`. Somente contas `approved` conseguem criar sessão, e só quem tem assinatura confirmada pela Asaas e crédito disponível no dia consegue usar o motor de recomendação. Toda rota administrativa exige uma sessão com papel `admin`. Depois do deploy, confira `GET /api/health`: se `storage.persistent` vier `false`, o banco ainda não está conectado. Recuperação de senha pelo próprio cliente, e-mail transacional e auditoria de ações administrativas permanecem como evoluções futuras.
+O cadastro do cliente não passa por aprovação manual: a conta nasce ativa e a sessão sai junto da resposta de `POST /api/auth/register`. Só quem tem assinatura confirmada pela Asaas e crédito disponível no dia consegue usar o motor de recomendação. Toda rota administrativa exige uma sessão com papel `admin`. Depois do deploy, confira `GET /api/health`: se `storage.persistent` vier `false`, o banco ainda não está conectado. Recuperação de senha pelo próprio cliente, e-mail transacional e auditoria de ações administrativas permanecem como evoluções futuras.
 
 Não coloque chaves no HTML, no Git ou em mensagens de erro. Se uma chave tiver sido exposta anteriormente, revogue-a no respectivo provedor antes de publicar.

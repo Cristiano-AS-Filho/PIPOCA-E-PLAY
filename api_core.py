@@ -12,6 +12,7 @@ from http import HTTPStatus
 
 from auth import (
     admin_email,
+    auth_secret,
     authenticate,
     clear_session_cookie,
     config_status,
@@ -35,7 +36,6 @@ from user_store import (
     find_user_by_billing,
     find_user_by_id,
     get_account,
-    get_status_by_token,
     list_feedback,
     list_history,
     refund_credit,
@@ -48,7 +48,6 @@ from user_store import (
     start_checkout,
     storage_diagnostics,
     update_user_role,
-    update_user_status,
 )
 import billing
 from plans import get_plan, public_plans
@@ -102,31 +101,41 @@ def health():
 # ---------------------------------------------------------------------------
 
 
-def register(body):
+def register(body, secure: bool = False):
+    """Cadastro do cliente: cria a conta e já devolve a sessão.
+
+    Não há mais fila de aprovação. Quem controla a geração do resultado é o
+    pagamento, conferido em ``recommend``.
+    """
     email = _text(body, "email")
     password = _text(body, "password")
     confirmation = body.get("confirmation", body.get("password_confirmation"))
     if confirmation is not None and not isinstance(confirmation, str):
         return HTTPStatus.BAD_REQUEST, {"error": "Informe e-mail e senha."}, None
     try:
-        record, token, was_reopened = register_user(email, password, confirmation)
+        record = register_user(email, password, confirmation)
     except FileExistsError as error:
         return HTTPStatus.CONFLICT, {"error": str(error)}, None
     except StorageError as error:
         return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error), "storage": storage_diagnostics()}, None
     except ValueError as error:
         return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
-    return (
-        HTTPStatus.OK if was_reopened else HTTPStatus.CREATED,
-        {
-            "registered": True,
-            "email": record["email"],
-            "status": record["status"],
-            "token": token,
-            "message": "Seu acesso será liberado assim que o administrador validar. Por favor, aguarde a liberação.",
-        },
-        None,
-    )
+
+    user = {"email": record["email"], "role": "user"}
+    payload = {
+        "registered": True,
+        "email": record["email"],
+        "user": public_user(user),
+        "message": "Cadastro concluído. Escolha um plano e conclua o pagamento para gerar suas indicações.",
+    }
+    if not auth_secret():
+        # Sem AUTH_SECRET não há como assinar a sessão: a conta existe, mas o
+        # cliente precisa entrar pela tela de login (que explica o que falta).
+        payload["authenticated"] = False
+        return HTTPStatus.CREATED, payload, None
+    cookie = session_cookie(create_session(record["email"], "user", record["id"]), secure)
+    payload["authenticated"] = True
+    return HTTPStatus.CREATED, payload, {"Set-Cookie": cookie}
 
 
 def login(body, secure: bool):
@@ -135,21 +144,11 @@ def login(body, secure: bool):
     if not email or not password:
         return HTTPStatus.BAD_REQUEST, {"error": "Informe e-mail e senha."}, None
     try:
-        account = find_user(email)
+        # Toca a base antes de autenticar: banco fora do ar vira 503 explicado,
+        # nunca um "e-mail ou senha inválidos" que mandaria o cliente para o suporte errado.
+        find_user(email)
     except StorageError as error:
         return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
-    if account and account.get("status") == "pending":
-        return (
-            HTTPStatus.FORBIDDEN,
-            {"error": "Seu cadastro ainda está aguardando a validação do administrador."},
-            None,
-        )
-    if account and account.get("status") == "rejected":
-        return (
-            HTTPStatus.FORBIDDEN,
-            {"error": "Seu pedido de acesso foi rejeitado. Você pode realizar um novo cadastro."},
-            None,
-        )
     user = authenticate(email, password)
     if not user:
         if email.strip().lower() == admin_email() and not root_admin_configured():
@@ -168,16 +167,6 @@ def login(body, secure: bool):
 
 def logout(secure: bool):
     return HTTPStatus.OK, {"authenticated": False}, {"Set-Cookie": clear_session_cookie(secure)}
-
-
-def registration_status(email: str, token: str):
-    try:
-        status = get_status_by_token(email, token)
-    except StorageError as error:
-        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
-    if not status:
-        return HTTPStatus.NOT_FOUND, {"error": "Pedido de acesso não encontrado."}, None
-    return HTTPStatus.OK, {"email": email.strip().lower(), "status": status}, None
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +197,7 @@ def admin_overview(session):
 
 
 ADMIN_ACTIONS_WITHOUT_ID = {"create"}
-SELF_DESTRUCTIVE_ACTIONS = {"delete", "reject", "pending", "demote"}
+SELF_DESTRUCTIVE_ACTIONS = {"delete", "demote"}
 
 
 def _blocks_own_access(session, action: str, user_id: str) -> bool:
@@ -238,13 +227,7 @@ def admin_action(session, body):
                           "Peça a outro administrador, ou use outra conta para fazer isso."},
                 None,
             )
-        if action == "approve":
-            payload = {"user": update_user_status(user_id, "approved")}
-        elif action == "reject":
-            payload = {"user": update_user_status(user_id, "rejected")}
-        elif action == "pending":
-            payload = {"user": update_user_status(user_id, "pending")}
-        elif action == "delete":
+        if action == "delete":
             payload = {"deleted": True}
             delete_user(user_id)
         elif action == "promote":
@@ -265,7 +248,6 @@ def admin_action(session, body):
                 "user": create_user(
                     _text(body, "email"),
                     _text(body, "password"),
-                    status=_text(body, "status", default="approved"),
                     role=_text(body, "role", default="user"),
                 )
             }

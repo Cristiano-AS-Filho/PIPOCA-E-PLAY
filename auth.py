@@ -1,7 +1,8 @@
 """Autenticação do Pipoca & Play.
 
 O administrador continua configurado por variáveis de ambiente. As contas de
-clientes usam senhas individuais com PBKDF2 e só entram após aprovação.
+clientes usam senhas individuais com PBKDF2 e entram assim que o cadastro é
+concluído: o acesso ao resultado é controlado pelo pagamento, não por aprovação.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import os
 import time
 from http import cookies
 
-from user_store import StorageError, find_user, is_admin_user, is_approved_user, verify_password
+from user_store import StorageError, find_user, is_admin_user, user_exists, verify_password
 
 
 SESSION_COOKIE = "pipoca_session"
@@ -65,9 +66,8 @@ def config_status():
         "admin_credentials_configured": root_admin_configured(),
         "stored_admin_count": summary["admins"],
         "user_access_configured": True,
-        "allowed_user_count": summary["approved"],
-        "pending_user_count": summary["pending"],
-        "rejected_user_count": summary["rejected"],
+        "user_count": summary["total"],
+        "subscriber_count": summary["subscribers"],
         "billing": billing.diagnostics(),
         "storage_mode": storage["mode"],
         "storage": storage,
@@ -117,7 +117,8 @@ def read_session(cookie_header: str | None):
         if payload.get("role") not in {"admin", "user"} or not payload.get("email"):
             return None
         email = str(payload["email"]).lower()
-        if payload.get("role") == "user" and not is_approved_user(email):
+        # A sessão morre junto com a conta: excluir o acesso no painel derruba o cliente.
+        if payload.get("role") == "user" and not user_exists(email):
             return None
         if payload.get("role") == "admin" and not _is_root_admin(email) and not is_admin_user(email):
             return None
@@ -141,7 +142,7 @@ def authenticate(email: str, password: str):
     if _is_root_admin(normalized) and hmac.compare_digest(password, admin_password()):
         return {"email": normalized, "role": "admin"}
     user = find_user(normalized)
-    if user and user.get("status") == "approved" and verify_password(password, str(user.get("password_hash", ""))):
+    if user and verify_password(password, str(user.get("password_hash", ""))):
         role = "admin" if str(user.get("role", "user")).lower() == "admin" else "user"
         return {"email": normalized, "role": role, "user_id": str(user.get("id", ""))}
     return None

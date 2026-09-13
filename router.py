@@ -34,13 +34,6 @@ def _session(headers):
     return read_session(headers.get("Cookie"))
 
 
-def _first(query, key):
-    values = query.get(key) if isinstance(query, dict) else None
-    if isinstance(values, list):
-        return values[0] if values else ""
-    return values or ""
-
-
 def _remove_requested(body):
     return str(body.get("action", "")).lower() in {"remove", "delete"}
 
@@ -64,7 +57,7 @@ def handle(method, path, query=None, body=None, headers=None):
 
     # -- autenticação --------------------------------------------------------
     if path == "/api/auth/register":
-        return api_core.register(body) if method == "POST" else METHOD_NOT_ALLOWED
+        return api_core.register(body, is_secure_request(headers)) if method == "POST" else METHOD_NOT_ALLOWED
     if path == "/api/auth/login":
         return api_core.login(body, is_secure_request(headers)) if method == "POST" else METHOD_NOT_ALLOWED
     if path == "/api/auth/logout":
@@ -74,10 +67,6 @@ def handle(method, path, query=None, body=None, headers=None):
             return METHOD_NOT_ALLOWED
         user = _session(headers)
         return HTTPStatus.OK, {"authenticated": bool(user), "user": public_user(user)}, None
-    if path == "/api/auth/status":
-        if method != "GET":
-            return METHOD_NOT_ALLOWED
-        return api_core.registration_status(_first(query, "email"), _first(query, "token"))
 
     # -- painel administrativo ----------------------------------------------
     if path in {"/api/admin/status", "/api/admin/users"}:

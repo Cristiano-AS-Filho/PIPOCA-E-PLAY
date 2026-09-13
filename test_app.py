@@ -51,13 +51,12 @@ from user_store import (  # noqa: E402
     admin_users,
     create_user,
     delete_user,
-    get_status_by_token,
     register_user,
     set_user_password,
     storage_diagnostics,
     storage_mode,
     update_user_role,
-    update_user_status,
+    user_exists,
 )
 
 
@@ -408,34 +407,33 @@ class PipocaPlayTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             validate_recommendation_payload({"recommendations": [item]})
 
-    def test_registration_starts_pending_and_login_is_blocked(self):
-        record, token, reopened = register_user("User@Test.Local", "user-password")
-        self.assertFalse(reopened)
-        self.assertEqual(record["status"], "pending")
-        self.assertEqual(get_status_by_token("user@test.local", token), "pending")
-        self.assertIsNone(authenticate("user@test.local", "user-password"))
-        self.assertEqual(
-            admin_summary(),
-            {"total": 1, "pending": 1, "approved": 0, "rejected": 0, "admins": 0, "subscribers": 0},
-        )
-
-    def test_admin_can_approve_reject_and_delete_user(self):
-        record, token, _ = register_user("user@test.local", "user-password")
-        approved = update_user_status(record["id"], "approved")
-        self.assertEqual(approved["status"], "approved")
+    def test_registration_creates_an_active_account_without_approval(self):
+        """Não existe mais fila: o cadastro já entra e já autentica."""
+        record = register_user("User@Test.Local", "user-password")
+        self.assertEqual(record["email"], "user@test.local")
+        self.assertNotIn("status", record)
+        self.assertTrue(user_exists("user@test.local"))
         user = authenticate("user@test.local", "user-password")
         self.assertEqual(user["role"], "user")
         cookie = "pipoca_session=" + create_session(user["email"], user["role"], user["user_id"])
         self.assertEqual(read_session(cookie)["role"], "user")
-        self.assertEqual(get_status_by_token("user@test.local", token), "approved")
+        self.assertEqual(
+            admin_summary(),
+            {"total": 1, "admins": 0, "subscribers": 0},
+        )
 
-        rejected = update_user_status(record["id"], "rejected")
-        self.assertEqual(rejected["status"], "rejected")
-        self.assertIsNone(authenticate("user@test.local", "user-password"))
+    def test_deleting_the_account_ends_the_session_and_the_login(self):
+        record = register_user("user@test.local", "user-password")
+        user = authenticate("user@test.local", "user-password")
+        cookie = "pipoca_session=" + create_session(user["email"], user["role"], user["user_id"])
+        self.assertIsNotNone(read_session(cookie))
+
         delete_user(record["id"])
+        self.assertIsNone(read_session(cookie))
+        self.assertIsNone(authenticate("user@test.local", "user-password"))
         self.assertEqual(admin_users(), [])
 
-    def test_duplicate_pending_registration_is_rejected(self):
+    def test_duplicate_registration_is_rejected(self):
         register_user("user@test.local", "user-password")
         with self.assertRaises(FileExistsError):
             register_user("USER@test.local", "another-password")
@@ -462,8 +460,8 @@ class PipocaPlayTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"BLOB_READ_WRITE_TOKEN": "test-blob-token"}, clear=False):
             with patch("user_store._blob_sdk", return_value=(fake_get, fake_put, FakeBlobNotFoundError)):
-                record, _, _ = register_user("blob@test.local", "blob-password")
-                self.assertEqual(record["status"], "pending")
+                record = register_user("blob@test.local", "blob-password")
+                self.assertEqual(record["email"], "blob@test.local")
                 self.assertEqual(storage_mode(), "vercel-blob")
                 self.assertEqual([call[0] for call in calls], ["get", "put"])
                 self.assertEqual(json.loads(blob_payload.decode("utf-8"))[0]["email"], "blob@test.local")
@@ -503,8 +501,8 @@ class PipocaPlayTests(unittest.TestCase):
             clear=False,
         ):
             with patch("user_store.urllib.request.urlopen", side_effect=fake_urlopen):
-                record, _, _ = register_user("oidc@test.local", "oidc-password")
-                self.assertEqual(record["status"], "pending")
+                record = register_user("oidc@test.local", "oidc-password")
+                self.assertEqual(record["email"], "oidc@test.local")
                 self.assertEqual(storage_mode(), "vercel-blob")
                 self.assertEqual([request.get_method() for request in requests], ["GET", "PUT"])
                 self.assertEqual(
@@ -566,9 +564,9 @@ class PipocaPlayTests(unittest.TestCase):
         with patch.dict(os.environ, {"DATABASE_URL": "postgres://user:pass@host/db"}, clear=False):
             with patch("user_store._postgres_driver", return_value=FakeDriver):
                 self.assertEqual(storage_mode(), "postgres")
-                record, _, _ = register_user("pg@test.local", "pg-password-123")
-                self.assertEqual(record["status"], "pending")
-                self.assertEqual(admin_summary()["pending"], 1)
+                record = register_user("pg@test.local", "pg-password-123")
+                self.assertEqual(record["email"], "pg@test.local")
+                self.assertEqual(admin_summary()["total"], 1)
                 self.assertEqual(json.loads(stored["pipoca-play:users"])[0]["email"], "pg@test.local")
                 self.assertIn("CREATE", statements)
 
@@ -673,12 +671,9 @@ class PipocaPlayTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         user_id = payload["user"]["id"]
-        self.assertEqual(payload["user"]["status"], "approved")
+        self.assertNotIn("status", payload["user"])
+        self.assertEqual(authenticate("novo@test.local", "senha-inicial")["role"], "user")
 
-        status, payload, _ = api_core.admin_action(admin, {"action": "pending", "user_id": user_id})
-        self.assertEqual(payload["user"]["status"], "pending")
-        status, payload, _ = api_core.admin_action(admin, {"action": "approve", "user_id": user_id})
-        self.assertEqual(payload["user"]["status"], "approved")
         status, payload, _ = api_core.admin_action(admin, {"action": "promote", "user_id": user_id})
         self.assertEqual(payload["user"]["role"], "admin")
         self.assertEqual(payload["summary"]["admins"], 1)
@@ -697,8 +692,10 @@ class PipocaPlayTests(unittest.TestCase):
         admin = {"email": "admin@test.local", "role": "admin"}
         status, _, _ = api_core.admin_action(admin, {"action": "inventada", "user_id": "abc"})
         self.assertEqual(status, 400)
-        status, _, _ = api_core.admin_action(admin, {"action": "approve", "user_id": "nao-existe"})
+        status, _, _ = api_core.admin_action(admin, {"action": "promote", "user_id": "nao-existe"})
         self.assertEqual(status, 404)
+        status, _, _ = api_core.admin_action(admin, {"action": "approve", "user_id": "abc"})
+        self.assertEqual(status, 400)
         api_core.admin_action(admin, {"action": "create", "email": "dup@test.local", "password": "senha-inicial"})
         status, _, _ = api_core.admin_action(
             admin, {"action": "create", "email": "dup@test.local", "password": "outra-senha"}
@@ -708,7 +705,7 @@ class PipocaPlayTests(unittest.TestCase):
     def test_admin_cannot_remove_their_own_access(self):
         created = create_user("boss@test.local", "boss-password", role="admin")
         session = {"email": "boss@test.local", "role": "admin"}
-        for action in ("delete", "reject", "pending", "demote"):
+        for action in ("delete", "demote"):
             status, payload, _ = api_core.admin_action(
                 session, {"action": action, "user_id": created["id"]}
             )
@@ -759,13 +756,31 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertIn("HttpOnly", headers["Set-Cookie"])
         self.assertIn("Secure", headers["Set-Cookie"])
 
-    def test_pending_account_cannot_log_in_through_the_route(self):
-        register_user("wait@test.local", "wait-password")
-        status, payload, _ = api_core.login(
-            {"email": "wait@test.local", "password": "wait-password"}, secure=False
+    def test_registration_route_already_returns_the_session_cookie(self):
+        """Cadastrou, está dentro: a próxima etapa é o pagamento, não a espera."""
+        status, payload, headers = router.handle(
+            "POST",
+            "/api/auth/register",
+            {},
+            {"email": "novo@test.local", "password": "senha-do-cliente", "confirmation": "senha-do-cliente"},
+            {"X-Forwarded-Proto": "https"},
         )
-        self.assertEqual(status, 403)
-        self.assertIn("aguardando", payload["error"])
+        self.assertEqual(status, 201)
+        self.assertTrue(payload["registered"])
+        self.assertTrue(payload["authenticated"])
+        self.assertEqual(payload["user"], {"email": "novo@test.local", "role": "user"})
+        self.assertIn("pagamento", payload["message"])
+        self.assertIn("HttpOnly", headers["Set-Cookie"])
+        self.assertIn("Secure", headers["Set-Cookie"])
+
+        session = read_session(headers["Set-Cookie"].split(";", 1)[0])
+        self.assertEqual(session["email"], "novo@test.local")
+        self.assertEqual(session["role"], "user")
+
+        status, payload, _ = api_core.login(
+            {"email": "novo@test.local", "password": "senha-do-cliente"}, secure=False
+        )
+        self.assertEqual(status, 200)
 
     def test_generate_poster_image_calls_the_images_endpoint(self):
         """Último recurso do pôster: gera uma capa pela mesma conta da OpenAI."""
@@ -1185,7 +1200,6 @@ class PipocaPlayTests(unittest.TestCase):
             ("POST", "/api/auth/login"),
             ("POST", "/api/auth/logout"),
             ("GET", "/api/auth/me"),
-            ("GET", "/api/auth/status"),
             ("GET", "/api/admin/status"),
             ("GET", "/api/admin/users"),
             ("POST", "/api/admin/users"),
@@ -1230,13 +1244,13 @@ class PipocaPlayTests(unittest.TestCase):
         anonymous = router.handle("GET", "/api/auth/me", {}, {}, {})
         self.assertFalse(anonymous[1]["authenticated"])
 
-    def test_router_reads_the_query_string_of_the_registration_status(self):
-        record, token, _ = register_user("query@test.local", "client-password")
+    def test_router_answers_404_for_the_retired_registration_status(self):
+        """A consulta de aprovação saiu junto com a fila de aprovação."""
         status, payload, _ = router.handle(
-            "GET", "/api/auth/status", {"email": ["query@test.local"], "token": [token]}, {}, {}
+            "GET", "/api/auth/status", {"email": ["query@test.local"], "token": ["x"]}, {}, {}
         )
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["status"], "pending")
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["path"], "/api/auth/status")
 
     def test_deploy_stays_within_the_serverless_function_limit(self):
         """O plano Hobby da Vercel aceita no máximo 12 funções por deploy."""
@@ -1250,7 +1264,7 @@ class PipocaPlayTests(unittest.TestCase):
     # -----------------------------------------------------------------
 
     def _client_session(self, plan=""):
-        """Cria um cliente aprovado e devolve (sessão, id da conta)."""
+        """Cria um cliente e devolve (sessão, id da conta)."""
         record = create_user("plan@test.local", "client-password")
         if plan:
             activate_subscription(record["id"], plan, "pay_test", "TEST")
@@ -1634,6 +1648,101 @@ class PipocaPlayTests(unittest.TestCase):
         status, payload, _ = api_core.admin_action(admin, {"action": "revoke_plan", "user_id": record["id"]})
         self.assertEqual(status, 200)
         self.assertFalse(payload["account"]["subscription_active"])
+
+    # -----------------------------------------------------------------
+    # Jornada completa: cadastro -> pagamento -> resultado
+    # -----------------------------------------------------------------
+
+    def test_journey_goes_from_signup_straight_to_payment_and_result(self):
+        """Cadastro → pagamento → resultado, sem nenhuma aprovação no meio."""
+        asaas = {"ASAAS_API_KEY": "$aact_hmlg_test"}
+        engine_calls = []
+
+        def fake_call(filters, feedback=None):
+            engine_calls.append(filters)
+            return json.dumps({"recommendations": []})
+
+        def fake_request(method, path, payload=None, params=None):
+            if path == "/customers" and method == "GET":
+                return {"data": []}
+            if path == "/customers":
+                return {"id": "cus_j"}
+            if path == "/subscriptions":
+                return {"id": "sub_j"}
+            if path == "/subscriptions/sub_j/payments":
+                return {"data": [{"id": "pay_j", "status": "PENDING", "invoiceUrl": "https://asaas.test/i/j"}]}
+            return {}
+
+        # 1. Cadastro: a conta nasce ativa e a sessão já vem na resposta.
+        status, payload, headers = router.handle(
+            "POST",
+            "/api/auth/register",
+            {},
+            {"email": "jornada@test.local", "password": "senha-do-cliente"},
+            {},
+        )
+        self.assertEqual(status, 201)
+        self.assertTrue(payload["authenticated"])
+        cookie = {"Cookie": headers["Set-Cookie"].split(";", 1)[0]}
+
+        status, payload, _ = router.handle("GET", "/api/auth/me", {}, {}, cookie)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["authenticated"])
+
+        # 2. Sem pagamento não há resultado — e o motor nem chega a ser chamado.
+        with patch("recommender.call_openai", fake_call):
+            status, payload, _ = router.handle("POST", "/api/recommend", {}, {"filters": FILTERS}, cookie)
+        self.assertEqual(status, 402)
+        self.assertEqual(payload["code"], "subscription_required")
+        self.assertEqual(engine_calls, [])
+
+        # 3. Checkout aberto: a fatura pendente continua sem liberar o resultado.
+        with patch.dict(os.environ, asaas), patch("billing._request", fake_request):
+            status, payload, _ = router.handle(
+                "POST",
+                "/api/billing/checkout",
+                {},
+                {"plan": "silver", "name": "Cliente Teste", "document": "529.982.247-25"},
+                cookie,
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["checkout_url"], "https://asaas.test/i/j")
+        with patch("recommender.call_openai", fake_call):
+            status, _, _ = router.handle("POST", "/api/recommend", {}, {"filters": FILTERS}, cookie)
+        self.assertEqual(status, 402)
+        self.assertEqual(engine_calls, [])
+
+        # 4. Pagamento confirmado pela Asaas.
+        status, payload, _ = router.handle(
+            "POST",
+            "/api/billing/webhook",
+            {},
+            {
+                "event": "PAYMENT_CONFIRMED",
+                "payment": {"id": "pay_j", "customer": "cus_j", "subscription": "sub_j", "status": "CONFIRMED"},
+            },
+            {},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["access"], "granted")
+
+        # 5. Resultado liberado, consumindo um crédito do plano.
+        with patch("recommender.call_openai", fake_call):
+            status, payload, _ = router.handle("POST", "/api/recommend", {}, {"filters": FILTERS}, cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(engine_calls), 1)
+        self.assertEqual(payload["account"]["plan"], "silver")
+        self.assertEqual(payload["account"]["credits_remaining"], 1)
+
+        # 6. O painel continua restrito ao administrador.
+        status, _, _ = router.handle("GET", "/api/admin/status", {}, {}, cookie)
+        self.assertEqual(status, 403)
+        admin_cookie = {"Cookie": "pipoca_session=" + create_session("admin@test.local", "admin")}
+        status, payload, _ = router.handle("GET", "/api/admin/status", {}, {}, admin_cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["summary"]["total"], 1)
+        self.assertEqual(payload["summary"]["subscribers"], 1)
+        self.assertNotIn("status", payload["users"][0])
 
     def test_admin_listing_shows_the_subscription_of_each_client(self):
         record = create_user("listed@test.local", "client-password")

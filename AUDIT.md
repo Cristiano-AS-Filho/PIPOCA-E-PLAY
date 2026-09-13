@@ -254,3 +254,45 @@ A ordem final da coleta é: motor → iTunes → Wikipedia → capa gerada, cada
 Fluxo completo em Chromium (Playwright) contra o servidor local, com o motor e as APIs de pôster simuladas no transporte: `/api/recommend` devolveu `itunes`, `itunes` e `wikipedia`; os três cartões pintaram `background-image` com esses endereços, o navegador buscou de fato as três imagens, e o selo "Capa ilustrativa (gerada por IA)" **não apareceu em nenhum** — porque nenhum caiu na capa gerada.
 
 Uma ressalva honesta: a rede externa está bloqueada neste ambiente, então iTunes e Wikipedia foram exercitados contra o formato real de resposta, não contra os servidores reais. O comportamento em produção depende de essas duas APIs responderem do runtime da Vercel; os logs `[poster]` foram acrescentados exatamente para que isso apareça no painel caso não respondam.
+
+## Rodada 11 — o cadastro deixa de esperar aprovação manual
+
+### Diagnóstico
+
+A fila de aprovação vinha da versão anterior do produto, quando não havia pagamento: o cadastro nascia `pending`, o administrador liberava conta por conta em `/admin` e só então o cliente conseguia entrar. Com o checkout da Asaas (Rodada 2) o pagamento passou a ser o portão real da geração de resultados, e a aprovação virou uma etapa a mais sem função — o cliente cadastrava, via "Aguardando liberação" e parava ali.
+
+O mapeamento da regra antiga, antes de qualquer alteração, encontrou dez pontos:
+
+1. `user_store.register_user` gravava `status: "pending"` e um `status_token_hash` para o cliente acompanhar o pedido;
+2. `user_store.update_user_status` / `VALID_STATUSES` / `get_status_by_token` existiam só para aprovar, rejeitar e consultar;
+3. `auth.authenticate` exigia `status == "approved"` para autenticar, e `auth.read_session` derrubava a sessão via `is_approved_user`;
+4. `api_core.login` devolvia 403 com "aguardando a validação do administrador" e 403 para rejeitados;
+5. `api_core.register` respondia com a mensagem de espera, sem sessão;
+6. `api_core.admin_action` tinha as ações `approve`, `reject` e `pending`;
+7. `GET /api/auth/status` (em `router.py`) servia só para o cliente acompanhar o pedido;
+8. `auth.config_status` publicava os contadores `pending_user_count` / `rejected_user_count`;
+9. `public/admin.html` tinha coluna "Situação", filtro por situação, contadores de pendentes/liberados/rejeitados e os botões **Liberar**, **Rejeitar** e **Voltar p/ pendente**;
+10. `public/index.html` tinha a tela "Aguardando liberação" e os textos que prometiam a validação do administrador.
+
+O que **não** pertencia à regra antiga e por isso foi preservado: `delete`, `promote`, `demote`, `set_password`, `create`, `grant_plan` e `revoke_plan` no painel; toda a cobrança (`billing.py`, webhook, `consume_credit`, `SubscriptionRequired`); e os estados de *assinatura* `none`/`pending`/`active`/`past_due`/`canceled`, que são do pagamento e apenas repetem a palavra "pending".
+
+### Correções aplicadas
+
+O campo `status` do cadastro deixou de existir: a conta nasce ativa e o acesso ao resultado continua valendo pelo pagamento.
+
+- **`user_store.py`** — `register_user` cria a conta já ativa e devolve só o registro (o e-mail repetido segue recusado, agora sem exceção para rejeitados, o que impede sobrescrever a senha de uma conta existente); `create_user` perdeu o parâmetro `status`; `update_user_status`, `get_status_by_token` e `VALID_STATUSES` saíram; `is_approved_user` virou `user_exists` (a sessão morre quando a conta é excluída); `is_admin_user` e `update_user_role` passaram a olhar só o papel; `admin_users` ordena por data de cadastro; `admin_summary` conta `total`, `admins` e `subscribers`.
+- **`auth.py`** — `authenticate` não consulta mais o status; `read_session` usa `user_exists`; `config_status` troca os contadores de pendentes/rejeitados por `user_count` e `subscriber_count`.
+- **`api_core.py`** — `register` devolve **201 com o `Set-Cookie` da sessão** e a mensagem que aponta o próximo passo (escolher plano e pagar); sem `AUTH_SECRET` a conta é criada e a resposta vem com `authenticated: false`, sem sessão inválida. `login` perdeu os dois 403; `registration_status` saiu; `admin_action` perdeu `approve`/`reject`/`pending` e `SELF_DESTRUCTIVE_ACTIONS` ficou em `{delete, demote}`.
+- **`router.py`** — a rota `GET /api/auth/status` saiu (e com ela o helper `_first`, que só existia para ela); `register` recebe `is_secure_request(headers)` para marcar o cookie como `Secure`.
+- **`public/index.html`** — a tela "Aguardando liberação" foi removida com o estado `authSent` e o `backToLogin`; o cadastro termina como o login, indo direto para `/app`; os textos que falavam em análise do administrador viraram a jornada real ("o acesso é criado na hora: em seguida você escolhe o plano e conclui o pagamento") e o botão passou a ser "Criar acesso e continuar".
+- **`public/admin.html`** — saíram a coluna "Situação", o filtro por situação, os contadores de pendentes/liberados/rejeitados e os três botões da aprovação; ficaram **Nova senha**, **Liberar plano**, **Cancelar plano**, **Tornar admin/cliente** e **Excluir**. As classes de cor `.tag.pending/.approved/.rejected`, que a coluna Plano também usava, viraram `.tag.warn/.ok/.off` — o rótulo "Aguardando pagamento" continua igual, porque é da assinatura.
+
+Contas antigas gravadas como `pending` ou `rejected` continuam válidas: como ninguém mais lê o campo, elas passam a entrar normalmente e o painel as lista sem situação. Nenhuma migração de banco é necessária — a base é um documento JSON, e os campos herdados são simplesmente ignorados.
+
+### Validação
+
+`python3 -m unittest test_app` — 110 testes verdes. O novo `test_journey_goes_from_signup_straight_to_payment_and_result` percorre a jornada inteira pelo roteador real: cadastro devolvendo sessão → `/api/recommend` em **402** sem pagamento (e o motor não é sequer chamado) → checkout aberto ainda em 402 → webhook `PAYMENT_CONFIRMED` → `/api/recommend` em **200** gastando um crédito → painel restrito ao administrador. Também cobertos: cadastro autenticando na hora, e-mail repetido em 409, `GET /api/auth/status` respondendo 404, `approve` recusada com 400, e a sessão caindo quando a conta é excluída.
+
+De ponta a ponta contra o servidor local: cadastro pela API devolveu `201` com `Set-Cookie`; `/api/recommend` sem plano veio `402 subscription_required`; com plano liberado pelo painel a chamada passou do portão e falhou só no motor (`502`, sem chave da OpenAI neste sandbox), com o crédito devolvido; `revoke_plan` derrubou o acesso de volta para `402`; `delete` encerrou a sessão do cliente. Uma base simulando o formato antigo (contas `pending`, `rejected` e `approved`) autenticou as três normalmente.
+
+Em Chromium (Playwright): na landing, o cadastro leva **direto para `/app`** — a tela "Aguardando liberação" não aparece mais e nenhum texto cita validação do administrador; no `/admin`, a tabela mostra E-mail, Papel, Plano, Cadastro e Ações, os contadores são Contas cadastradas / Assinantes ativos / Administradores, não há botão de liberar ou rejeitar cadastro, e criar acesso pelo painel continua funcionando.
