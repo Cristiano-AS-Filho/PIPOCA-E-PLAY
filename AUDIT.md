@@ -296,3 +296,33 @@ Contas antigas gravadas como `pending` ou `rejected` continuam válidas: como ni
 De ponta a ponta contra o servidor local: cadastro pela API devolveu `201` com `Set-Cookie`; `/api/recommend` sem plano veio `402 subscription_required`; com plano liberado pelo painel a chamada passou do portão e falhou só no motor (`502`, sem chave da OpenAI neste sandbox), com o crédito devolvido; `revoke_plan` derrubou o acesso de volta para `402`; `delete` encerrou a sessão do cliente. Uma base simulando o formato antigo (contas `pending`, `rejected` e `approved`) autenticou as três normalmente.
 
 Em Chromium (Playwright): na landing, o cadastro leva **direto para `/app`** — a tela "Aguardando liberação" não aparece mais e nenhum texto cita validação do administrador; no `/admin`, a tabela mostra E-mail, Papel, Plano, Cadastro e Ações, os contadores são Contas cadastradas / Assinantes ativos / Administradores, não há botão de liberar ou rejeitar cadastro, e criar acesso pelo painel continua funcionando.
+
+## Rodada 12 — o administrador concede créditos que não se renovam
+
+### Diagnóstico
+
+O pedido: um administrador precisa conseguir adicionar créditos a um cadastro específico (cortesia, suporte, teste interno, período de teste grátis), e esses créditos **não podem virar recorrência**.
+
+O modelo de créditos até aqui não tinha saldo nenhum: `credits` guardava apenas `{day, used}`, um contador do dia, e o saldo era sempre derivado do plano (`daily_credits(plan) - used`). Como `consume_credit` começava exigindo `subscription_is_active`, qualquer crédito concedido teria que passar por uma assinatura — exatamente o que o pedido proíbe. Não havia como distinguir origem, nem histórico de concessões.
+
+### Correções aplicadas
+
+Entrou uma **carteira de créditos avulsos**, separada de `billing` justamente para não se confundir com assinatura:
+
+- `user["credit_wallet"] = {balance, granted, used}` — saldo gasto uma vez, sem ciclo e sem renovação;
+- `user["credit_grants"]` — histórico (até 50 por conta) com `credits`, `origin`, `reason`, `granted_by`, `balance_before`, `balance_after` e `created_at`;
+- `CREDIT_ORIGINS = ("manual", "trial")` — a concessão do administrador e o teste grátis compartilham a mesma regra: uso único.
+
+`_plan_remaining` (saldo do plano, que renova) e `wallet_balance` (avulso, que não renova) passaram a ser lidos separadamente, e `_remaining_credits` é a soma dos dois. `consume_credit` gasta **primeiro o crédito do plano** — ele volta amanhã — e só depois o avulso; grava a origem do débito em `credits["last_source"]` para que `refund_credit` devolva no mesmo lugar quando o motor falha. Sem plano e sem saldo avulso o erro continua sendo `SubscriptionRequired` (402, "assine um plano"); com plano ativo e o dia esgotado, `CreditError` (429).
+
+`grant_credits(user_id, credits, origin, reason, granted_by)` valida a quantidade (inteiro, maior que zero, teto de 10000), valida a origem, soma ao saldo e grava a concessão — sem encostar em `billing`: plano, `status`, `expires_at` e ciclo ficam exatamente como estavam. A ação `add_credits` em `POST /api/admin/users` expõe isso ao painel, reaproveitando a checagem de papel que já protege todas as ações administrativas: sessão sem papel `admin` recebe **403** antes de qualquer leitura do corpo.
+
+No painel entrou a coluna **Créditos** (total e, abaixo, quantos são avulsos) e o botão **Adicionar créditos**, que abre uma janela com saldo atual, quantidade, origem (*concessão manual* / *teste grátis*), motivo opcional, **tela de confirmação** com o novo saldo e o aviso de que não há renovação automática, além das últimas concessões da conta. No ambiente logado, o bloco de créditos deixou de dizer "créditos de hoje / zeram e voltam à meia-noite" quando parte do saldo é avulsa: passa a separar o que renova do que não renova.
+
+### Validação
+
+`python3 -m unittest test_app` — 122 testes verdes (12 novos), cobrindo os sete cenários pedidos: concessão a quem tinha 0 (vira 10, sem criar assinatura); soma ao saldo existente (5 + 10 = 15); esgotamento sem reposição, inclusive virando o dia com `brazil_day` adiantado; teste grátis seguindo a mesma regra; plano contratado depois renovando normalmente ao lado do saldo avulso, que fica intacto até o plano do dia acabar; bloqueio de 403 para sessão de cliente, sessão ausente, cookie forjado e papel `user`; e auditoria completa da concessão. Somam-se a eles as recusas de quantidade (0, negativo, texto, fracionário, nulo, booleano, acima do teto), origem inválida, cadastro inexistente, a devolução do crédito avulso quando o motor falha e o plano ilimitado que nunca toca no saldo concedido.
+
+Contra o servidor local: cliente comum e requisição sem sessão recusados com 403; concessão de 10 créditos gravada com `granted_by`, motivo e horário, com `plan`, `subscription_status` e `expires_at` inalterados; o cliente sem plano passou do portão de pagamento usando o crédito avulso (e o crédito voltou à carteira quando o motor falhou por falta de chave neste sandbox).
+
+Em Chromium (Playwright): o botão abre a janela com o saldo atual e o histórico; `0` e `-3` são recusados antes de sair do navegador; a confirmação mostra "Saldo atual 10 · Créditos adicionados +20 · Novo saldo 30" com o aviso de não renovação; confirmar grava, fecha a janela, atualiza a linha (30, avulsos: 30) e registra a concessão no histórico. Em 390px de largura a janela cabe na tela sem rolagem horizontal. No ambiente logado, um cliente só com avulsos vê "30 créditos" e "não há renovação automática"; com plano Gold somado, "35 créditos" e "5 do plano voltam à meia-noite; 30 são créditos concedidos, sem renovação".

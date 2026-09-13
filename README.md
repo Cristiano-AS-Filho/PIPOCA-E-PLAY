@@ -28,6 +28,19 @@ O acesso à recomendação é pago. Assim que conclui o cadastro, o cliente esco
 | Gold | R$ 15,00 | 5 créditos por dia | 30 dias |
 | Diamante | R$ 20,00 | ilimitado | 30 dias |
 
+### Créditos avulsos (concessão manual e teste grátis)
+
+Além dos créditos do plano, uma conta pode ter **créditos avulsos**, concedidos pelo administrador em `/admin` (cortesia, suporte, testes, período de teste grátis). Eles vivem em `credit_wallet`, fora de `billing`, e a diferença é a renovação:
+
+| | Crédito do plano | Crédito avulso (`manual` / `trial`) |
+| --- | --- | --- |
+| Origem | checkout confirmado pela Asaas | concessão do administrador |
+| Renovação | zera e volta todo dia à meia-noite | **nenhuma**: é gasto uma vez |
+| Efeito na conta | define plano, ciclo e validade | não cria assinatura nem altera o plano |
+| Quando acaba | volta no dia seguinte | só com um plano contratado ou nova concessão |
+
+O saldo que o cliente vê é a soma dos dois (`credits_remaining`). Na hora de gastar, **o crédito do plano sai primeiro**, porque ele se renova amanhã — o avulso é sempre o último a ser consumido, e uma consulta que falha devolve o crédito à mesma origem de onde saiu. Toda concessão fica registrada em `credit_grants` com quantidade, origem, motivo, administrador responsável e data.
+
 **1 crédito = 1 consulta** de filme, série ou novela. Os créditos diários zeram e voltam à meia-noite no horário de Brasília (UTC-3 fixo, sem depender do banco de fusos do runtime); o ciclo de 30 dias é contado a partir da confirmação do pagamento. Quando os créditos do dia acabam, a plataforma explica o limite e oferece a troca de plano; se o motor falhar depois do débito, o crédito é devolvido automaticamente.
 
 O fluxo de cobrança é:
@@ -41,7 +54,7 @@ Se o cliente vir *"O checkout ainda não está configurado neste deploy"*, a cha
 
 Na Asaas, em **Integrações → Webhooks**, aponte a URL para `https://SEU-DOMINIO/api/billing/webhook`, marque os eventos de cobrança e use no campo *Token de autenticação* o mesmo valor de `ASAAS_WEBHOOK_TOKEN`. Notificações com token diferente são recusadas com HTTP 401.
 
-Pelo painel `/admin` é possível **liberar um plano manualmente** (cortesia, suporte, pagamento resolvido fora do fluxo) e **cancelar** uma assinatura ativa.
+Pelo painel `/admin` é possível **liberar um plano manualmente** (cortesia, suporte, pagamento resolvido fora do fluxo), **cancelar** uma assinatura ativa e **adicionar créditos avulsos** a um cadastro.
 
 ## Marcações do cliente (gostei / não gostei / já assisti)
 
@@ -66,7 +79,9 @@ Existem dois caminhos para ter uma conta de administrador:
 1. **Administrador raiz por variável de ambiente.** Defina `ADMIN_EMAIL` e `ADMIN_PASSWORD` no projeto. Esse acesso funciona mesmo com a base de contas vazia e é o que destrava o painel na primeira vez. Sem essas duas variáveis em produção, **nenhum** login de administrador é aceito.
 2. **Administradores gravados na base.** Já dentro do painel, use “Tornar admin” em qualquer conta, ou crie uma conta com o papel *Administrador* no bloco “Criar acesso manualmente”. Esses administradores entram pelo mesmo `/admin` com o e-mail e a senha deles.
 
-No painel você vê os contadores (contas cadastradas, assinantes ativos, administradores), busca por e-mail, filtra por papel e, em cada conta, pode **definir uma nova senha**, **liberar um plano**, **cancelar a assinatura**, **promover/rebaixar** e **excluir**. Há ainda um bloco para criar o acesso de um cliente direto pelo painel. Não existe aprovação de cadastro: todo cadastro já entra ativo e o pagamento é que libera o resultado. Por segurança, o administrador logado não consegue excluir nem despromover a própria conta — outra conta de administrador precisa fazer isso.
+No painel você vê os contadores (contas cadastradas, assinantes ativos, administradores), busca por e-mail, filtra por papel e, em cada conta, pode **definir uma nova senha**, **adicionar créditos**, **liberar um plano**, **cancelar a assinatura**, **promover/rebaixar** e **excluir**. A coluna *Créditos* mostra o saldo total e, abaixo, quantos são avulsos.
+
+**Adicionar créditos** abre uma janela com o saldo atual, a quantidade, a origem (*concessão manual* ou *teste grátis*), um motivo opcional e uma **tela de confirmação** com o novo saldo antes de gravar — junto do aviso de que esses créditos não têm renovação automática. As últimas concessões da conta aparecem na mesma janela. A autorização é verificada no servidor: `POST /api/admin/users` recusa com **403** qualquer sessão que não seja de administrador, então esconder o botão não é o que protege a operação. Há ainda um bloco para criar o acesso de um cliente direto pelo painel. Não existe aprovação de cadastro: todo cadastro já entra ativo e o pagamento é que libera o resultado. Por segurança, o administrador logado não consegue excluir nem despromover a própria conta — outra conta de administrador precisa fazer isso.
 
 O último bloco, **Diagnóstico do deploy**, mostra em qual armazenamento as contas estão sendo gravadas e quais variáveis o ambiente encontrou. A mesma informação, sem nenhum segredo, está disponível publicamente em `GET /api/health` — é o endereço mais rápido para descobrir por que um cadastro falhou.
 
@@ -135,7 +150,9 @@ Os testes rodam com `python3 -m unittest test_app`.
 | `/api/billing/webhook` | POST | Asaas (token) | Confirma ou suspende a assinatura |
 | `/api/recommend` | POST | assinatura ativa | Motor de recomendação (consome 1 crédito) |
 
-As ações aceitas em `POST /api/admin/users` são `delete`, `promote`, `demote`, `set_password`, `create`, `grant_plan` e `revoke_plan`.
+As ações aceitas em `POST /api/admin/users` são `delete`, `promote`, `demote`, `set_password`, `create`, `grant_plan`, `revoke_plan` e `add_credits`.
+
+`add_credits` recebe `user_id`, `credits` (inteiro de 1 a 10000), `origin` (`manual` ou `trial`) e `reason` opcional. Ele soma ao saldo avulso, grava a concessão no histórico e **não** toca em `billing`: nada de plano, assinatura, validade ou renovação.
 
 `POST /api/feedback` grava uma marcação (`title_pt`, `title_original`, `year`, `opinion` com `liked`/`disliked`/vazio e `watched`) e aceita `{"action":"remove","id":"..."}` para apagar uma marcação específica — o mesmo que `DELETE /api/feedback`.
 

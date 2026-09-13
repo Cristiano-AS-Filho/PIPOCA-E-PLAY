@@ -92,6 +92,24 @@
   .tag.off{color:#e58a76;border-color:rgba(196,85,61,.45);}
   .tag.admin{color:var(--ink);background:var(--marquee);border-color:var(--marquee);}
   .empty{padding:22px;text-align:center;color:var(--cream-dim);font-size:13px;}
+
+  .modal{position:fixed;inset:0;background:rgba(8,10,14,.72);display:flex;align-items:center;justify-content:center;padding:18px;z-index:50;}
+  .modal-box{background:var(--bg-elev);border:1px solid var(--line);border-radius:var(--radius);padding:22px;width:100%;max-width:520px;max-height:90vh;overflow-y:auto;}
+  .modal-box h3{font-family:'Bebas Neue',cursive;font-size:24px;letter-spacing:.5px;margin:0 0 4px;}
+  .modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap;}
+  .note{font-size:12px;line-height:1.5;color:var(--cream-dim);background:rgba(242,169,59,.08);border:1px solid rgba(242,169,59,.3);border-radius:8px;padding:10px 12px;margin:0;}
+  .confirm{background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:14px 16px;font-size:13.5px;line-height:1.7;}
+  .confirm .line{display:flex;justify-content:space-between;gap:12px;}
+  .confirm .line b{font-family:'IBM Plex Mono',monospace;}
+  .confirm .total{border-top:1px solid var(--line);margin-top:8px;padding-top:8px;color:var(--marquee);}
+  .grants{margin-top:16px;}
+  .grants h4{font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;font-size:10px;color:var(--cream-dim);margin:0 0 8px;}
+  .grants ul{list-style:none;margin:0;padding:0;font-size:12px;line-height:1.5;}
+  .grants li{padding:7px 0;border-bottom:1px solid var(--line);color:var(--cream-dim);}
+  .grants li:last-child{border-bottom:none;}
+  .grants li b{color:var(--cream);}
+  .stack{display:flex;flex-direction:column;gap:2px;}
+  .stack small{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--cream-dim);}
   .foot{margin-top:22px;font-size:11.5px;color:var(--cream-dim);text-align:center;line-height:1.6;}
   [hidden]{display:none !important;}
 </style>
@@ -150,7 +168,7 @@
       <div class="tablewrap">
         <table>
           <thead>
-            <tr><th>E-mail</th><th>Papel</th><th>Plano</th><th>Cadastro</th><th>Ações</th></tr>
+            <tr><th>E-mail</th><th>Papel</th><th>Plano</th><th>Créditos</th><th>Cadastro</th><th>Ações</th></tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
@@ -189,6 +207,51 @@
       <p class="hint">Onde as contas estão sendo gravadas neste ambiente.</p>
       <div id="diagnostics"></div>
     </section>
+  </div>
+
+  <!-- ---------------- Adicionar créditos ---------------- -->
+  <div class="modal" id="credit-modal" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="credit-title">
+      <h3 id="credit-title">Adicionar créditos</h3>
+      <p class="hint" id="credit-target"></p>
+
+      <div id="credit-step-form">
+        <div class="row cols-2">
+          <div class="field">
+            <label for="credit-amount">Quantidade de créditos</label>
+            <input id="credit-amount" type="number" min="1" step="1" value="10" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="credit-origin">Origem</label>
+            <select id="credit-origin">
+              <option value="manual">Concessão manual (administrador)</option>
+              <option value="trial">Teste grátis</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="credit-reason">Motivo / observação (opcional)</label>
+          <input id="credit-reason" type="text" maxlength="200" placeholder="Ex.: cortesia de suporte, teste interno">
+        </div>
+        <p class="note">Créditos concedidos aqui <strong>não têm renovação automática</strong>: eles não criam
+          assinatura, não alteram o plano e, quando acabarem, só voltam com um plano contratado no checkout
+          ou com uma nova concessão.</p>
+        <div class="modal-actions">
+          <button type="button" class="ghost" id="credit-cancel">Cancelar</button>
+          <button type="button" id="credit-review">Revisar</button>
+        </div>
+      </div>
+
+      <div id="credit-step-confirm" hidden>
+        <div class="confirm" id="credit-summary"></div>
+        <div class="modal-actions">
+          <button type="button" class="ghost" id="credit-back">Voltar</button>
+          <button type="button" id="credit-confirm">Confirmar e adicionar</button>
+        </div>
+      </div>
+
+      <div class="grants" id="credit-history"></div>
+    </div>
   </div>
 
   <p class="foot">
@@ -405,6 +468,18 @@ function renderRows(){
     }
     tr.appendChild(plan);
 
+    const credits = document.createElement("td");
+    const creditBox = document.createElement("div");
+    creditBox.className = "stack";
+    const total = document.createElement("span");
+    total.textContent = user.credits_remaining === -1 ? "Ilimitado" : String(user.credits_remaining || 0);
+    const detail = document.createElement("small");
+    detail.textContent = "avulsos: " + (user.credit_balance || 0);
+    creditBox.appendChild(total);
+    creditBox.appendChild(detail);
+    credits.appendChild(creditBox);
+    tr.appendChild(credits);
+
     const created = document.createElement("td");
     created.textContent = formatDate(user.created_at);
     tr.appendChild(created);
@@ -421,11 +496,13 @@ function renderRows(){
       note.textContent = "sua conta";
       actions.appendChild(note);
       actions.appendChild(actionButton("Nova senha", "", () => resetPassword(user)));
+      actions.appendChild(actionButton("Adicionar créditos", "ok", () => openCreditModal(user)));
       tr.appendChild(actions);
       body.appendChild(tr);
       return;
     }
     actions.appendChild(actionButton("Nova senha", "", () => resetPassword(user)));
+    actions.appendChild(actionButton("Adicionar créditos", "ok", () => openCreditModal(user)));
     actions.appendChild(actionButton("Liberar plano", "ok", () => grantPlan(user)));
     if(user.subscription_active){
       actions.appendChild(actionButton("Cancelar plano", "no", () => {
@@ -461,21 +538,184 @@ function applyOverview(data){
 
 /* ---------------- ações ---------------- */
 
-async function act(payload){
+async function act(payload, success){
   const result = await api("/api/admin/users", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   if(!result.ok){
-    if(result.status === 403){ showLogin("Sua sessão de administrador expirou. Entre novamente."); return false; }
+    if(result.status === 403){ showLogin("Sua sessão de administrador expirou. Entre novamente."); return null; }
     feedback("err", "A ação não foi concluída", result.data.error || "Erro inesperado.",
       result.data.storage && !result.data.storage.persistent ? SETUP_STEPS : null);
-    return false;
+    return null;
   }
   applyOverview(result.data);
-  feedback("ok", "Pronto", "A lista de acessos foi atualizada.");
-  return true;
+  if(success){ feedback("ok", success.title, success.message); }
+  else { feedback("ok", "Pronto", "A lista de acessos foi atualizada."); }
+  return result.data;
+}
+
+/* ---------------- créditos avulsos ---------------- */
+
+const ORIGIN_LABEL = { manual: "Concessão manual", trial: "Teste grátis" };
+
+let creditTarget = null;
+
+function creditsWord(value){
+  return Math.abs(value) === 1 ? "crédito" : "créditos";
+}
+
+function currentBalanceOf(user){
+  /* Saldo que o admin enxerga: o total disponível hoje. "Ilimitado" quando o
+     plano ativo é ilimitado — nesse caso o avulso fica guardado para depois. */
+  return user.credits_remaining === -1 ? -1 : Number(user.credits_remaining || 0);
+}
+
+function renderGrantHistory(user){
+  const box = $("credit-history");
+  box.innerHTML = "";
+  const grants = Array.isArray(user.credit_grants) ? user.credit_grants : [];
+  if(!grants.length) return;
+  const title = document.createElement("h4");
+  title.textContent = "Últimas concessões";
+  const list = document.createElement("ul");
+  grants.forEach((grant) => {
+    const li = document.createElement("li");
+    const head = document.createElement("b");
+    head.textContent = "+" + grant.credits + " " + creditsWord(grant.credits) +
+      " · " + (ORIGIN_LABEL[grant.origin] || grant.origin);
+    li.appendChild(head);
+    const meta = document.createElement("div");
+    meta.textContent = formatDate(grant.created_at) +
+      (grant.granted_by ? " · por " + grant.granted_by : "") +
+      (grant.reason ? " · " + grant.reason : "");
+    li.appendChild(meta);
+    list.appendChild(li);
+  });
+  box.appendChild(title);
+  box.appendChild(list);
+}
+
+function showCreditStep(step){
+  $("credit-step-form").hidden = step !== "form";
+  $("credit-step-confirm").hidden = step !== "confirm";
+}
+
+function openCreditModal(user){
+  creditTarget = user;
+  const balance = currentBalanceOf(user);
+  $("credit-target").textContent = user.email + " · saldo atual: " +
+    (balance === -1 ? "ilimitado (plano)" : balance + " " + creditsWord(balance)) +
+    " · avulsos: " + (user.credit_balance || 0);
+  $("credit-amount").value = "10";
+  $("credit-origin").value = "manual";
+  $("credit-reason").value = "";
+  renderGrantHistory(user);
+  showCreditStep("form");
+  $("credit-modal").hidden = false;
+  $("credit-amount").focus();
+}
+
+function closeCreditModal(){
+  $("credit-modal").hidden = true;
+  creditTarget = null;
+}
+
+function readCreditAmount(){
+  const raw = $("credit-amount").value.trim();
+  if(!raw) return { error: "Informe quantos créditos deseja adicionar." };
+  if(!/^\d+$/.test(raw)) return { error: "Os créditos precisam ser um número inteiro, sem sinal nem vírgula." };
+  const amount = Number(raw);
+  if(amount <= 0) return { error: "A quantidade de créditos precisa ser maior que zero." };
+  if(amount > 10000) return { error: "O máximo por concessão é de 10000 créditos." };
+  return { amount: amount };
+}
+
+function reviewCredits(){
+  if(!creditTarget) return;
+  const parsed = readCreditAmount();
+  if(parsed.error){ feedback("err", "Quantidade inválida", parsed.error); return; }
+  const origin = $("credit-origin").value;
+  const reason = $("credit-reason").value.trim();
+  const balance = currentBalanceOf(creditTarget);
+  const unlimited = balance === -1;
+  const wallet = Number(creditTarget.credit_balance || 0);
+
+  const box = $("credit-summary");
+  box.innerHTML = "";
+  const question = document.createElement("div");
+  question.style.marginBottom = "10px";
+  question.textContent = "Adicionar " + parsed.amount + " " + creditsWord(parsed.amount) +
+    " ao cadastro " + creditTarget.email + "?";
+  box.appendChild(question);
+
+  const rows = [
+    ["Saldo atual", unlimited ? "ilimitado (plano ativo)" : balance + " " + creditsWord(balance)],
+    ["Créditos adicionados", "+" + parsed.amount],
+    ["Origem", ORIGIN_LABEL[origin] || origin]
+  ];
+  if(reason) rows.push(["Motivo", reason]);
+  rows.forEach(([key, value]) => {
+    const line = document.createElement("div");
+    line.className = "line";
+    const k = document.createElement("span"); k.textContent = key;
+    const v = document.createElement("b"); v.textContent = value;
+    line.appendChild(k); line.appendChild(v);
+    box.appendChild(line);
+  });
+
+  const total = document.createElement("div");
+  total.className = "line total";
+  const totalKey = document.createElement("span");
+  totalKey.textContent = "Novo saldo";
+  const totalValue = document.createElement("b");
+  totalValue.textContent = unlimited
+    ? "ilimitado (plano) + " + (wallet + parsed.amount) + " avulsos"
+    : (balance + parsed.amount) + " " + creditsWord(balance + parsed.amount);
+  total.appendChild(totalKey); total.appendChild(totalValue);
+  box.appendChild(total);
+
+  const warn = document.createElement("div");
+  warn.style.marginTop = "10px";
+  warn.style.color = "var(--cream-dim)";
+  warn.textContent = origin === "trial"
+    ? "Créditos de teste grátis: uso único, sem renovação automática. Quando acabarem, o cliente precisa contratar um plano ou receber nova concessão."
+    : "Esses créditos são concedidos manualmente e não possuem renovação automática. Quando acabarem, o cliente precisa contratar um plano ou receber nova concessão.";
+  box.appendChild(warn);
+
+  showCreditStep("confirm");
+}
+
+async function confirmCredits(){
+  if(!creditTarget) return;
+  const parsed = readCreditAmount();
+  if(parsed.error){ feedback("err", "Quantidade inválida", parsed.error); showCreditStep("form"); return; }
+  const button = $("credit-confirm");
+  button.disabled = true;
+  try{
+    const email = creditTarget.email;
+    const data = await act({
+      action: "add_credits",
+      user_id: creditTarget.id,
+      credits: parsed.amount,
+      origin: $("credit-origin").value,
+      reason: $("credit-reason").value.trim()
+    });
+    if(!data) return;
+    const grant = data.grant || {};
+    closeCreditModal();
+    feedback(
+      "ok",
+      "Créditos adicionados",
+      "+" + grant.credits + " " + creditsWord(grant.credits) + " para " + email +
+        " (" + (ORIGIN_LABEL[grant.origin] || grant.origin).toLowerCase() + "). " +
+        "Saldo avulso: " + grant.balance_before + " → " + grant.balance_after + ". " +
+        "Sem renovação automática: a assinatura e o plano do cadastro não foram alterados."
+    );
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function resetPassword(user){
@@ -575,6 +815,12 @@ $("logout").addEventListener("click", async () => {
 });
 
 $("refresh").addEventListener("click", () => loadPanel());
+$("credit-review").addEventListener("click", reviewCredits);
+$("credit-back").addEventListener("click", () => showCreditStep("form"));
+$("credit-cancel").addEventListener("click", closeCreditModal);
+$("credit-confirm").addEventListener("click", confirmCredits);
+$("credit-modal").addEventListener("click", (event) => { if(event.target === $("credit-modal")) closeCreditModal(); });
+document.addEventListener("keydown", (event) => { if(event.key === "Escape" && !$("credit-modal").hidden) closeCreditModal(); });
 $("search").addEventListener("input", renderRows);
 $("filter").addEventListener("change", renderRows);
 

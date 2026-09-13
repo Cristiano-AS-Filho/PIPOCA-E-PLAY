@@ -686,10 +686,26 @@ def is_admin_user(email: str) -> bool:
     return bool(user and _user_role(user) == "admin")
 
 
+def _public_grant(grant: dict) -> dict:
+    """Uma linha do histórico de concessões, já no formato lido pelo painel."""
+    return {
+        "id": str(grant.get("id", "")),
+        "origin": str(grant.get("origin", "manual")),
+        "credits": int(grant.get("credits", 0) or 0),
+        "balance_before": int(grant.get("balance_before", 0) or 0),
+        "balance_after": int(grant.get("balance_after", 0) or 0),
+        "reason": str(grant.get("reason", "")),
+        "granted_by": str(grant.get("granted_by", "")),
+        "created_at": grant.get("created_at"),
+    }
+
+
 def _public_admin_user(user: dict) -> dict:
     billing = user.get("billing") if isinstance(user.get("billing"), dict) else {}
     credits = user.get("credits") if isinstance(user.get("credits"), dict) else {}
     feedback = user.get("feedback") if isinstance(user.get("feedback"), list) else []
+    grants = user.get("credit_grants") if isinstance(user.get("credit_grants"), list) else []
+    wallet = user.get("credit_wallet") if isinstance(user.get("credit_wallet"), dict) else {}
     return {
         "id": str(user.get("id", "")),
         "email": str(user.get("email", "")),
@@ -701,6 +717,12 @@ def _public_admin_user(user: dict) -> dict:
         "subscription_active": subscription_is_active(user),
         "expires_at": billing.get("expires_at"),
         "credits_used_today": int(credits.get("used", 0)) if credits.get("day") == brazil_day() else 0,
+        # Saldo do plano (renova todo dia) e saldo avulso (não renova) lado a lado.
+        "plan_credits_remaining": _plan_remaining(user),
+        "credit_balance": wallet_balance(user),
+        "credits_remaining": _remaining_credits(user),
+        "credits_granted_total": int(wallet.get("granted", 0) or 0),
+        "credit_grants": [_public_grant(grant) for grant in grants[:5]],
         "feedback_count": len(feedback),
     }
 
@@ -776,6 +798,15 @@ MAX_FEEDBACK_ITEMS = 300
 FEEDBACK_OPINIONS = ("liked", "disliked")
 SUBSCRIPTION_STATUSES = ("none", "pending", "active", "past_due", "canceled")
 
+# Créditos avulsos: concedidos por fora do checkout, gastos uma única vez.
+# "manual" é a concessão do administrador; "trial" é o período de teste grátis.
+# Nenhum dos dois cria assinatura nem se renova sozinho — quando o saldo acaba,
+# só outra concessão ou um plano pago devolve créditos à conta.
+CREDIT_ORIGINS = ("manual", "trial")
+MAX_CREDIT_GRANT = 10_000
+MAX_CREDIT_GRANTS_STORED = 50
+MAX_CREDIT_REASON_LENGTH = 200
+
 
 class CreditError(RuntimeError):
     """Os créditos do dia acabaram."""
@@ -845,6 +876,35 @@ def _feedback(user: dict) -> list[dict]:
     return items
 
 
+def _wallet(user: dict) -> dict:
+    """Carteira de créditos avulsos (concessão manual e teste grátis).
+
+    Vive fora de ``billing``: é saldo gasto uma vez, sem ciclo, sem renovação e
+    sem qualquer vínculo com a assinatura da conta.
+    """
+    wallet = user.get("credit_wallet")
+    if not isinstance(wallet, dict):
+        wallet = {}
+        user["credit_wallet"] = wallet
+    wallet.setdefault("balance", 0)
+    wallet.setdefault("granted", 0)
+    wallet.setdefault("used", 0)
+    return wallet
+
+
+def _credit_grants(user: dict) -> list[dict]:
+    """Histórico das concessões avulsas — quem concedeu, quanto, quando e por quê."""
+    grants = user.get("credit_grants")
+    if not isinstance(grants, list):
+        grants = []
+        user["credit_grants"] = grants
+    return grants
+
+
+def wallet_balance(user: dict) -> int:
+    return max(int(_wallet(user).get("balance", 0) or 0), 0)
+
+
 def subscription_is_active(user: dict) -> bool:
     billing = _billing(user)
     if billing["status"] != "active":
@@ -853,10 +913,14 @@ def subscription_is_active(user: dict) -> bool:
     return bool(expires and expires > _now_dt())
 
 
-def _remaining_credits(user: dict) -> int:
-    """Quantos créditos ainda restam hoje. ``UNLIMITED`` quando o plano é ilimitado."""
-    billing = _billing(user)
-    allowance = daily_credits(billing.get("plan", ""))
+def _plan_remaining(user: dict) -> int:
+    """Créditos do plano que ainda restam hoje. ``UNLIMITED`` no plano ilimitado.
+
+    Só conta com assinatura ativa: é este o saldo que se renova todo dia.
+    """
+    if not subscription_is_active(user):
+        return 0
+    allowance = daily_credits(_billing(user).get("plan", ""))
     if allowance == UNLIMITED:
         return UNLIMITED
     credits = _credits(user)
@@ -864,12 +928,21 @@ def _remaining_credits(user: dict) -> int:
     return max(allowance - used, 0)
 
 
+def _remaining_credits(user: dict) -> int:
+    """Saldo total disponível: o do plano de hoje mais os créditos avulsos."""
+    plan_remaining = _plan_remaining(user)
+    if plan_remaining == UNLIMITED:
+        return UNLIMITED
+    return plan_remaining + wallet_balance(user)
+
+
 def account_snapshot(user: dict) -> dict:
     """Retrato da conta usado pelo front-end: plano, créditos e assinatura."""
     billing = _billing(user)
     plan = get_plan(billing.get("plan", ""))
     active = subscription_is_active(user)
-    remaining = _remaining_credits(user) if active else 0
+    plan_remaining = _plan_remaining(user)
+    balance = wallet_balance(user)
     allowance = daily_credits(billing.get("plan", "")) if active else 0
     return {
         "email": str(user.get("email", "")),
@@ -883,7 +956,10 @@ def account_snapshot(user: dict) -> dict:
         "checkout_url": billing.get("checkout_url", "") if not active else "",
         "unlimited": active and allowance == UNLIMITED,
         "daily_credits": allowance,
-        "credits_remaining": remaining,
+        "credits_remaining": _remaining_credits(user),
+        "plan_credits_remaining": plan_remaining,
+        # Saldo avulso: não renova e não vira assinatura.
+        "credit_balance": balance,
         "credits_used_today": int(_credits(user).get("used", 0)) if _credits(user).get("day") == brazil_day() else 0,
         "day": brazil_day(),
         "feedback_count": len(_feedback(user)),
@@ -898,28 +974,47 @@ def get_account(user_id: str) -> dict:
 
 
 def consume_credit(user_id: str) -> dict:
-    """Debita um crédito da conta. Levanta erro quando não há assinatura ou saldo."""
+    """Debita um crédito da conta. Levanta erro quando não há assinatura ou saldo.
+
+    O crédito do **plano** sai primeiro, porque ele se renova amanhã; o crédito
+    avulso (manual ou teste grátis) é o último a ser gasto, já que ninguém o
+    repõe. Guardamos em ``credits["last_source"]`` de onde veio o débito, para
+    que ``refund_credit`` devolva no mesmo lugar.
+    """
     with _LOCK:
         users = load_users()
         target = next((user for user in users if str(user.get("id")) == str(user_id)), None)
         if not target:
             raise LookupError("Usuário não encontrado.")
-        if not subscription_is_active(target):
-            raise SubscriptionRequired(
-                "Sua assinatura não está ativa. Escolha um plano e conclua o pagamento para liberar as indicações."
-            )
         billing = _billing(target)
         allowance = daily_credits(billing.get("plan", ""))
+        active = subscription_is_active(target)
         credits = _credits(target)
         today = brazil_day()
         if credits.get("day") != today:
             credits["day"] = today
             credits["used"] = 0
-        if allowance != UNLIMITED and int(credits.get("used", 0)) >= allowance:
+        plan_has_credit = active and (allowance == UNLIMITED or int(credits.get("used", 0)) < allowance)
+        balance = wallet_balance(target)
+
+        if plan_has_credit:
+            credits["used"] = int(credits.get("used", 0)) + 1
+            credits["last_source"] = "plan"
+        elif balance > 0:
+            wallet = _wallet(target)
+            wallet["balance"] = balance - 1
+            wallet["used"] = int(wallet.get("used", 0) or 0) + 1
+            credits["last_source"] = "wallet"
+        elif active:
             raise CreditError(
                 f"Seus {allowance} crédito(s) de hoje acabaram. Eles voltam amanhã, ou você pode migrar de plano."
             )
-        credits["used"] = int(credits.get("used", 0)) + 1
+        else:
+            # Sem plano e sem saldo avulso: crédito avulso não se renova sozinho,
+            # então a saída é contratar um plano ou receber nova concessão.
+            raise SubscriptionRequired(
+                "Sua assinatura não está ativa. Escolha um plano e conclua o pagamento para liberar as indicações."
+            )
         target["updated_at"] = _now()
         save_users(users)
         return account_snapshot(target)
@@ -933,9 +1028,85 @@ def refund_credit(user_id: str) -> None:
         if not target:
             return
         credits = _credits(target)
+        if str(credits.get("last_source", "plan")) == "wallet":
+            wallet = _wallet(target)
+            if int(wallet.get("used", 0) or 0) > 0:
+                wallet["balance"] = wallet_balance(target) + 1
+                wallet["used"] = int(wallet["used"]) - 1
+                credits["last_source"] = ""
+                save_users(users)
+            return
         if credits.get("day") == brazil_day() and int(credits.get("used", 0)) > 0:
             credits["used"] = int(credits["used"]) - 1
+            credits["last_source"] = ""
             save_users(users)
+
+
+def _validate_credit_amount(value) -> int:
+    """A quantidade precisa ser um inteiro positivo dentro do teto por concessão."""
+    if isinstance(value, bool) or value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError("Informe quantos créditos deseja adicionar.")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError("Os créditos precisam ser um número inteiro.")
+        amount = int(value)
+    else:
+        try:
+            amount = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError("Os créditos precisam ser um número inteiro.") from None
+    if amount <= 0:
+        raise ValueError("A quantidade de créditos precisa ser maior que zero.")
+    if amount > MAX_CREDIT_GRANT:
+        raise ValueError(f"O máximo por concessão é de {MAX_CREDIT_GRANT} créditos.")
+    return amount
+
+
+def grant_credits(user_id: str, credits, origin: str = "manual", reason: str = "", granted_by: str = "") -> dict:
+    """Concede créditos avulsos a uma conta, sem encostar na assinatura.
+
+    Soma ao saldo existente e grava a concessão no histórico da conta. Não cria
+    plano, não muda ``billing["status"]``, não mexe em ``expires_at`` e não gera
+    renovação: quando o saldo acabar, só um plano pago ou outra concessão repõe.
+    """
+    amount = _validate_credit_amount(credits)
+    normalized_origin = str(origin or "manual").strip().lower()
+    if normalized_origin not in CREDIT_ORIGINS:
+        raise ValueError("Origem de crédito inválida.")
+    note = str(reason or "").strip()[:MAX_CREDIT_REASON_LENGTH]
+    author = normalize_email(str(granted_by or ""))
+    record: dict = {}
+
+    def apply(target: dict) -> None:
+        wallet = _wallet(target)
+        previous = wallet_balance(target)
+        wallet["balance"] = previous + amount
+        wallet["granted"] = int(wallet.get("granted", 0) or 0) + amount
+        record.update(
+            {
+                "id": secrets.token_urlsafe(12),
+                "origin": normalized_origin,
+                "credits": amount,
+                "balance_before": previous,
+                "balance_after": wallet["balance"],
+                "reason": note,
+                "granted_by": author,
+                "created_at": _now(),
+            }
+        )
+        grants = _credit_grants(target)
+        grants.insert(0, dict(record))
+        del grants[MAX_CREDIT_GRANTS_STORED:]
+
+    return {"user": _mutate(user_id, apply), "grant": dict(record)}
+
+
+def list_credit_grants(user_id: str, limit: int = MAX_CREDIT_GRANTS_STORED) -> list[dict]:
+    """Histórico de concessões da conta, da mais recente para a mais antiga."""
+    user = find_user_by_id(user_id)
+    if not user:
+        raise LookupError("Usuário não encontrado.")
+    return [_public_grant(grant) for grant in _credit_grants(user)[: max(int(limit), 0)]]
 
 
 def start_checkout(user_id: str, plan_id: str, customer_id: str, subscription_id: str, checkout_url: str) -> dict:

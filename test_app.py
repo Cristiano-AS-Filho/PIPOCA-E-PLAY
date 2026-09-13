@@ -42,6 +42,8 @@ from user_store import (  # noqa: E402
     activate_subscription,
     consume_credit,
     get_account,
+    grant_credits,
+    list_credit_grants,
     list_feedback,
     list_history,
     remove_feedback,
@@ -1647,6 +1649,250 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertTrue(payload["account"]["unlimited"])
         status, payload, _ = api_core.admin_action(admin, {"action": "revoke_plan", "user_id": record["id"]})
         self.assertEqual(status, 200)
+        self.assertFalse(payload["account"]["subscription_active"])
+
+    # -----------------------------------------------------------------
+    # Créditos avulsos: concessão manual e teste grátis
+    # -----------------------------------------------------------------
+
+    def _admin_grant(self, user_id, credits, origin="manual", reason=""):
+        """Concessão pelo caminho real da API, com sessão de administrador."""
+        return api_core.admin_action(
+            {"email": "admin@test.local", "role": "admin"},
+            {"action": "add_credits", "user_id": user_id, "credits": credits, "origin": origin, "reason": reason},
+        )
+
+    def test_admin_grant_gives_credits_to_an_account_without_any(self):
+        """Teste 1 — saldo 0 + 10 concedidos = 10, sem criar assinatura."""
+        _, user_id = self._client_session()
+        account = get_account(user_id)
+        self.assertEqual(account["credits_remaining"], 0)
+
+        status, payload, _ = self._admin_grant(user_id, 10)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["grant"]["credits"], 10)
+        self.assertEqual(payload["grant"]["origin"], "manual")
+
+        account = get_account(user_id)
+        self.assertEqual(account["credits_remaining"], 10)
+        self.assertEqual(account["credit_balance"], 10)
+        # A concessão não vira assinatura: plano, situação e validade intactos.
+        self.assertFalse(account["subscription_active"])
+        self.assertEqual(account["subscription_status"], "none")
+        self.assertEqual(account["plan"], "")
+        self.assertIsNone(account["expires_at"])
+        self.assertEqual(account["daily_credits"], 0)
+
+    def test_admin_grant_adds_up_to_the_existing_balance(self):
+        """Teste 2 — 5 avulsos + 10 concedidos = 15."""
+        _, user_id = self._client_session()
+        grant_credits(user_id, 5, granted_by="admin@test.local")
+        self.assertEqual(get_account(user_id)["credits_remaining"], 5)
+
+        self._admin_grant(user_id, 10)
+        account = get_account(user_id)
+        self.assertEqual(account["credits_remaining"], 15)
+        self.assertEqual(account["credit_balance"], 15)
+
+    def test_admin_grant_sums_with_the_plan_without_touching_the_subscription(self):
+        """Cenário 3 — 5 do plano + 10 avulsos = 15, e o ciclo do plano não muda."""
+        _, user_id = self._client_session("gold")
+        before = get_account(user_id)
+        self.assertEqual(before["credits_remaining"], 5)
+
+        self._admin_grant(user_id, 10)
+        after = get_account(user_id)
+        self.assertEqual(after["credits_remaining"], 15)
+        self.assertEqual(after["plan_credits_remaining"], 5)
+        self.assertEqual(after["credit_balance"], 10)
+        self.assertEqual(after["plan"], "gold")
+        self.assertTrue(after["subscription_active"])
+        self.assertEqual(after["expires_at"], before["expires_at"])
+        self.assertEqual(after["daily_credits"], 5)
+
+    def test_manual_credits_run_out_and_never_renew_by_themselves(self):
+        """Teste 3 — gastou os 10, saldo zera e nada repõe, nem virando o dia."""
+        session, user_id = self._client_session()
+        self._admin_grant(user_id, 10)
+        for _ in range(10):
+            consume_credit(user_id)
+        account = get_account(user_id)
+        self.assertEqual(account["credits_remaining"], 0)
+        self.assertEqual(account["credit_balance"], 0)
+
+        with self.assertRaises(SubscriptionRequired):
+            consume_credit(user_id)
+
+        # Vira o dia: o crédito do plano renovaria, o avulso não.
+        with patch("user_store.brazil_day", return_value="2999-01-01"):
+            self.assertEqual(get_account(user_id)["credits_remaining"], 0)
+            with self.assertRaises(SubscriptionRequired):
+                consume_credit(user_id)
+
+        # E pela rota o cliente recebe o convite a assinar, não um "volte amanhã".
+        status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 402)
+        self.assertEqual(payload["code"], "subscription_required")
+
+    def test_trial_credits_follow_the_same_rule_as_manual_ones(self):
+        """Teste 4 — teste grátis concede 5, o cliente gasta e nada é reposto."""
+        _, user_id = self._client_session()
+        status, payload, _ = self._admin_grant(user_id, 5, origin="trial", reason="período de teste")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["grant"]["origin"], "trial")
+        self.assertEqual(get_account(user_id)["credits_remaining"], 5)
+
+        for _ in range(5):
+            consume_credit(user_id)
+        self.assertEqual(get_account(user_id)["credits_remaining"], 0)
+        with patch("user_store.brazil_day", return_value="2999-01-01"):
+            self.assertEqual(get_account(user_id)["credit_balance"], 0)
+            with self.assertRaises(SubscriptionRequired):
+                consume_credit(user_id)
+        # O teste grátis não deixou assinatura nenhuma para trás.
+        self.assertEqual(get_account(user_id)["subscription_status"], "none")
+
+    def test_plan_hired_later_renews_normally_beside_the_manual_credits(self):
+        """Teste 5 — depois da concessão, o plano contratado renova como sempre."""
+        _, user_id = self._client_session()
+        self._admin_grant(user_id, 3)
+        activate_subscription(user_id, "silver", "pay_later", "TEST")
+
+        account = get_account(user_id)
+        self.assertTrue(account["subscription_active"])
+        self.assertEqual(account["plan"], "silver")
+        self.assertEqual(account["plan_credits_remaining"], 2)
+        self.assertEqual(account["credit_balance"], 3)
+        self.assertEqual(account["credits_remaining"], 5)
+
+        # Os dois créditos do dia saem primeiro: o avulso é o último a ser gasto.
+        consume_credit(user_id)
+        consume_credit(user_id)
+        account = get_account(user_id)
+        self.assertEqual(account["plan_credits_remaining"], 0)
+        self.assertEqual(account["credit_balance"], 3)
+
+        # Esgotado o plano do dia, o avulso entra.
+        consume_credit(user_id)
+        self.assertEqual(get_account(user_id)["credit_balance"], 2)
+
+        # No dia seguinte o plano renova sozinho; o avulso continua onde parou.
+        with patch("user_store.brazil_day", return_value="2999-01-01"):
+            account = get_account(user_id)
+            self.assertEqual(account["plan_credits_remaining"], 2)
+            self.assertEqual(account["credit_balance"], 2)
+            self.assertEqual(account["credits_remaining"], 4)
+
+    def test_unlimited_plan_keeps_the_granted_credits_untouched(self):
+        """No plano ilimitado nada é debitado do avulso: ele fica guardado."""
+        _, user_id = self._client_session("diamante")
+        self._admin_grant(user_id, 4)
+        account = get_account(user_id)
+        self.assertTrue(account["unlimited"])
+        self.assertEqual(account["credits_remaining"], -1)
+        self.assertEqual(account["credit_balance"], 4)
+
+        for _ in range(6):
+            consume_credit(user_id)
+        self.assertEqual(get_account(user_id)["credit_balance"], 4)
+
+    def test_only_an_admin_session_can_grant_credits(self):
+        """Teste 6 — cliente comum não concede créditos, nem chamando a rota direto."""
+        record = create_user("cliente@test.local", "client-password")
+        cookie = "pipoca_session=" + create_session(record["email"], "user", record["id"])
+        body = {"action": "add_credits", "user_id": record["id"], "credits": 50}
+
+        status, payload, _ = router.handle("POST", "/api/admin/users", {}, body, {"Cookie": cookie})
+        self.assertEqual(status, 403)
+        self.assertIn("administrador", payload["error"])
+
+        status, _, _ = router.handle("POST", "/api/admin/users", {}, body, {})
+        self.assertEqual(status, 403)
+
+        # Um cookie forjado dizendo "role: admin" não passa pela assinatura HMAC.
+        forged = "pipoca_session=" + create_session(record["email"], "admin", record["id"]) + "x"
+        status, _, _ = router.handle("POST", "/api/admin/users", {}, body, {"Cookie": forged})
+        self.assertEqual(status, 403)
+
+        # Nem uma sessão de admin válida de um cliente que nunca foi promovido.
+        status, _, _ = api_core.admin_action({"email": record["email"], "role": "user"}, body)
+        self.assertEqual(status, 403)
+
+        self.assertEqual(get_account(record["id"])["credit_balance"], 0)
+
+    def test_every_grant_is_recorded_for_auditing(self):
+        """Teste 7 — quem concedeu, para quem, quanto, quando e de que origem."""
+        _, user_id = self._client_session()
+        self._admin_grant(user_id, 7, reason="cortesia de suporte")
+        self._admin_grant(user_id, 3, origin="trial", reason="teste grátis")
+
+        grants = list_credit_grants(user_id)
+        self.assertEqual(len(grants), 2)
+        newest, oldest = grants[0], grants[1]
+
+        self.assertEqual(newest["credits"], 3)
+        self.assertEqual(newest["origin"], "trial")
+        self.assertEqual(newest["reason"], "teste grátis")
+        self.assertEqual(newest["granted_by"], "admin@test.local")
+        self.assertEqual((newest["balance_before"], newest["balance_after"]), (7, 10))
+        self.assertTrue(newest["created_at"])
+        self.assertTrue(newest["id"])
+
+        self.assertEqual(oldest["credits"], 7)
+        self.assertEqual(oldest["origin"], "manual")
+        self.assertEqual((oldest["balance_before"], oldest["balance_after"]), (0, 7))
+
+        # O painel enxerga o mesmo histórico e o saldo concedido acumulado.
+        listed = {user["id"]: user for user in admin_users()}[user_id]
+        self.assertEqual(listed["credit_balance"], 10)
+        self.assertEqual(listed["credits_granted_total"], 10)
+        self.assertEqual([grant["credits"] for grant in listed["credit_grants"]], [3, 7])
+
+    def test_grant_refuses_invalid_amounts_and_unknown_accounts(self):
+        _, user_id = self._client_session()
+        for invalid in (0, -5, "", "abc", 2.5, None, True):
+            status, payload, _ = self._admin_grant(user_id, invalid)
+            self.assertEqual(status, 400, invalid)
+            self.assertTrue(payload["error"])
+        status, _, _ = self._admin_grant(user_id, 10_001)
+        self.assertEqual(status, 400)
+        status, _, _ = self._admin_grant(user_id, 10, origin="assinatura")
+        self.assertEqual(status, 400)
+        status, _, _ = self._admin_grant("nao-existe", 10)
+        self.assertEqual(status, 404)
+        self.assertEqual(get_account(user_id)["credit_balance"], 0)
+        # O valor válido continua passando depois das recusas.
+        status, _, _ = self._admin_grant(user_id, "12")
+        self.assertEqual(status, 200)
+        self.assertEqual(get_account(user_id)["credit_balance"], 12)
+
+    def test_failed_engine_gives_the_manual_credit_back_to_the_wallet(self):
+        """A devolução respeita a origem: crédito avulso volta para o avulso."""
+        session, user_id = self._client_session()
+        self._admin_grant(user_id, 2)
+
+        def broken(filters, feedback=None):
+            raise RuntimeError("Não foi possível conectar ao motor de recomendação.")
+
+        with patch("recommender.call_openai", broken):
+            status, _, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 502)
+        account = get_account(user_id)
+        self.assertEqual(account["credit_balance"], 2)
+        self.assertEqual(account["credits_used_today"], 0)
+
+    def test_manual_credits_let_the_engine_run_without_any_subscription(self):
+        """Sem plano, mas com crédito concedido, a indicação sai normalmente."""
+        session, user_id = self._client_session()
+        self._admin_grant(user_id, 1)
+
+        def fake_call(filters, feedback=None):
+            return json.dumps({"recommendations": []})
+
+        with patch("recommender.call_openai", fake_call):
+            status, payload, _ = api_core.recommend(session, {"filters": FILTERS})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["account"]["credits_remaining"], 0)
         self.assertFalse(payload["account"]["subscription_active"])
 
     # -----------------------------------------------------------------

@@ -36,6 +36,7 @@ from user_store import (
     find_user_by_billing,
     find_user_by_id,
     get_account,
+    grant_credits,
     list_feedback,
     list_history,
     refund_credit,
@@ -243,6 +244,16 @@ def admin_action(session, body):
             payload = {"account": activate_subscription(user_id, plan["id"], "", "ADMIN_GRANT")}
         elif action == "revoke_plan":
             payload = {"account": set_subscription_status(user_id, "canceled", "ADMIN_REVOKE")}
+        elif action == "add_credits":
+            # Concessão avulsa: soma ao saldo, registra quem concedeu e não cria
+            # assinatura nem renovação. A checagem de papel admin já aconteceu acima.
+            payload = grant_credits(
+                user_id,
+                body.get("credits", body.get("amount")),
+                origin=_text(body, "origin", default="manual"),
+                reason=_text(body, "reason", "note"),
+                granted_by=str(session.get("email", "")),
+            )
         elif action == "create":
             payload = {
                 "user": create_user(
