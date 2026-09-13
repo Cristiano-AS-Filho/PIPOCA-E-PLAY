@@ -1367,3 +1367,269 @@ def remove_history(user_id: str, history_id: str) -> list[dict]:
     if not removed["done"]:
         raise LookupError("Busca não encontrada no histórico.")
     return list_history(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Conteúdo da landing: pôsteres administráveis
+# ---------------------------------------------------------------------------
+#
+# Um segundo documento JSON, gravado no mesmo backend das contas e com a mesma
+# ordem de detecção. As funções abaixo reaproveitam a conexão/credencial já
+# resolvida para as contas (``_postgres_connect``, ``_blob_sdk``,
+# ``_kv_command``) e só mudam a chave e o formato do documento — um dicionário,
+# não a lista de contas.
+
+LANDING_KEY = "pipoca-play:landing"
+LANDING_BLOB_PATH = (
+    os.environ.get("LANDING_STORE_BLOB_PATH", "pipoca-play/landing.json").strip()
+    or "pipoca-play/landing.json"
+)
+LANDING_UNAVAILABLE = "Não foi possível ler as imagens da landing."
+
+
+def _landing_local_path() -> Path:
+    """Arquivo irmão do de contas, para os dois modos locais não se misturarem."""
+    configured = os.environ.get("LANDING_STORE_FILE", "").strip()
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else Path(__file__).parent / path
+    users = _local_path()
+    return users.with_name(users.stem + "-landing.json")
+
+
+def _read_landing_postgres() -> dict:
+    with _postgres_connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"CREATE TABLE IF NOT EXISTS {POSTGRES_TABLE} ("
+                "key text PRIMARY KEY, "
+                "value jsonb NOT NULL, "
+                "updated_at timestamptz NOT NULL DEFAULT now())"
+            )
+            cursor.execute(f"SELECT value FROM {POSTGRES_TABLE} WHERE key = %s", (LANDING_KEY,))
+            row = cursor.fetchone()
+    if not row or row[0] is None:
+        return {}
+    data = row[0]
+    if isinstance(data, (str, bytes, bytearray)):
+        try:
+            data = json.loads(data)
+        except (TypeError, ValueError) as error:
+            raise StorageError(LANDING_UNAVAILABLE) from error
+    return data if isinstance(data, dict) else {}
+
+
+def _write_landing_postgres(document: dict) -> None:
+    payload = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+    with _postgres_connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"CREATE TABLE IF NOT EXISTS {POSTGRES_TABLE} ("
+                "key text PRIMARY KEY, "
+                "value jsonb NOT NULL, "
+                "updated_at timestamptz NOT NULL DEFAULT now())"
+            )
+            cursor.execute(
+                f"INSERT INTO {POSTGRES_TABLE} (key, value, updated_at) "
+                "VALUES (%s, %s::jsonb, now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+                (LANDING_KEY, payload),
+            )
+
+
+def _read_landing_blob() -> dict:
+    token = _blob_token()
+    if token:
+        get, _, BlobNotFoundError = _blob_sdk()
+        try:
+            result = get(LANDING_BLOB_PATH, access="private", token=token, use_cache=False)
+        except BlobNotFoundError:
+            return {}
+        except Exception as error:  # noqa: BLE001 - o SDK não expõe um tipo estável
+            raise StorageError(LANDING_UNAVAILABLE) from error
+        content = bytes(result)
+    else:
+        credentials = _blob_oidc_credentials()
+        if not credentials:
+            raise StorageError(LANDING_UNAVAILABLE)
+        oidc_token, store_id = credentials
+        object_url = (
+            f"https://{store_id}.private.blob.vercel-storage.com/"
+            f"{quote(LANDING_BLOB_PATH, safe='/')}"
+        )
+        request = urllib.request.Request(
+            object_url, headers={"Authorization": f"Bearer {oidc_token}"}, method="GET"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                content = response.read()
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                return {}
+            raise StorageError(LANDING_UNAVAILABLE) from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            raise StorageError(LANDING_UNAVAILABLE) from error
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeDecodeError) as error:
+        raise StorageError(LANDING_UNAVAILABLE) from error
+    return data if isinstance(data, dict) else {}
+
+
+def _write_landing_blob(document: dict) -> None:
+    payload = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    token = _blob_token()
+    if token:
+        _, put, _ = _blob_sdk()
+        try:
+            put(
+                LANDING_BLOB_PATH,
+                payload,
+                access="private",
+                content_type="application/json",
+                overwrite=True,
+                cache_control_max_age=0,
+                token=token,
+            )
+        except Exception as error:  # noqa: BLE001 - o SDK não expõe um tipo estável
+            raise StorageError("Não foi possível gravar as imagens da landing no Vercel Blob.") from error
+        return
+    credentials = _blob_oidc_credentials()
+    if not credentials:
+        raise StorageError("Não foi possível gravar as imagens da landing no Vercel Blob.")
+    oidc_token, store_id = credentials
+    request = urllib.request.Request(
+        f"https://vercel.com/api/blob/?{urlencode({'pathname': LANDING_BLOB_PATH})}",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {oidc_token}",
+            "Content-Type": "application/json",
+            "x-vercel-blob-access": "private",
+            "x-vercel-blob-store-id": store_id,
+            "x-allow-overwrite": "1",
+            "x-cache-control-max-age": "0",
+            "x-api-blob-request-id": f"{store_id}:{secrets.token_hex(8)}",
+            "x-api-blob-request-attempt": "0",
+            "x-api-version": "12",
+        },
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            response.read()
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        raise StorageError("Não foi possível gravar as imagens da landing no Vercel Blob.") from error
+
+
+def _read_landing_local() -> dict:
+    path = _landing_local_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError) as error:
+        raise StorageError(LANDING_UNAVAILABLE) from error
+    return data if isinstance(data, dict) else {}
+
+
+def _write_landing_local(document: dict) -> None:
+    if _is_serverless():
+        raise StorageError(
+            "Este deploy não tem banco conectado, e o disco das funções serverless não "
+            "guarda dados entre requisições. " + SETUP_HINT
+        )
+    path = _landing_local_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    except OSError as error:
+        raise StorageError(
+            f"Não foi possível gravar as imagens da landing em {path}. "
+            "Verifique a permissão de escrita da pasta."
+        ) from error
+
+
+def load_landing() -> dict:
+    """Documento completo da landing: ``{"slots": {...}, "updated_at": ...}``."""
+    mode = storage_mode()
+    with _LOCK:
+        if mode == "postgres":
+            document = _read_landing_postgres()
+        elif mode == "vercel-blob":
+            document = _read_landing_blob()
+        elif mode == "redis-rest":
+            raw = _kv_command("GET", LANDING_KEY)
+            if not raw:
+                document = {}
+            else:
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise StorageError(LANDING_UNAVAILABLE) from error
+                document = parsed if isinstance(parsed, dict) else {}
+        else:
+            document = _read_landing_local()
+    slots = document.get("slots")
+    return {
+        "slots": {
+            key: value
+            for key, value in (slots.items() if isinstance(slots, dict) else ())
+            if isinstance(value, dict)
+        },
+        "updated_at": document.get("updated_at") or "",
+    }
+
+
+def save_landing(document: dict) -> None:
+    mode = storage_mode()
+    with _LOCK:
+        if mode == "postgres":
+            _write_landing_postgres(document)
+            return
+        if mode == "vercel-blob":
+            _write_landing_blob(document)
+            return
+        if mode == "redis-rest":
+            _kv_command("SET", LANDING_KEY, json.dumps(document, ensure_ascii=False, separators=(",", ":")))
+            return
+        _write_landing_local(document)
+
+
+def landing_slots() -> dict:
+    """Somente os espaços já preenchidos, na forma que a landing consome."""
+    return load_landing()["slots"]
+
+
+def set_landing_slot(slot_id: str, values: dict, editor: str = "") -> dict:
+    """Grava (ou limpa) um espaço. Campos ausentes preservam o valor anterior."""
+    document = load_landing()
+    slots = document["slots"]
+    current = dict(slots.get(slot_id) or {})
+    for field in ("image", "title", "meta"):
+        if field in values:
+            new_value = values[field]
+            if new_value:
+                current[field] = new_value
+            else:
+                current.pop(field, None)
+    if current:
+        current["updated_at"] = _now()
+        if editor:
+            current["updated_by"] = editor
+        slots[slot_id] = current
+    else:
+        slots.pop(slot_id, None)
+    document["updated_at"] = _now()
+    save_landing(document)
+    return slots
+
+
+def clear_landing_slot(slot_id: str) -> dict:
+    """Remove o espaço por completo: a landing volta ao conteúdo original."""
+    document = load_landing()
+    document["slots"].pop(slot_id, None)
+    document["updated_at"] = _now()
+    save_landing(document)
+    return document["slots"]

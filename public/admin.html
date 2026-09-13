@@ -110,6 +110,29 @@
   .grants li b{color:var(--cream);}
   .stack{display:flex;flex-direction:column;gap:2px;}
   .stack small{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--cream-dim);}
+
+  .group{margin-top:18px;}
+  .group:first-of-type{margin-top:0;}
+  .group > h3{font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1.2px;font-size:10px;color:var(--cream-dim);margin:0 0 10px;font-weight:500;}
+  .slots{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));}
+  .slot{background:var(--bg-elev-2);border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:9px;}
+  /* Altura fixa e largura vinda do aspect-ratio: a prévia mantém a proporção
+     real do espaço sem esticar o card (um pôster 2:3 em largura total deixaria
+     a lista de 13 espaços quilométrica). */
+  .slot .thumb{position:relative;height:168px;width:auto;max-width:100%;align-self:center;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:#0A0C11;display:flex;align-items:center;justify-content:center;}
+  .slot .thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
+  .slot .thumb span{font:10px/1.5 'IBM Plex Mono',monospace;color:var(--cream-dim);text-align:center;padding:10px;}
+  .slot .name{font-size:12.5px;font-weight:600;line-height:1.3;}
+  .slot label{margin-bottom:4px;}
+  .slot input{padding:8px 10px;font-size:12.5px;}
+  .slot .field{margin-bottom:0;}
+  .slot .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto;}
+  .slot .acts button{flex:1 1 82px;padding:8px 9px;font-size:12px;white-space:nowrap;}
+  .slot .acts .pick{flex-basis:100%;}
+  .slot .who{font:10px/1.5 'IBM Plex Mono',monospace;color:var(--cream-dim);}
+  .slot .who.done{color:#8ee2cc;}
+  .slot.dirty{border-color:rgba(242,169,59,.55);}
+  .slot input[type=file]{display:none;}
   .foot{margin-top:22px;font-size:11.5px;color:var(--cream-dim);text-align:center;line-height:1.6;}
   [hidden]{display:none !important;}
 </style>
@@ -200,6 +223,17 @@
         </div>
         <button type="submit">Criar acesso</button>
       </form>
+    </section>
+
+    <section class="card">
+      <h2>Pôsteres da página inicial</h2>
+      <p class="hint">
+        Cada quadro abaixo é um espaço de imagem da página inicial. Escolha a arte, ajuste o
+        título que aparece embaixo do pôster e salve: a troca vale na hora para todo mundo que
+        abrir o site. A imagem é reduzida aqui no navegador antes de subir, então pode enviar o
+        arquivo original. Campo de texto em branco mantém o texto que a página já traz.
+      </p>
+      <div id="landing-slots"></div>
     </section>
 
     <section class="card">
@@ -728,6 +762,273 @@ async function resetPassword(user){
   await act({ action: "set_password", user_id: user.id, password: password });
 }
 
+/* ---------------- pôsteres da página inicial ---------------- */
+
+let landingCatalog = [];
+let landingSlots = {};
+const landingDrafts = {};   // id -> data URL ainda não salva
+const landingFlash = {};    // id -> confirmação curta, no próprio card
+
+// A rota aceita 64 000 bytes de corpo; o limite abaixo deixa folga para os textos.
+const LANDING_IMAGE_LIMIT = 44000;
+// Degraus de redução: o primeiro que couber no limite é o que sobe.
+const LANDING_STEPS = [[900,.82],[760,.8],[620,.78],[520,.74],[440,.7],[360,.64],[300,.58]];
+
+function readFile(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(source){
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("O arquivo não é uma imagem válida."));
+    image.src = source;
+  });
+}
+
+/* Reduz no navegador até caber no corpo aceito pela rota. Sem isso o admin
+   precisaria tratar o arquivo antes de enviar. */
+async function shrinkImage(file){
+  const image = await loadImage(await readFile(file));
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  for(const [maxSide, quality] of LANDING_STEPS){
+    const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    context.fillStyle = "#090909";                       // fundo da landing, se a arte for transparente
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    let data = canvas.toDataURL("image/webp", quality);
+    if(data.indexOf("data:image/webp") !== 0){           // navegador sem WebP
+      data = canvas.toDataURL("image/jpeg", quality);
+    }
+    if(data.length <= LANDING_IMAGE_LIMIT) return data;
+  }
+  throw new Error("Não foi possível reduzir esta imagem o suficiente. Tente outro arquivo.");
+}
+
+function landingDraft(slotId){
+  if(!landingDrafts[slotId]) landingDrafts[slotId] = {};
+  return landingDrafts[slotId];
+}
+
+function landingHasDraft(slotId){
+  const draft = landingDrafts[slotId];
+  return !!(draft && (draft.image || draft.title !== undefined || draft.meta !== undefined));
+}
+
+function landingCard(slot){
+  const saved = landingSlots[slot.id] || {};
+  const draft = landingDrafts[slot.id] || {};
+  const card = document.createElement("div");
+  card.className = "slot";
+
+  const thumb = document.createElement("div");
+  thumb.className = "thumb";
+  thumb.style.aspectRatio = slot.aspect;
+  const source = draft.image || saved.image || "";
+  if(source){
+    const img = document.createElement("img");
+    img.src = source;
+    img.alt = "";
+    thumb.appendChild(img);
+  } else {
+    const empty = document.createElement("span");
+    empty.textContent = "sem imagem";
+    thumb.appendChild(empty);
+  }
+  card.appendChild(thumb);
+
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = slot.label;
+  card.appendChild(name);
+
+  /* O texto digitado fica no rascunho: salvar outro espaço redesenha a lista
+     inteira e nada do que estava em edição pode se perder no caminho. */
+  function textField(labelText, field, limit, fallback){
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = limit;
+    input.value = draft[field] !== undefined ? draft[field] : (saved[field] || "");
+    input.placeholder = fallback || "";
+    input.addEventListener("input", () => { landingDraft(slot.id)[field] = input.value; });
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    card.appendChild(wrap);
+    return input;
+  }
+
+  let titleInput = null;
+  let metaInput = null;
+  if(slot.captioned){
+    titleInput = textField("Título (legenda do pôster)", "title", 120, slot.title || "Título");
+    metaInput = textField("Linha de apoio", "meta", 160, slot.meta || "Gênero · ano · duração · serviço");
+  }
+
+  const status = document.createElement("div");
+  status.className = "who";
+  if(landingFlash[slot.id]){
+    status.classList.add("done");
+    status.textContent = landingFlash[slot.id];
+  } else if(landingHasDraft(slot.id)){
+    status.textContent = "alterações ainda não salvas";
+  } else if(saved.updated_at || saved.updated_by){
+    status.textContent = "salvo " + formatDate(saved.updated_at) + (saved.updated_by ? " · " + saved.updated_by : "");
+  } else {
+    status.textContent = "usando o conteúdo original da página";
+  }
+  card.appendChild(status);
+
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = "image/png,image/jpeg,image/webp,image/avif,image/gif";
+  card.appendChild(file);
+
+  const acts = document.createElement("div");
+  acts.className = "acts";
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "ghost pick";
+  pick.textContent = source ? "Trocar imagem" : "Escolher imagem";
+  pick.addEventListener("click", () => file.click());
+  acts.appendChild(pick);
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "Salvar";
+  acts.appendChild(save);
+
+  if(saved.image || saved.title || saved.meta){
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "ghost";
+    clear.textContent = "Restaurar";
+    clear.addEventListener("click", () => saveLandingSlot(slot, { action: "clear" }, clear));
+    acts.appendChild(clear);
+  }
+  card.appendChild(acts);
+
+  file.addEventListener("change", async () => {
+    const chosen = file.files && file.files[0];
+    if(!chosen) return;
+    pick.disabled = true;
+    pick.textContent = "Preparando…";
+    try{
+      landingDraft(slot.id).image = await shrinkImage(chosen);
+      renderLanding();
+    }catch(error){
+      feedback("err", "Não foi possível usar esta imagem", error.message);
+      pick.disabled = false;
+      pick.textContent = source ? "Trocar imagem" : "Escolher imagem";
+    }finally{
+      file.value = "";
+    }
+  });
+
+  save.addEventListener("click", () => {
+    const body = {};
+    if(draft.image) body.image = draft.image;
+    if(slot.captioned){
+      body.title = titleInput.value.trim();
+      body.meta = metaInput.value.trim();
+    }
+    const textUntouched = !slot.captioned ||
+      (body.title === (saved.title || "") && body.meta === (saved.meta || ""));
+    if(!draft.image && textUntouched){
+      flashLanding(slot.id, "escolha uma imagem ou escreva um título antes de salvar");
+      return;
+    }
+    saveLandingSlot(slot, body, save);
+  });
+
+  if(landingHasDraft(slot.id)) card.classList.add("dirty");
+  return card;
+}
+
+function renderLanding(){
+  const box = $("landing-slots");
+  if(!box) return;
+  box.innerHTML = "";
+  const groups = [];
+  landingCatalog.forEach((slot) => {
+    let group = groups.find((item) => item.name === slot.group);
+    if(!group){ group = { name: slot.group, slots: [] }; groups.push(group); }
+    group.slots.push(slot);
+  });
+  groups.forEach((group) => {
+    const section = document.createElement("div");
+    section.className = "group";
+    const heading = document.createElement("h3");
+    heading.textContent = group.name;
+    section.appendChild(heading);
+    const grid = document.createElement("div");
+    grid.className = "slots";
+    group.slots.forEach((slot) => grid.appendChild(landingCard(slot)));
+    section.appendChild(grid);
+    box.appendChild(section);
+  });
+}
+
+function flashLanding(slotId, message){
+  landingFlash[slotId] = message;
+  renderLanding();
+  window.setTimeout(() => {
+    if(landingFlash[slotId] !== message) return;
+    delete landingFlash[slotId];
+    renderLanding();
+  }, 6000);
+}
+
+async function saveLandingSlot(slot, body, button){
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "Salvando…";
+  try{
+    const result = await api("/api/admin/landing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ slot: slot.id }, body))
+    });
+    if(!result.ok){
+      feedback("err", "Não foi possível salvar este espaço",
+        result.data.error || "Erro inesperado.",
+        result.data.storage && !result.data.storage.persistent ? SETUP_STEPS : null);
+      return;
+    }
+    landingSlots = result.data.slots || {};
+    delete landingDrafts[slot.id];
+    // Confirmação no próprio card: a página tem 13 espaços e um aviso no topo
+    // faria a lista pular de lugar a cada gravação.
+    flashLanding(slot.id, body.action === "clear"
+      ? "restaurado — voltou ao conteúdo original"
+      : "publicado — já aparece assim no site");
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function loadLanding(){
+  const result = await api("/api/landing/posters");
+  if(!result.ok) return;
+  landingCatalog = result.data.catalog || [];
+  landingSlots = result.data.slots || {};
+  renderLanding();
+}
+
 /* ---------------- sessão ---------------- */
 
 function showLogin(message){
@@ -773,6 +1074,7 @@ async function loadPanel(){
   session = result.data.user;
   $("whoami-email").textContent = session ? session.email : "";
   applyOverview(result.data);
+  loadLanding();
   const storage = result.data.config && result.data.config.storage;
   if(storage && (!storage.persistent || storage.healthy === false)){ storageBanner(storage); }
   else { feedback(null, null, null); }

@@ -54,6 +54,9 @@ def handle(method, path, query=None, body=None, headers=None):
         return api_core.health() if method == "GET" else METHOD_NOT_ALLOWED
     if path == "/api/plans":
         return api_core.plans_catalog() if method == "GET" else METHOD_NOT_ALLOWED
+    if path == "/api/landing/posters":
+        # Leitura pública: é a landing que consome. A gravação é administrativa.
+        return api_core.landing_posters() if method == "GET" else METHOD_NOT_ALLOWED
 
     # -- autenticação --------------------------------------------------------
     if path == "/api/auth/register":
@@ -74,6 +77,10 @@ def handle(method, path, query=None, body=None, headers=None):
             return api_core.admin_overview(_session(headers))
         if method in {"POST", "PUT"} and path == "/api/admin/users":
             return api_core.admin_action(_session(headers), body)
+        return METHOD_NOT_ALLOWED
+    if path == "/api/admin/landing":
+        if method in {"POST", "PUT"}:
+            return api_core.admin_landing_save(_session(headers), body)
         return METHOD_NOT_ALLOWED
 
     # -- conta do cliente ----------------------------------------------------

@@ -29,6 +29,7 @@ from user_store import (
     add_history,
     admin_summary,
     admin_users,
+    clear_landing_slot,
     consume_credit,
     create_user,
     delete_user,
@@ -37,6 +38,7 @@ from user_store import (
     find_user_by_id,
     get_account,
     grant_credits,
+    landing_slots,
     list_feedback,
     list_history,
     refund_credit,
@@ -44,6 +46,7 @@ from user_store import (
     remove_feedback,
     remove_history,
     set_feedback,
+    set_landing_slot,
     set_subscription_status,
     set_user_password,
     start_checkout,
@@ -51,6 +54,7 @@ from user_store import (
     update_user_role,
 )
 import billing
+import landing
 from plans import get_plan, public_plans
 
 
@@ -275,6 +279,81 @@ def admin_action(session, body):
         return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error), "storage": storage_diagnostics()}, None
     except (ValueError, json.JSONDecodeError) as error:
         return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
+
+
+# ---------------------------------------------------------------------------
+# Conteúdo da landing: pôsteres administráveis
+# ---------------------------------------------------------------------------
+
+
+def _clean_landing_text(value, limit: int) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _clean_landing_image(value) -> str:
+    """Aceita apenas uma data URL de imagem, dentro do tamanho que o corpo comporta."""
+    image = str(value or "").strip()
+    if not image:
+        return ""
+    if not image.startswith("data:"):
+        raise ValueError("Envie a imagem como arquivo: só data URLs são aceitas aqui.")
+    header, _, payload = image.partition(",")
+    mime = header[5:].split(";")[0].strip().lower()
+    if mime not in landing.ALLOWED_IMAGE_TYPES:
+        raise ValueError("Formato não aceito. Use JPG, PNG, WebP, AVIF ou GIF.")
+    if ";base64" not in header or not payload:
+        raise ValueError("A imagem chegou incompleta. Tente enviar novamente.")
+    if len(image) > landing.MAX_IMAGE_CHARS:
+        raise ValueError(
+            "A imagem ficou grande demais para salvar. Escolha um arquivo menor "
+            "ou recorte o pôster antes de enviar."
+        )
+    return image
+
+
+def landing_posters():
+    """Rota pública lida pela landing. Uma falha aqui nunca derruba a página."""
+    payload = {"catalog": landing.catalog()}
+    try:
+        payload["slots"] = landing_slots()
+    except StorageError:
+        payload["slots"] = {}
+        payload["unavailable"] = True
+    return HTTPStatus.OK, payload, None
+
+
+def admin_landing_save(session, body):
+    """Grava um espaço da landing. Reservado ao administrador."""
+    if not session or session.get("role") != "admin":
+        return FORBIDDEN_ADMIN
+
+    slot_id = _text(body, "slot", "slot_id")
+    if not landing.is_slot(slot_id):
+        return HTTPStatus.BAD_REQUEST, {"error": "Espaço da landing desconhecido."}, None
+
+    try:
+        if str(body.get("action", "")).lower() in {"clear", "reset", "remove"}:
+            slots = clear_landing_slot(slot_id)
+        else:
+            values = {}
+            if "image" in body:
+                values["image"] = _clean_landing_image(body.get("image"))
+            if "title" in body:
+                values["title"] = _clean_landing_text(body.get("title"), landing.MAX_TITLE_LENGTH)
+            if "meta" in body:
+                values["meta"] = _clean_landing_text(body.get("meta"), landing.MAX_META_LENGTH)
+            if not values:
+                return HTTPStatus.BAD_REQUEST, {"error": "Nada para salvar neste espaço."}, None
+            slots = set_landing_slot(slot_id, values, editor=str(session.get("email", "")))
+    except ValueError as error:
+        return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
+    except StorageError as error:
+        return (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {"error": str(error), "storage": storage_diagnostics()},
+            None,
+        )
+    return HTTPStatus.OK, {"slot": slot_id, "slots": slots}, None
 
 
 # ---------------------------------------------------------------------------

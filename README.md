@@ -18,6 +18,8 @@ A resposta do motor vem em JSON estrito e precisa caber no teto de saída: com o
 
 Qual motor de IA está por trás da curadoria é **informação interna**: nenhuma tela — nem a de resultado, nem a de erro — nomeia o provedor. As mensagens de falha descrevem o problema como "motor de recomendação", e o detalhe técnico fica apenas no encadeamento da exceção, nos logs do servidor.
 
+As artes e as legendas da landing são **editáveis pelo painel do administrador**: cada espaço de pôster da página tem imagem, título e linha de apoio próprios, e o que for salvo vale na hora para todo visitante, sem novo deploy. Espaço sem nada salvo continua exibindo o conteúdo que veio no layout.
+
 Um **botão flutuante de WhatsApp** fica disponível em todas as telas e abre a conversa com o atendimento no número **(11) 93425-2085**.
 
 ## Planos, créditos e checkout
@@ -85,6 +87,10 @@ No painel você vê os contadores (contas cadastradas, assinantes ativos, admini
 
 **Adicionar créditos** abre uma janela com o saldo atual, a quantidade, a origem (*concessão manual* ou *teste grátis*), um motivo opcional e uma **tela de confirmação** com o novo saldo antes de gravar — junto do aviso de que esses créditos não têm renovação automática. As últimas concessões da conta aparecem na mesma janela. A autorização é verificada no servidor: `POST /api/admin/users` recusa com **403** qualquer sessão que não seja de administrador, então esconder o botão não é o que protege a operação. Há ainda um bloco para criar o acesso de um cliente direto pelo painel. Não existe aprovação de cadastro: todo cadastro já entra ativo e o pagamento é que libera o resultado. Por segurança, o administrador logado não consegue excluir nem despromover a própria conta — outra conta de administrador precisa fazer isso.
 
+**Pôsteres da página inicial** é o bloco que controla as imagens e as legendas da landing. Cada espaço de arte da página (os nove pôsteres do carrossel do catálogo, os três cartões do Top 3 de exemplo e a cena de abertura de “O custo do tempo”) aparece como um quadro com prévia, campo de **título** — a legenda que fica embaixo do pôster — e campo de **linha de apoio** (gênero · ano · duração · serviço). Escolha o arquivo, ajuste os textos e clique em *Salvar*: a troca passa a valer imediatamente para qualquer visitante, sem novo deploy. *Restaurar* devolve o espaço ao conteúdo que veio no layout, e campo de texto em branco mantém o texto original da página.
+
+A imagem é **reduzida no próprio navegador** antes de subir (até caber no corpo de 64 000 bytes aceito pelas rotas), então pode enviar o arquivo original do pôster. A gravação é feita por `POST /api/admin/landing`, que recusa com **403** qualquer sessão sem papel `admin`; a landing lê o resultado pela rota pública `GET /api/landing/posters`.
+
 O último bloco, **Diagnóstico do deploy**, mostra em qual armazenamento as contas estão sendo gravadas e quais variáveis o ambiente encontrou. A mesma informação, sem nenhum segredo, está disponível publicamente em `GET /api/health` — é o endereço mais rápido para descobrir por que um cadastro falhou.
 
 ## Banco de contas
@@ -145,6 +151,8 @@ Os testes rodam com `python3 -m unittest test_app`.
 | `/api/admin/status` | GET | admin | Configuração, contadores e lista de contas |
 | `/api/admin/users` | GET/POST | admin | Ações administrativas |
 | `/api/plans` | GET | público | Catálogo de planos e preços |
+| `/api/landing/posters` | GET | público | Imagens e legendas publicadas na landing |
+| `/api/admin/landing` | POST | admin | Publica ou restaura um espaço da landing |
 | `/api/account` | GET | usuário autenticado | Plano, assinatura e créditos do dia |
 | `/api/feedback` | GET/POST/DELETE | usuário autenticado | Marcações do cliente |
 | `/api/billing/checkout` | POST | usuário autenticado | Cria a assinatura na Asaas e devolve a fatura |
@@ -155,6 +163,8 @@ Os testes rodam com `python3 -m unittest test_app`.
 As ações aceitas em `POST /api/admin/users` são `delete`, `promote`, `demote`, `set_password`, `create`, `grant_plan`, `revoke_plan` e `add_credits`.
 
 `add_credits` recebe `user_id`, `credits` (inteiro de 1 a 10000), `origin` (`manual` ou `trial`) e `reason` opcional. Ele soma ao saldo avulso, grava a concessão no histórico e **não** toca em `billing`: nada de plano, assinatura, validade ou renovação.
+
+`POST /api/admin/landing` recebe `slot` (um dos identificadores devolvidos em `catalog` por `GET /api/landing/posters`), `image` (data URL de JPG, PNG, WebP, AVIF ou GIF), `title` e `meta`. Campo ausente preserva o valor já publicado; campo vazio apaga aquele valor. `{"action":"clear"}` remove o espaço inteiro e a landing volta ao conteúdo do layout.
 
 `POST /api/feedback` grava uma marcação (`title_pt`, `title_original`, `year`, `opinion` com `liked`/`disliked`/vazio e `watched`) e aceita `{"action":"remove","id":"..."}` para apagar uma marcação específica — o mesmo que `DELETE /api/feedback`.
 
@@ -174,6 +184,8 @@ O arquivo `vercel.json` e a função em `api/index.py` deixam o repositório pro
 | `KV_REST_API_URL` + `KV_REST_API_TOKEN` | Uma das três | Redis REST (Upstash / Vercel KV). |
 | `USER_STORE_BLOB_PATH` | Não | Objeto privado do Blob; padrão `pipoca-play/users.json`. |
 | `USER_STORE_FILE` | Local | Caminho do JSON local; não persiste em produção serverless. |
+| `LANDING_STORE_BLOB_PATH` | Não | Objeto do Blob com os pôsteres da landing; padrão `pipoca-play/landing.json`. |
+| `LANDING_STORE_FILE` | Não | Caminho local dos pôsteres da landing; padrão, o irmão do arquivo de contas. |
 | `USER_STORE_MODE` | Não | Força um backend específico; use apenas para depurar. |
 | `ASAAS_API_KEY` | Sim | Chave da Asaas; sem ela ninguém consegue assinar. |
 | `ASAAS_ENV` | Não | `sandbox` ou `production`; em branco, deduzido pela chave. |

@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 
 TEST_STORE = Path(tempfile.gettempdir()) / "pipoca-play-test-users.json"
+TEST_LANDING_STORE = Path(tempfile.gettempdir()) / "pipoca-play-test-landing.json"
+os.environ["LANDING_STORE_FILE"] = str(TEST_LANDING_STORE)
 os.environ["AUTH_SECRET"] = "test-secret"
 os.environ["ADMIN_EMAIL"] = "admin@test.local"
 os.environ["ADMIN_PASSWORD"] = "admin-password"
@@ -37,6 +39,7 @@ from server import (  # noqa: E402
     validate_recommendation_payload,
 )
 import api_core  # noqa: E402
+import landing  # noqa: E402
 from user_store import (  # noqa: E402
     CreditError,
     StorageError,
@@ -84,9 +87,11 @@ FILTERS = {
 class PipocaPlayTests(unittest.TestCase):
     def setUp(self):
         TEST_STORE.unlink(missing_ok=True)
+        TEST_LANDING_STORE.unlink(missing_ok=True)
 
     def tearDown(self):
         TEST_STORE.unlink(missing_ok=True)
+        TEST_LANDING_STORE.unlink(missing_ok=True)
 
     def test_clean_filters_preserves_all_eight_dimensions(self):
         cleaned = clean_filters(FILTERS)
@@ -2166,6 +2171,107 @@ class PipocaPlayTests(unittest.TestCase):
         self.assertEqual(listed["plan"], "gold")
         self.assertTrue(listed["subscription_active"])
         self.assertEqual(admin_summary()["subscribers"], 1)
+
+    # ------------------------------------------------------------------
+    # Pôsteres da landing administrados pelo painel
+    # ------------------------------------------------------------------
+
+    def test_landing_catalog_is_public_and_starts_without_saved_slots(self):
+        status, payload, _ = router.handle("GET", "/api/landing/posters", {}, {}, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["slots"], {})
+        ids = [slot["id"] for slot in payload["catalog"]]
+        self.assertEqual(ids, list(landing.SLOT_IDS))
+        self.assertIn("pp-poster-1", ids)
+        self.assertIn("pp-top3-3", ids)
+
+    def test_landing_write_is_reserved_to_the_administrator(self):
+        body = {"slot": "pp-poster-1", "title": "Invasão"}
+        for session in (None, {"email": "client@test.local", "role": "user"}):
+            status, payload, _ = api_core.admin_landing_save(session, body)
+            self.assertEqual(status, 403)
+            self.assertIn("administrador", payload["error"])
+        # Sem sessão a rota também recusa, e nada foi gravado.
+        status, _, _ = router.handle("POST", "/api/admin/landing", {}, body, {})
+        self.assertEqual(status, 403)
+        self.assertEqual(router.handle("GET", "/api/landing/posters", {}, {}, {})[1]["slots"], {})
+
+    def test_landing_reading_stays_read_only_and_writing_needs_post(self):
+        self.assertEqual(router.handle("POST", "/api/landing/posters", {}, {}, {})[0], 405)
+        self.assertEqual(router.handle("GET", "/api/admin/landing", {}, {}, {})[0], 405)
+
+    def test_admin_saves_a_poster_and_the_landing_reads_it_back(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        image = "data:image/webp;base64," + base64.b64encode(b"arte-do-poster").decode()
+        status, payload, _ = api_core.admin_landing_save(
+            admin,
+            {"slot": "pp-poster-1", "image": image, "title": " Cidade  de Deus ", "meta": "Drama · 2002"},
+        )
+        self.assertEqual(status, 200)
+        saved = payload["slots"]["pp-poster-1"]
+        self.assertEqual(saved["image"], image)
+        self.assertEqual(saved["title"], "Cidade de Deus")   # espaços normalizados
+        self.assertEqual(saved["meta"], "Drama · 2002")
+        self.assertEqual(saved["updated_by"], "admin@test.local")
+
+        # A landing lê pela rota pública, sem sessão nenhuma.
+        public = router.handle("GET", "/api/landing/posters", {}, {}, {})[1]
+        self.assertEqual(public["slots"]["pp-poster-1"]["title"], "Cidade de Deus")
+        self.assertEqual(public["slots"]["pp-poster-1"]["image"], image)
+
+    def test_saving_only_the_title_keeps_the_image_already_published(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        image = "data:image/png;base64," + base64.b64encode(b"arte").decode()
+        api_core.admin_landing_save(admin, {"slot": "pp-top3-2", "image": image, "title": "Antes"})
+        status, payload, _ = api_core.admin_landing_save(admin, {"slot": "pp-top3-2", "title": "Depois"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["slots"]["pp-top3-2"]["image"], image)
+        self.assertEqual(payload["slots"]["pp-top3-2"]["title"], "Depois")
+
+    def test_clearing_a_slot_returns_the_landing_to_its_own_content(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        image = "data:image/jpeg;base64," + base64.b64encode(b"arte").decode()
+        api_core.admin_landing_save(admin, {"slot": "pp-poster-4", "image": image, "title": "Trocado"})
+        status, payload, _ = api_core.admin_landing_save(admin, {"slot": "pp-poster-4", "action": "clear"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("pp-poster-4", payload["slots"])
+
+    def test_landing_rejects_unknown_slots_and_unsupported_images(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        status, payload, _ = api_core.admin_landing_save(admin, {"slot": "pp-poster-99", "title": "x"})
+        self.assertEqual(status, 400)
+        self.assertIn("desconhecido", payload["error"])
+
+        status, payload, _ = api_core.admin_landing_save(
+            admin, {"slot": "pp-poster-1", "image": "https://exemplo.test/poster.jpg"}
+        )
+        self.assertEqual(status, 400)
+
+        status, payload, _ = api_core.admin_landing_save(
+            admin, {"slot": "pp-poster-1", "image": "data:application/pdf;base64,Zg=="}
+        )
+        self.assertEqual(status, 400)
+
+        oversized = "data:image/webp;base64," + ("A" * landing.MAX_IMAGE_CHARS)
+        status, payload, _ = api_core.admin_landing_save(admin, {"slot": "pp-poster-1", "image": oversized})
+        self.assertEqual(status, 400)
+        self.assertIn("grande demais", payload["error"])
+        # Nenhuma das recusas deixou resíduo gravado.
+        self.assertEqual(router.handle("GET", "/api/landing/posters", {}, {}, {})[1]["slots"], {})
+
+    def test_the_saved_image_fits_the_body_accepted_by_both_runtimes(self):
+        """O painel comprime até caber: o limite precisa ser menor que o corpo aceito."""
+        from api.index import MAX_BODY_BYTES
+
+        self.assertLess(landing.MAX_IMAGE_CHARS, MAX_BODY_BYTES)
+
+    def test_the_landing_never_breaks_when_the_store_is_unreachable(self):
+        with patch("api_core.landing_slots", side_effect=StorageError("banco fora do ar")):
+            status, payload, _ = api_core.landing_posters()
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["slots"], {})
+        self.assertTrue(payload["unavailable"])
+        self.assertTrue(payload["catalog"])
 
 
 if __name__ == "__main__":
