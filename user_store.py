@@ -1551,8 +1551,15 @@ def _write_landing_local(document: dict) -> None:
         ) from error
 
 
+def _landing_entries(value) -> dict:
+    """Só o que tem forma de registro salvo; documento antigo ou torto não quebra."""
+    if not isinstance(value, dict):
+        return {}
+    return {key: item for key, item in value.items() if isinstance(item, dict)}
+
+
 def load_landing() -> dict:
-    """Documento completo da landing: ``{"slots": {...}, "updated_at": ...}``."""
+    """Documento completo: ``{"slots": …, "testimonials": …, "updated_at": …}``."""
     mode = storage_mode()
     with _LOCK:
         if mode == "postgres":
@@ -1571,13 +1578,9 @@ def load_landing() -> dict:
                 document = parsed if isinstance(parsed, dict) else {}
         else:
             document = _read_landing_local()
-    slots = document.get("slots")
     return {
-        "slots": {
-            key: value
-            for key, value in (slots.items() if isinstance(slots, dict) else ())
-            if isinstance(value, dict)
-        },
+        "slots": _landing_entries(document.get("slots")),
+        "testimonials": _landing_entries(document.get("testimonials")),
         "updated_at": document.get("updated_at") or "",
     }
 
@@ -1597,9 +1600,10 @@ def save_landing(document: dict) -> None:
         _write_landing_local(document)
 
 
-def landing_slots() -> dict:
-    """Somente os espaços já preenchidos, na forma que a landing consome."""
-    return load_landing()["slots"]
+def landing_content() -> dict:
+    """Espaços e depoimentos publicados, em uma leitura só do armazenamento."""
+    document = load_landing()
+    return {"slots": document["slots"], "testimonials": document["testimonials"]}
 
 
 def set_landing_slot(slot_id: str, values: dict, editor: str = "") -> dict:
@@ -1633,3 +1637,47 @@ def clear_landing_slot(slot_id: str) -> dict:
     document["updated_at"] = _now()
     save_landing(document)
     return document["slots"]
+
+
+def set_landing_testimonial(testimonial_id: str, values: dict, editor: str = "") -> dict:
+    """Grava um depoimento. Campo ausente preserva o valor anterior.
+
+    Texto em branco apaga o valor salvo — e o cartão volta a mostrar o que a
+    própria página traz. ``placeholder`` é o selo "Placeholder" do cartão: por
+    ser um booleano, ``False`` é uma escolha do administrador e fica gravada.
+    """
+    document = load_landing()
+    saved = document["testimonials"]
+    current = dict(saved.get(testimonial_id) or {})
+    if "image" in values:
+        if values["image"]:
+            current["image"] = values["image"]
+        else:
+            current.pop("image", None)
+    for field in ("name", "handle", "quote", "context"):
+        if field in values:
+            if values[field]:
+                current[field] = values[field]
+            else:
+                current.pop(field, None)
+    if "placeholder" in values:
+        current["placeholder"] = bool(values["placeholder"])
+    if current:
+        current["updated_at"] = _now()
+        if editor:
+            current["updated_by"] = editor
+        saved[testimonial_id] = current
+    else:
+        saved.pop(testimonial_id, None)
+    document["updated_at"] = _now()
+    save_landing(document)
+    return saved
+
+
+def clear_landing_testimonial(testimonial_id: str) -> dict:
+    """Remove o depoimento salvo: o cartão volta ao conteúdo original da página."""
+    document = load_landing()
+    document["testimonials"].pop(testimonial_id, None)
+    document["updated_at"] = _now()
+    save_landing(document)
+    return document["testimonials"]

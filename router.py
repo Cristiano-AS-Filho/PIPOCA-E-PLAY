@@ -82,6 +82,10 @@ def handle(method, path, query=None, body=None, headers=None):
         if method in {"POST", "PUT"}:
             return api_core.admin_landing_save(_session(headers), body)
         return METHOD_NOT_ALLOWED
+    if path == "/api/admin/landing/testimonials":
+        if method in {"POST", "PUT"}:
+            return api_core.admin_landing_testimonial(_session(headers), body)
+        return METHOD_NOT_ALLOWED
 
     # -- conta do cliente ----------------------------------------------------
     if path == "/api/account":

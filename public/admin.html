@@ -133,6 +133,22 @@
   .slot .who.done{color:#8ee2cc;}
   .slot.dirty{border-color:rgba(242,169,59,.55);}
   .slot input[type=file]{display:none;}
+  .slot textarea{
+    width:100%;background:var(--bg-elev-2);border:1px solid var(--line);color:var(--cream);
+    border-radius:8px;padding:8px 10px;font:12.5px/1.5 'Inter',system-ui,sans-serif;
+    resize:vertical;min-height:72px;
+  }
+  .slot textarea:focus{outline:none;border-color:var(--marquee);}
+  /* Depoimentos: a prévia é a foto redonda de 40 px do cartão, ampliada o
+     suficiente para o administrador conferir o enquadramento. */
+  .slot .thumb.avatar{height:80px;width:80px;border-radius:50%;flex:none;}
+  .slot .thumb.avatar span{padding:6px;}
+  /* Rótulo do selo: frase normal, não o caixa-alta dos rótulos de campo. */
+  .slot .flag{display:flex;align-items:center;gap:8px;margin-bottom:0;cursor:pointer;
+    font:11.5px/1.35 'Inter',system-ui,sans-serif;text-transform:none;letter-spacing:0;color:var(--cream-dim);}
+  .slot .flag input{width:15px;height:15px;flex:none;padding:0;accent-color:var(--marquee);}
+  /* O depoimento tem uma caixa de texto: o cartão pede mais largura que um pôster. */
+  #landing-testimonials .slots{grid-template-columns:repeat(auto-fill,minmax(250px,1fr));}
   .foot{margin-top:22px;font-size:11.5px;color:var(--cream-dim);text-align:center;line-height:1.6;}
   [hidden]{display:none !important;}
 </style>
@@ -234,6 +250,18 @@
         arquivo original. Campo de texto em branco mantém o texto que a página já traz.
       </p>
       <div id="landing-slots"></div>
+    </section>
+
+    <section class="card">
+      <h2>Depoimentos da página inicial</h2>
+      <p class="hint">
+        Os três cartões da seção <em>“O que dizem sobre o tempo”</em>. Troque a foto de quem
+        comenta, o nome, o @, o depoimento e a legenda de apoio: a mudança vale na hora para
+        quem abrir o site. Enquanto o depoimento não for de um cliente real, deixe
+        <em>Marcar como exemplo</em> ligado — é ele que mostra o selo <em>Placeholder</em> no
+        canto do cartão. Campo em branco mantém o texto que a página já traz.
+      </p>
+      <div id="landing-testimonials"></div>
     </section>
 
     <section class="card">
@@ -773,6 +801,9 @@ const landingFlash = {};    // id -> confirmação curta, no próprio card
 const LANDING_IMAGE_LIMIT = 44000;
 // Degraus de redução: o primeiro que couber no limite é o que sobe.
 const LANDING_STEPS = [[900,.82],[760,.8],[620,.78],[520,.74],[440,.7],[360,.64],[300,.58]];
+// A foto do depoimento aparece num círculo de 40 px: teto e degraus bem menores.
+const LANDING_AVATAR_LIMIT = 22000;
+const LANDING_AVATAR_STEPS = [[320,.85],[240,.8],[180,.78],[120,.72]];
 
 function readFile(file){
   return new Promise((resolve, reject) => {
@@ -794,11 +825,11 @@ function loadImage(source){
 
 /* Reduz no navegador até caber no corpo aceito pela rota. Sem isso o admin
    precisaria tratar o arquivo antes de enviar. */
-async function shrinkImage(file){
+async function shrinkImage(file, limit, steps){
   const image = await loadImage(await readFile(file));
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
-  for(const [maxSide, quality] of LANDING_STEPS){
+  for(const [maxSide, quality] of (steps || LANDING_STEPS)){
     const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
     canvas.width = Math.max(1, Math.round(image.width * scale));
     canvas.height = Math.max(1, Math.round(image.height * scale));
@@ -809,7 +840,7 @@ async function shrinkImage(file){
     if(data.indexOf("data:image/webp") !== 0){           // navegador sem WebP
       data = canvas.toDataURL("image/jpeg", quality);
     }
-    if(data.length <= LANDING_IMAGE_LIMIT) return data;
+    if(data.length <= (limit || LANDING_IMAGE_LIMIT)) return data;
   }
   throw new Error("Não foi possível reduzir esta imagem o suficiente. Tente outro arquivo.");
 }
@@ -1027,6 +1058,226 @@ async function loadLanding(){
   landingCatalog = result.data.catalog || [];
   landingSlots = result.data.slots || {};
   renderLanding();
+  depoCatalog = result.data.testimonials_catalog || [];
+  depoSaved = result.data.testimonials || {};
+  renderTestimonials();
+}
+
+/* ---------------- depoimentos da página inicial ---------------- */
+
+let depoCatalog = [];
+let depoSaved = {};
+const depoDrafts = {};   // id -> o que está em edição e ainda não subiu
+const depoFlash = {};    // id -> confirmação curta, no próprio card
+
+// Campo do depoimento: chave enviada à rota, rótulo e tamanho máximo.
+const DEPO_FIELDS = [
+  ["name", "Nome de quem comenta", 80],
+  ["handle", "@ ou identificação", 60],
+  ["quote", "Depoimento", 400],
+  ["context", "Legenda de apoio", 160],
+];
+
+function depoDraft(id){
+  if(!depoDrafts[id]) depoDrafts[id] = {};
+  return depoDrafts[id];
+}
+
+function depoHasDraft(id){
+  const draft = depoDrafts[id];
+  return !!(draft && Object.keys(draft).length);
+}
+
+/* O selo "Placeholder" é um booleano: sem nada salvo vale o que a página traz. */
+function depoFlag(item, includeDraft){
+  const draft = depoDrafts[item.id] || {};
+  if(includeDraft && typeof draft.placeholder === "boolean") return draft.placeholder;
+  const saved = depoSaved[item.id] || {};
+  if(typeof saved.placeholder === "boolean") return saved.placeholder;
+  return !!item.placeholder;
+}
+
+function depoCard(item){
+  const saved = depoSaved[item.id] || {};
+  const draft = depoDrafts[item.id] || {};
+  const card = document.createElement("div");
+  card.className = "slot";
+
+  const thumb = document.createElement("div");
+  thumb.className = "thumb avatar";
+  const source = draft.image || saved.image || "";
+  if(source){
+    const img = document.createElement("img");
+    img.src = source;
+    img.alt = "";
+    thumb.appendChild(img);
+  } else {
+    const empty = document.createElement("span");
+    empty.textContent = "sem foto";
+    thumb.appendChild(empty);
+  }
+  card.appendChild(thumb);
+
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = item.label;
+  card.appendChild(name);
+
+  /* Como nos pôsteres: o que foi digitado fica no rascunho, para salvar outro
+     depoimento redesenhar a lista sem levar junto o que estava em edição. */
+  const inputs = {};
+  DEPO_FIELDS.forEach(([field, labelText, limit]) => {
+    const long = field === "quote";
+    const input = document.createElement(long ? "textarea" : "input");
+    if(long) input.rows = 3; else input.type = "text";
+    input.maxLength = limit;
+    input.value = draft[field] !== undefined ? draft[field] : (saved[field] || "");
+    input.placeholder = item[field] || "";
+    input.addEventListener("input", () => { depoDraft(item.id)[field] = input.value; });
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    card.appendChild(wrap);
+    inputs[field] = input;
+  });
+
+  const flagWrap = document.createElement("label");
+  flagWrap.className = "flag";
+  const flag = document.createElement("input");
+  flag.type = "checkbox";
+  flag.checked = depoFlag(item, true);
+  flag.addEventListener("change", () => { depoDraft(item.id).placeholder = flag.checked; });
+  flagWrap.appendChild(flag);
+  flagWrap.appendChild(document.createTextNode("Marcar como exemplo (selo Placeholder)"));
+  card.appendChild(flagWrap);
+
+  const status = document.createElement("div");
+  status.className = "who";
+  if(depoFlash[item.id]){
+    status.classList.add("done");
+    status.textContent = depoFlash[item.id];
+  } else if(depoHasDraft(item.id)){
+    status.textContent = "alterações ainda não salvas";
+  } else if(saved.updated_at || saved.updated_by){
+    status.textContent = "salvo " + formatDate(saved.updated_at) + (saved.updated_by ? " · " + saved.updated_by : "");
+  } else {
+    status.textContent = "usando o conteúdo original da página";
+  }
+  card.appendChild(status);
+
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = "image/png,image/jpeg,image/webp,image/avif,image/gif";
+  card.appendChild(file);
+
+  const acts = document.createElement("div");
+  acts.className = "acts";
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "ghost pick";
+  pick.textContent = source ? "Trocar foto" : "Escolher foto";
+  pick.addEventListener("click", () => file.click());
+  acts.appendChild(pick);
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "Salvar";
+  acts.appendChild(save);
+
+  if(Object.keys(saved).length){
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "ghost";
+    clear.textContent = "Restaurar";
+    clear.addEventListener("click", () => saveDepo(item, { action: "clear" }, clear));
+    acts.appendChild(clear);
+  }
+  card.appendChild(acts);
+
+  file.addEventListener("change", async () => {
+    const chosen = file.files && file.files[0];
+    if(!chosen) return;
+    pick.disabled = true;
+    pick.textContent = "Preparando…";
+    try{
+      depoDraft(item.id).image = await shrinkImage(chosen, LANDING_AVATAR_LIMIT, LANDING_AVATAR_STEPS);
+      renderTestimonials();
+    }catch(error){
+      feedback("err", "Não foi possível usar esta foto", error.message);
+      pick.disabled = false;
+      pick.textContent = source ? "Trocar foto" : "Escolher foto";
+    }finally{
+      file.value = "";
+    }
+  });
+
+  save.addEventListener("click", () => {
+    const body = { placeholder: flag.checked };
+    if(draft.image) body.image = draft.image;
+    DEPO_FIELDS.forEach(([field]) => { body[field] = inputs[field].value.trim(); });
+    const untouched = !draft.image &&
+      body.placeholder === depoFlag(item, false) &&
+      DEPO_FIELDS.every(([field]) => body[field] === (saved[field] || ""));
+    if(untouched){
+      flashDepo(item.id, "mude alguma coisa antes de salvar");
+      return;
+    }
+    saveDepo(item, body, save);
+  });
+
+  if(depoHasDraft(item.id)) card.classList.add("dirty");
+  return card;
+}
+
+function renderTestimonials(){
+  const box = $("landing-testimonials");
+  if(!box) return;
+  box.innerHTML = "";
+  const grid = document.createElement("div");
+  grid.className = "slots";
+  depoCatalog.forEach((item) => grid.appendChild(depoCard(item)));
+  box.appendChild(grid);
+}
+
+function flashDepo(id, message){
+  depoFlash[id] = message;
+  renderTestimonials();
+  window.setTimeout(() => {
+    if(depoFlash[id] !== message) return;
+    delete depoFlash[id];
+    renderTestimonials();
+  }, 6000);
+}
+
+async function saveDepo(item, body, button){
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "Salvando…";
+  try{
+    const result = await api("/api/admin/landing/testimonials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ testimonial: item.id }, body))
+    });
+    if(!result.ok){
+      feedback("err", "Não foi possível salvar este depoimento",
+        result.data.error || "Erro inesperado.",
+        result.data.storage && !result.data.storage.persistent ? SETUP_STEPS : null);
+      return;
+    }
+    depoSaved = result.data.testimonials || {};
+    delete depoDrafts[item.id];
+    flashDepo(item.id, body.action === "clear"
+      ? "restaurado — voltou ao conteúdo original"
+      : "publicado — já aparece assim no site");
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 /* ---------------- sessão ---------------- */

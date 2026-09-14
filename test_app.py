@@ -2265,13 +2265,159 @@ class PipocaPlayTests(unittest.TestCase):
 
         self.assertLess(landing.MAX_IMAGE_CHARS, MAX_BODY_BYTES)
 
+    # ------------------------------------------------------------------
+    # Depoimentos da landing administrados pelo painel
+    # ------------------------------------------------------------------
+
+    def test_testimonial_catalog_is_public_and_starts_without_anything_saved(self):
+        status, payload, _ = router.handle("GET", "/api/landing/posters", {}, {}, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["testimonials"], {})
+        catalog = payload["testimonials_catalog"]
+        self.assertEqual([item["id"] for item in catalog], list(landing.TESTIMONIAL_IDS))
+        # O catálogo traz o que a página já mostra, para o painel exibir de referência.
+        self.assertTrue(all(item["quote"] and item["name"] for item in catalog))
+        self.assertTrue(all(item["placeholder"] for item in catalog))
+
+    def test_testimonial_write_is_reserved_to_the_administrator(self):
+        body = {"testimonial": "pp-depo-1", "quote": "Invasão"}
+        for session in (None, {"email": "client@test.local", "role": "user"}):
+            status, payload, _ = api_core.admin_landing_testimonial(session, body)
+            self.assertEqual(status, 403)
+            self.assertIn("administrador", payload["error"])
+        status, _, _ = router.handle("POST", "/api/admin/landing/testimonials", {}, body, {})
+        self.assertEqual(status, 403)
+        self.assertEqual(router.handle("GET", "/api/landing/posters", {}, {}, {})[1]["testimonials"], {})
+
+    def test_testimonial_route_only_answers_to_post(self):
+        self.assertEqual(router.handle("GET", "/api/admin/landing/testimonials", {}, {}, {})[0], 405)
+
+    def test_admin_publishes_a_testimonial_and_the_landing_reads_it_back(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        photo = "data:image/webp;base64," + base64.b64encode(b"foto-do-cliente").decode()
+        status, payload, _ = api_core.admin_landing_testimonial(
+            admin,
+            {
+                "testimonial": "pp-depo-1",
+                "image": photo,
+                "name": "  Ana   Ribeiro ",
+                "handle": "@anaribeiro",
+                "quote": "Achei o filme da noite em dois minutos.",
+                "context": "Assinante Diamante desde 2025",
+                "placeholder": False,
+            },
+        )
+        self.assertEqual(status, 200)
+        saved = payload["testimonials"]["pp-depo-1"]
+        self.assertEqual(saved["image"], photo)
+        self.assertEqual(saved["name"], "Ana Ribeiro")          # espaços normalizados
+        self.assertEqual(saved["quote"], "Achei o filme da noite em dois minutos.")
+        self.assertEqual(saved["context"], "Assinante Diamante desde 2025")
+        self.assertFalse(saved["placeholder"])
+        self.assertEqual(saved["updated_by"], "admin@test.local")
+
+        # A landing lê pela mesma rota pública dos pôsteres, sem sessão nenhuma.
+        public = router.handle("GET", "/api/landing/posters", {}, {}, {})[1]
+        self.assertEqual(public["testimonials"]["pp-depo-1"]["name"], "Ana Ribeiro")
+        self.assertEqual(public["testimonials"]["pp-depo-1"]["image"], photo)
+
+    def test_marking_a_testimonial_as_real_is_stored_as_a_choice(self):
+        """``placeholder`` é booleano: ``False`` não pode ser lido como "não informado"."""
+        admin = {"email": "admin@test.local", "role": "admin"}
+        api_core.admin_landing_testimonial(admin, {"testimonial": "pp-depo-2", "placeholder": False})
+        saved = router.handle("GET", "/api/landing/posters", {}, {}, {})[1]["testimonials"]
+        self.assertIs(saved["pp-depo-2"]["placeholder"], False)
+        # Texto em branco continua significando "mantém o que a página traz".
+        self.assertNotIn("quote", saved["pp-depo-2"])
+
+    def test_saving_only_the_quote_keeps_the_photo_already_published(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        photo = "data:image/png;base64," + base64.b64encode(b"foto").decode()
+        api_core.admin_landing_testimonial(
+            admin, {"testimonial": "pp-depo-3", "image": photo, "quote": "Antes"}
+        )
+        status, payload, _ = api_core.admin_landing_testimonial(
+            admin, {"testimonial": "pp-depo-3", "quote": "Depois"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["testimonials"]["pp-depo-3"]["image"], photo)
+        self.assertEqual(payload["testimonials"]["pp-depo-3"]["quote"], "Depois")
+
+    def test_clearing_a_testimonial_returns_the_card_to_the_page_content(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        api_core.admin_landing_testimonial(admin, {"testimonial": "pp-depo-1", "quote": "Trocado"})
+        status, payload, _ = api_core.admin_landing_testimonial(
+            admin, {"testimonial": "pp-depo-1", "action": "clear"}
+        )
+        self.assertEqual(status, 200)
+        self.assertNotIn("pp-depo-1", payload["testimonials"])
+
+    def test_testimonials_reject_unknown_cards_and_unsupported_photos(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        status, payload, _ = api_core.admin_landing_testimonial(
+            admin, {"testimonial": "pp-depo-9", "quote": "x"}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("desconhecido", payload["error"])
+
+        # Um pôster não é um depoimento, e vice-versa: os dois catálogos não se cruzam.
+        self.assertEqual(
+            api_core.admin_landing_testimonial(admin, {"testimonial": "pp-poster-1", "quote": "x"})[0],
+            400,
+        )
+        self.assertEqual(api_core.admin_landing_save(admin, {"slot": "pp-depo-1", "title": "x"})[0], 400)
+
+        status, _, _ = api_core.admin_landing_testimonial(
+            admin, {"testimonial": "pp-depo-1", "image": "https://exemplo.test/foto.jpg"}
+        )
+        self.assertEqual(status, 400)
+
+        oversized = "data:image/webp;base64," + ("A" * landing.MAX_AVATAR_CHARS)
+        status, payload, _ = api_core.admin_landing_testimonial(
+            admin, {"testimonial": "pp-depo-1", "image": oversized}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("grande demais", payload["error"])
+        # Nenhuma das recusas deixou resíduo gravado.
+        self.assertEqual(router.handle("GET", "/api/landing/posters", {}, {}, {})[1]["testimonials"], {})
+
+    def test_a_long_quote_is_cut_at_the_documented_limit(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        status, payload, _ = api_core.admin_landing_testimonial(
+            admin, {"testimonial": "pp-depo-1", "quote": "a" * 900}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            len(payload["testimonials"]["pp-depo-1"]["quote"]),
+            landing.TESTIMONIAL_TEXT_FIELDS["quote"],
+        )
+
+    def test_posters_and_testimonials_share_the_document_without_erasing_each_other(self):
+        admin = {"email": "admin@test.local", "role": "admin"}
+        image = "data:image/jpeg;base64," + base64.b64encode(b"arte").decode()
+        api_core.admin_landing_save(admin, {"slot": "pp-poster-2", "image": image, "title": "Pôster"})
+        api_core.admin_landing_testimonial(admin, {"testimonial": "pp-depo-2", "quote": "Depoimento"})
+        api_core.admin_landing_save(admin, {"slot": "pp-poster-3", "title": "Outro pôster"})
+
+        public = router.handle("GET", "/api/landing/posters", {}, {}, {})[1]
+        self.assertEqual(public["slots"]["pp-poster-2"]["title"], "Pôster")
+        self.assertEqual(public["slots"]["pp-poster-3"]["title"], "Outro pôster")
+        self.assertEqual(public["testimonials"]["pp-depo-2"]["quote"], "Depoimento")
+
+    def test_the_saved_photo_fits_the_body_accepted_by_both_runtimes(self):
+        from api.index import MAX_BODY_BYTES
+
+        self.assertLess(landing.MAX_AVATAR_CHARS, MAX_BODY_BYTES)
+
     def test_the_landing_never_breaks_when_the_store_is_unreachable(self):
-        with patch("api_core.landing_slots", side_effect=StorageError("banco fora do ar")):
+        with patch("api_core.landing_content", side_effect=StorageError("banco fora do ar")):
             status, payload, _ = api_core.landing_posters()
         self.assertEqual(status, 200)
         self.assertEqual(payload["slots"], {})
+        self.assertEqual(payload["testimonials"], {})
         self.assertTrue(payload["unavailable"])
         self.assertTrue(payload["catalog"])
+        self.assertTrue(payload["testimonials_catalog"])
 
 
 if __name__ == "__main__":

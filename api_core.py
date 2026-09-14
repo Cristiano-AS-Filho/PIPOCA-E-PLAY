@@ -30,6 +30,7 @@ from user_store import (
     admin_summary,
     admin_users,
     clear_landing_slot,
+    clear_landing_testimonial,
     consume_credit,
     create_user,
     delete_user,
@@ -38,7 +39,7 @@ from user_store import (
     find_user_by_id,
     get_account,
     grant_credits,
-    landing_slots,
+    landing_content,
     list_feedback,
     list_history,
     refund_credit,
@@ -47,6 +48,7 @@ from user_store import (
     remove_history,
     set_feedback,
     set_landing_slot,
+    set_landing_testimonial,
     set_subscription_status,
     set_user_password,
     start_checkout,
@@ -282,7 +284,7 @@ def admin_action(session, body):
 
 
 # ---------------------------------------------------------------------------
-# Conteúdo da landing: pôsteres administráveis
+# Conteúdo da landing: pôsteres e depoimentos administráveis
 # ---------------------------------------------------------------------------
 
 
@@ -290,7 +292,7 @@ def _clean_landing_text(value, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def _clean_landing_image(value) -> str:
+def _clean_landing_image(value, limit: int = 0, oversize: str = "") -> str:
     """Aceita apenas uma data URL de imagem, dentro do tamanho que o corpo comporta."""
     image = str(value or "").strip()
     if not image:
@@ -303,21 +305,36 @@ def _clean_landing_image(value) -> str:
         raise ValueError("Formato não aceito. Use JPG, PNG, WebP, AVIF ou GIF.")
     if ";base64" not in header or not payload:
         raise ValueError("A imagem chegou incompleta. Tente enviar novamente.")
-    if len(image) > landing.MAX_IMAGE_CHARS:
+    if len(image) > (limit or landing.MAX_IMAGE_CHARS):
         raise ValueError(
-            "A imagem ficou grande demais para salvar. Escolha um arquivo menor "
+            oversize
+            or "A imagem ficou grande demais para salvar. Escolha um arquivo menor "
             "ou recorte o pôster antes de enviar."
         )
     return image
 
 
+def _clean_landing_flag(value) -> bool:
+    """O corpo chega como JSON, mas um "false" em texto não pode virar verdadeiro."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "sim", "on", "yes"}
+    return bool(value)
+
+
 def landing_posters():
     """Rota pública lida pela landing. Uma falha aqui nunca derruba a página."""
-    payload = {"catalog": landing.catalog()}
+    payload = {
+        "catalog": landing.catalog(),
+        "testimonials_catalog": landing.testimonials(),
+    }
     try:
-        payload["slots"] = landing_slots()
+        # Uma leitura só: pôsteres e depoimentos moram no mesmo documento.
+        content = landing_content()
+        payload["slots"] = content["slots"]
+        payload["testimonials"] = content["testimonials"]
     except StorageError:
         payload["slots"] = {}
+        payload["testimonials"] = {}
         payload["unavailable"] = True
     return HTTPStatus.OK, payload, None
 
@@ -354,6 +371,47 @@ def admin_landing_save(session, body):
             None,
         )
     return HTTPStatus.OK, {"slot": slot_id, "slots": slots}, None
+
+
+def admin_landing_testimonial(session, body):
+    """Grava um depoimento da landing. Reservado ao administrador."""
+    if not session or session.get("role") != "admin":
+        return FORBIDDEN_ADMIN
+
+    testimonial_id = _text(body, "testimonial", "testimonial_id", "slot")
+    if not landing.is_testimonial(testimonial_id):
+        return HTTPStatus.BAD_REQUEST, {"error": "Depoimento desconhecido."}, None
+
+    try:
+        if str(body.get("action", "")).lower() in {"clear", "reset", "remove"}:
+            saved = clear_landing_testimonial(testimonial_id)
+        else:
+            values = {}
+            if "image" in body:
+                values["image"] = _clean_landing_image(
+                    body.get("image"),
+                    landing.MAX_AVATAR_CHARS,
+                    "A foto ficou grande demais para salvar. Escolha um arquivo menor.",
+                )
+            for field, limit in landing.TESTIMONIAL_TEXT_FIELDS.items():
+                if field in body:
+                    values[field] = _clean_landing_text(body.get(field), limit)
+            if "placeholder" in body:
+                values["placeholder"] = _clean_landing_flag(body.get("placeholder"))
+            if not values:
+                return HTTPStatus.BAD_REQUEST, {"error": "Nada para salvar neste depoimento."}, None
+            saved = set_landing_testimonial(
+                testimonial_id, values, editor=str(session.get("email", ""))
+            )
+    except ValueError as error:
+        return HTTPStatus.BAD_REQUEST, {"error": str(error)}, None
+    except StorageError as error:
+        return (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {"error": str(error), "storage": storage_diagnostics()},
+            None,
+        )
+    return HTTPStatus.OK, {"testimonial": testimonial_id, "testimonials": saved}, None
 
 
 # ---------------------------------------------------------------------------

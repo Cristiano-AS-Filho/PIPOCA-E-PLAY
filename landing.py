@@ -1,9 +1,10 @@
-"""Catálogo dos espaços de imagem da landing page.
+"""Catálogo do conteúdo administrável da landing page.
 
 A landing (``public/index.html``) é um pacote gerado no Claude Web Design: a
-marcação vem com espaços de pôster identificados por ``id``. Este módulo é a
-única lista desses espaços; o painel administrativo a recebe pronta pela API e
-o script ``public/landing-posters.js`` usa os mesmos ``id`` para aplicar o que
+marcação vem com espaços de pôster identificados por ``id`` e com os cartões de
+depoimento marcados por ``data-pp-depo``. Este módulo é a única lista desses
+pontos; o painel administrativo a recebe pronta pela API e o script
+``public/landing-content.js`` usa os mesmos identificadores para aplicar o que
 foi salvo. Trocar o layout da landing significa mexer só aqui.
 
 ``title``/``meta`` guardam o texto que a própria página já traz, para o painel
@@ -80,4 +81,85 @@ def get_slot(slot_id: str) -> dict | None:
     for slot in LANDING_SLOTS:
         if slot["id"] == slot_id:
             return dict(slot)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Depoimentos da seção “O que dizem sobre o tempo”
+# ---------------------------------------------------------------------------
+#
+# Mesma ideia dos espaços de imagem acima, para os três cartões de depoimento
+# da prova social. A página monta cada cartão pelo componente ``Testimonial``
+# do design system; ``public/landing-content.js`` encontra o cartão pelo
+# atributo ``data-pp-depo`` da marcação e aplica o que foi salvo.
+#
+# ``name``/``handle``/``quote``/``context``/``placeholder`` guardam o que a
+# própria página já traz: campo em branco no painel mantém esse conteúdo.
+
+TESTIMONIAL_GROUP = "O que dizem sobre o tempo"
+
+LANDING_TESTIMONIALS = (
+    {
+        "id": "pp-depo-1",
+        "group": TESTIMONIAL_GROUP,
+        "label": "Depoimento 1",
+        "name": "Nome do cliente",
+        "handle": "@usuario",
+        "quote": (
+            "Eu passava mais tempo escolhendo do que assistindo. "
+            "Agora abro, respondo e aperto play."
+        ),
+        "context": "Texto de exemplo, aguardando depoimento real.",
+        "placeholder": True,
+    },
+    {
+        "id": "pp-depo-2",
+        "group": TESTIMONIAL_GROUP,
+        "label": "Depoimento 2",
+        "name": "Nome do cliente",
+        "handle": "@usuario",
+        "quote": "Três opções resolvem. Dez me travavam.",
+        "context": "Texto de exemplo, aguardando depoimento real.",
+        "placeholder": True,
+    },
+    {
+        "id": "pp-depo-3",
+        "group": TESTIMONIAL_GROUP,
+        "label": "Depoimento 3",
+        "name": "Nome do cliente",
+        "handle": "@usuario",
+        "quote": "O que eu marco como já assisti não volta. Isso mudou tudo.",
+        "context": "Texto de exemplo, aguardando depoimento real.",
+        "placeholder": True,
+    },
+)
+
+TESTIMONIAL_IDS = tuple(item["id"] for item in LANDING_TESTIMONIALS)
+
+# Campos de texto do depoimento e o tamanho máximo de cada um.
+TESTIMONIAL_TEXT_FIELDS = {
+    "name": 80,
+    "handle": 60,
+    "quote": 400,
+    "context": 160,
+}
+
+# A foto aparece em um círculo de 40 px: não há motivo para subir mais que isso,
+# e o teto menor mantém leve a resposta pública que a landing baixa de uma vez.
+MAX_AVATAR_CHARS = 24_000
+
+
+def testimonials() -> list[dict]:
+    """Cópia do catálogo de depoimentos, para a API devolver sem expor a tupla."""
+    return [dict(item) for item in LANDING_TESTIMONIALS]
+
+
+def is_testimonial(testimonial_id: str) -> bool:
+    return testimonial_id in TESTIMONIAL_IDS
+
+
+def get_testimonial(testimonial_id: str) -> dict | None:
+    for item in LANDING_TESTIMONIALS:
+        if item["id"] == testimonial_id:
+            return dict(item)
     return None
