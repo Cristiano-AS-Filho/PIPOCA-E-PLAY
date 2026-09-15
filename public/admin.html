@@ -1053,7 +1053,9 @@ async function saveLandingSlot(slot, body, button){
 }
 
 async function loadLanding(){
-  const result = await api("/api/landing/posters");
+  // Rota administrativa: é a única que traz "quem salvou e quando". A rota
+  // pública que a landing consome não expõe esses campos.
+  const result = await api("/api/admin/landing");
   if(!result.ok) return;
   landingCatalog = result.data.catalog || [];
   landingSlots = result.data.slots || {};

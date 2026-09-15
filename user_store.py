@@ -1205,10 +1205,20 @@ def list_feedback(user_id: str) -> list[dict]:
     return [_public_feedback(item) for item in items]
 
 
+def _clean_title(value) -> str:
+    """Título de uma marcação, em uma linha só.
+
+    O título é escrito pelo cliente e volta ao motor no bloco de histórico do
+    prompt. Colapsar os espaços (em vez de só aparar as pontas) impede que uma
+    quebra de linha no meio do texto finja ser uma nova instrução ali dentro.
+    """
+    return " ".join(str(value or "").split())[:160]
+
+
 def set_feedback(user_id: str, entry: dict) -> list[dict]:
     """Cria ou atualiza a marcação de um título. Marcação vazia é removida."""
-    title_pt = str(entry.get("title_pt", "")).strip()[:160]
-    title_original = str(entry.get("title_original", "")).strip()[:160]
+    title_pt = _clean_title(entry.get("title_pt"))
+    title_original = _clean_title(entry.get("title_original"))
     if not title_pt and not title_original:
         raise ValueError("Informe o título que você quer marcar.")
     try:
@@ -1603,7 +1613,11 @@ def save_landing(document: dict) -> None:
 def landing_content() -> dict:
     """Espaços e depoimentos publicados, em uma leitura só do armazenamento."""
     document = load_landing()
-    return {"slots": document["slots"], "testimonials": document["testimonials"]}
+    return {
+        "slots": document["slots"],
+        "testimonials": document["testimonials"],
+        "updated_at": document["updated_at"],
+    }
 
 
 def set_landing_slot(slot_id: str, values: dict, editor: str = "") -> dict:

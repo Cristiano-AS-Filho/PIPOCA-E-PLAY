@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
 import json
 import os
 import re
@@ -115,17 +116,25 @@ def _budget(deadline, ceiling: float) -> float:
 
 
 def _is_public_host(host: str) -> bool:
-    """Barra endereços internos: a URL pode vir do motor, não de fonte confiável."""
+    """Barra endereços internos: a URL pode vir do motor, não de fonte confiável.
+
+    Quem decide é a própria biblioteca de endereços (``ipaddress.is_global``),
+    que cobre de uma vez 127/8, 10/8, 172.16/12, 192.168/16, 169.254/16,
+    100.64/10 e 0/8 — antes a lista era escrita à mão e deixava faixas de fora.
+    Um endereço IPv6 literal chega aqui vazio (os dois-pontos são cortados na
+    linha de cima) e também não passa.
+    """
     host = host.split("@")[-1].split(":")[0].strip("[]").lower()
     if not host or host in {"localhost", "::1"} or host.endswith((".local", ".internal")):
         return False
-    if host.startswith(("127.", "10.", "192.168.", "169.254.", "0.")):
-        return False
-    if host.startswith("172."):
-        second = host.split(".")[1] if host.count(".") >= 1 else ""
-        if second.isdigit() and 16 <= int(second) <= 31:
-            return False
-    return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # Não é IP: é nome de domínio. Só que um "nome" feito apenas de dígitos
+        # (2130706433 é 127.0.0.1 em decimal) não é domínio nenhum — é um IP em
+        # outra grafia, que o resolvedor do sistema aceita normalmente.
+        return not host.replace(".", "").isdigit()
+    return address.is_global
 
 
 def _looks_like_image_url(value) -> str:
@@ -225,7 +234,22 @@ def _titles_match(found: str, wanted: str, loose: bool = False) -> bool:
     return bool(a and b) and (a == b or a.startswith(b) or b.startswith(a))
 
 
-def _is_series(content_type) -> bool:
+def _is_anime(content_type) -> bool:
+    return str(content_type or "").strip().lower().startswith("anime")
+
+
+def _is_series(content_type, seasons=0) -> bool:
+    """Formato do título: série (temporadas) ou longa-metragem.
+
+    Anime é uma categoria, não um formato — existe filme de anime e série de
+    anime. Quando o tipo é ``anime``, quem responde é ``seasons``: o prompt
+    pede temporadas maiores que zero para as séries e zero para os filmes.
+    """
+    if _is_anime(content_type):
+        try:
+            return int(seasons or 0) > 0
+        except (TypeError, ValueError):
+            return False
     return str(content_type).lower().startswith("seri")
 
 
@@ -297,10 +321,10 @@ def _itunes_full_size(artwork: str, deadline=None) -> str:
     return original
 
 
-def _itunes_poster(title_original: str, title_pt: str, year, content_type: str, deadline=None) -> str:
+def _itunes_poster(title_original: str, title_pt: str, year, content_type: str, deadline=None, seasons=0) -> str:
     """2ª fonte: a arte oficial publicada na loja da Apple."""
     year = int(year or 0)
-    series = _is_series(content_type)
+    series = _is_series(content_type, seasons)
     attempts = []
     for country, title in (("BR", title_pt), ("US", title_original), ("BR", title_original)):
         title = str(title or "").strip()
@@ -406,11 +430,18 @@ def _wikipedia_page_image(language: str, search: str, wanted: str, timeout: floa
     return ""
 
 
-def _wikipedia_searches(title_original: str, title_pt: str, year, content_type: str):
+def _wikipedia_searches(title_original: str, title_pt: str, year, content_type: str, seasons=0):
     """Buscas a tentar, do título em português (público brasileiro) ao original."""
     year = int(year or 0)
-    kind_pt = "série de televisão" if _is_series(content_type) else "filme"
-    kind_en = "television series" if _is_series(content_type) else "film"
+    series = _is_series(content_type, seasons)
+    if _is_anime(content_type):
+        # O verbete de um anime raramente é achado por "filme"/"série de
+        # televisão": a palavra que aparece no título do artigo é "anime".
+        kind_pt = "série de anime" if series else "filme de anime"
+        kind_en = "anime television series" if series else "anime film"
+    else:
+        kind_pt = "série de televisão" if series else "filme"
+        kind_en = "television series" if series else "film"
     year_pt = f" {year}" if year else ""
     year_en = f" {year}" if year else ""
     searches = []
@@ -429,9 +460,9 @@ def _wikipedia_searches(title_original: str, title_pt: str, year, content_type: 
     return searches
 
 
-def _wikipedia_poster(title_original: str, title_pt: str, year, content_type: str, deadline=None) -> str:
+def _wikipedia_poster(title_original: str, title_pt: str, year, content_type: str, deadline=None, seasons=0) -> str:
     """3ª fonte: uma imagem real e gratuita da Wikipedia para o título."""
-    for language, search, wanted in _wikipedia_searches(title_original, title_pt, year, content_type):
+    for language, search, wanted in _wikipedia_searches(title_original, title_pt, year, content_type, seasons):
         timeout = _budget(deadline, CATALOG_TIMEOUT)
         if timeout <= 0:
             return ""
@@ -479,18 +510,25 @@ def _data_uri(b64: str) -> str:
     return uri
 
 
-def _generate_poster_image(title: str, year, genres, content_type: str, deadline=None) -> str:
+def _generate_poster_image(title: str, year, genres, content_type: str, deadline=None, seasons=0) -> str:
     """Capa ilustrativa gerada pela mesma conta da OpenAI já usada pelo motor.
     Nunca é a arte oficial do título."""
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     timeout = _budget(deadline, GENERATION_TIMEOUT)
     if not api_key or not title or timeout <= 0:
         return ""
-    kind = "série de TV" if _is_series(content_type) else "filme"
+    series = _is_series(content_type, seasons)
+    anime = _is_anime(content_type)
+    if anime:
+        kind = "série de anime" if series else "filme de anime"
+        style = "estilo pôster de anime, arte em animação japonesa"
+    else:
+        kind = "série de TV" if series else "filme"
+        style = "estilo pôster de cinema"
     genre_hint = ", ".join([str(g) for g in (genres or []) if g][:2]) or "drama"
     year_hint = f" ({int(year)})" if year else ""
     prompt = (
-        f'Arte de capa ilustrativa e original, estilo pôster de cinema, inspirada no clima '
+        f'Arte de capa ilustrativa e original, {style}, inspirada no clima '
         f'do {kind} "{title}"{year_hint}, gênero {genre_hint}. Composição vertical, cores '
         "fortes, cena atmosférica. Não inclua nenhum texto, título, letra ou logotipo na imagem "
         "— represente o clima da obra, não seus personagens ou atores reais."
@@ -539,16 +577,19 @@ def resolve_poster(recommendation: dict, deadline=None) -> tuple[str, str]:
     title_pt = recommendation.get("title_pt", "")
     year = recommendation.get("year", 0)
     content_type = recommendation.get("content_type", "filme")
+    # Anime pode ser filme ou série: é ``seasons`` que diz qual dos dois, e as
+    # buscas de arte precisam disso para procurar no lugar certo.
+    seasons = recommendation.get("seasons", 0)
 
     from_model = _model_poster(recommendation, deadline)
     if from_model:
         return from_model, "model"
 
-    from_itunes = _itunes_poster(title_original, title_pt, year, content_type, deadline)
+    from_itunes = _itunes_poster(title_original, title_pt, year, content_type, deadline, seasons)
     if from_itunes:
         return from_itunes, "itunes"
 
-    from_wikipedia = _wikipedia_poster(title_original, title_pt, year, content_type, deadline)
+    from_wikipedia = _wikipedia_poster(title_original, title_pt, year, content_type, deadline, seasons)
     if from_wikipedia:
         return from_wikipedia, "wikipedia"
 
@@ -558,8 +599,9 @@ def resolve_poster(recommendation: dict, deadline=None) -> tuple[str, str]:
         title,
         recommendation.get("year", 0),
         recommendation.get("genres"),
-        recommendation.get("content_type", "filme"),
+        content_type,
         deadline,
+        seasons,
     )
     return (generated, "generated") if generated else ("", "")
 

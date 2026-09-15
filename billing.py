@@ -120,7 +120,11 @@ def diagnostics() -> dict:
     diagnostics_payload = {
         "configured": bool(source),
         "environment": "sandbox" if is_sandbox() else "production",
-        "webhook_token_configured": bool(webhook_token()),
+        "webhook_token_configured": webhook_token_is_configured(),
+        # Sem token, cada notificação é conferida na Asaas antes de liberar
+        # acesso — mais lento e dependente da API estar de pé. Configurar
+        # ASAAS_WEBHOOK_TOKEN continua sendo o caminho recomendado.
+        "webhook_verified_against_asaas": not webhook_token_is_configured(),
         "webhook_path": "/api/billing/webhook",
         "api_key_source_env_var": source[0] if source else "",
         "accepted_env_vars": list(API_KEY_ENV_VARS),
@@ -348,10 +352,23 @@ def cancel_subscription(subscription_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def webhook_token_is_configured() -> bool:
+    """Há um token combinado com a Asaas para autenticar as notificações?
+
+    Quando não há, o corpo do webhook não prova nada: qualquer um pode postar
+    um "PAYMENT_CONFIRMED" na rota. Quem chama precisa saber disso para exigir
+    a confirmação na própria Asaas antes de liberar acesso (ver
+    ``api_core.billing_webhook``).
+    """
+    return bool(webhook_token())
+
+
 def webhook_token_is_valid(received: str) -> bool:
     expected = webhook_token()
     if not expected:
-        # Sem token configurado, a validação fica a cargo da própria Asaas.
+        # Sem token configurado não há o que conferir aqui. Isso NÃO torna o
+        # evento confiável: é ``api_core.billing_webhook`` que, nesse caso,
+        # confirma o pagamento consultando a Asaas antes de liberar o acesso.
         return True
     return bool(received) and _constant_time_equals(received.strip(), expected)
 

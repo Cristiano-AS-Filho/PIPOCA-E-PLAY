@@ -15,7 +15,25 @@ import urllib.request
 from metadata import enrich_result
 
 
-CONTENT_TYPE_OPTIONS = ("Filme", "Série", "Mesclar (filmes e séries)")
+# Tipos de produção aceitos na primeira pergunta. "Anime" é uma categoria
+# própria — não um gênero —, porque o cliente que a escolhe quer animação
+# japonesa (filme ou série), e não um desenho qualquer. "Mesclar" continua
+# aceitando o texto antigo: um navegador com o pacote da versão anterior em
+# cache ainda envia "Mesclar (filmes e séries)", e recusar a busca gastaria a
+# paciência do cliente sem motivo.
+MESCLA_OPTION = "Mesclar (filmes, séries e animes)"
+MESCLA_LEGACY_OPTION = "Mesclar (filmes e séries)"
+ANIME_OPTION = "Anime"
+
+CONTENT_TYPE_OPTIONS = ("Filme", "Série", ANIME_OPTION, MESCLA_OPTION, MESCLA_LEGACY_OPTION)
+
+
+def is_mescla(content_type) -> bool:
+    return str(content_type or "").strip() in {MESCLA_OPTION, MESCLA_LEGACY_OPTION}
+
+
+def is_anime(content_type) -> bool:
+    return str(content_type or "").strip().lower() == ANIME_OPTION.lower()
 
 # A função serverless que serve /api morre aos 60s (``vercel.json``). Este é o
 # tempo total que a chamada tem para responder o motor e coletar os pôsteres:
@@ -123,7 +141,7 @@ RECOMMENDATION_SCHEMA = {
                 ],
                 "properties": {
                     "rank": {"type": "integer", "minimum": 1, "maximum": 3},
-                    "content_type": {"type": "string", "enum": ["filme", "serie"]},
+                    "content_type": {"type": "string", "enum": ["filme", "serie", "anime"]},
                     "title_original": {"type": "string"},
                     "title_pt": {"type": "string"},
                     "year": {"type": "integer", "minimum": 0},
@@ -315,9 +333,20 @@ def clean_filters(value):
 MAX_FEEDBACK_IN_PROMPT = 40
 
 
+def _one_line(value) -> str:
+    """Texto do cliente em uma linha só, com teto de tamanho.
+
+    O bloco de histórico do prompt é montado em linhas ("- JÁ ASSISTIU: …").
+    Um título com quebra de linha poderia se passar por uma linha nova ali
+    dentro; colapsar o espaço em branco tira essa possibilidade na origem,
+    inclusive para as marcações gravadas antes desta regra existir.
+    """
+    return " ".join(str(value or "").split())[:160]
+
+
 def _title_label(item):
-    title = str(item.get("title_pt", "")).strip() or str(item.get("title_original", "")).strip()
-    original = str(item.get("title_original", "")).strip()
+    title = _one_line(item.get("title_pt")) or _one_line(item.get("title_original"))
+    original = _one_line(item.get("title_original"))
     year = int(item.get("year", 0) or 0)
     label = title
     if original and original.lower() != title.lower():
@@ -363,6 +392,36 @@ def build_feedback_section(feedback):
         "já assistido ou marcado como não gostei."
     )
     return "\n".join(blocks)
+
+
+def _mescla_label(content_type) -> str:
+    """Rótulo da mescla a citar no prompt: o que o cliente marcou, se for um."""
+    value = str(content_type or "").strip()
+    return value if is_mescla(value) else MESCLA_OPTION
+
+
+def build_content_type_section(content_type):
+    """Regra do tipo de produção — a restrição mais forte do prompt.
+
+    Anime é categoria própria, não um gênero: quem a escolhe quer animação
+    japonesa, em filme ou em série, e não desenho ocidental. A regra da mescla
+    é a mesma de antes (pelo menos um filme e pelo menos uma série); o que
+    mudou é que a vaga restante pode ser um anime — quando ele for de fato a
+    melhor opção, nunca por cota.
+    """
+    return (
+        'O tipo de produção é a restrição mais forte de todas: com "Filme", as três indicações '
+        'são longas-metragens; com "Série", as três são séries de TV ou streaming (incluindo '
+        'minisséries e novelas); com "Anime", as três são animações japonesas — filmes de anime '
+        'ou séries de anime, incluindo ONAs e OVAs, e nunca animação ocidental nem a versão '
+        f'live-action de um anime; com "{_mescla_label(content_type)}", entregue formatos '
+        'diferentes na mesma lista, com pelo menos um filme e pelo menos uma série, e use a vaga '
+        'restante para um anime quando ele for a melhor opção para o perfil — se não houver um '
+        'bom candidato, prefira o melhor filme ou série em vez de forçar um anime. Marque cada '
+        'indicação em content_type com "filme", "serie" ou "anime". Para séries e séries de '
+        'anime, runtime_minutes é a duração média de um episódio e seasons é o número de '
+        'temporadas já lançadas; para filmes e filmes de anime, seasons é 0.'
+    )
 
 
 def build_platform_section(platform_value):
@@ -445,7 +504,7 @@ Estou procurando uma recomendação perfeita para assistir agora. Considere conj
 - Companhia: {filters['companionship']}
 - Perfil de popularidade/estilo: {filters['popularity']}
 
-O tipo de produção é a restrição mais forte de todas: com "Filme", as três indicações são longas-metragens; com "Série", as três são séries de TV ou streaming (incluindo minisséries e novelas); com "Mesclar (filmes e séries)", entregue os dois formatos na mesma lista, com pelo menos um filme e pelo menos uma série. Marque cada indicação em content_type com "filme" ou "serie". Para séries, runtime_minutes é a duração média de um episódio e seasons é o número de temporadas já lançadas; para filmes, seasons é 0.
+{build_content_type_section(filters['content_type'])}
 
 {build_platform_section(filters['platform'])}
 
@@ -476,8 +535,18 @@ def validate_recommendation_payload(payload):
             raise RuntimeError("As recomendações devem estar ordenadas por posição.")
         if not 0 <= int(recommendation.get("match_score", 0)) <= 100:
             raise RuntimeError("A pontuação de compatibilidade é inválida.")
-        # Sem content_type declarado, tratamos como filme: é o formato padrão do MVP.
-        recommendation["content_type"] = "serie" if str(recommendation.get("content_type", "")).lower().startswith("seri") else "filme"
+        # Sem content_type declarado, tratamos como filme: é o formato padrão do
+        # MVP. O modo estrito do schema já limita o campo aos três valores
+        # canônicos, mas a rede de segurança também aceita a grafia acentuada
+        # ("Série"): sem isso, "série" não casaria com "seri" e a série virava
+        # filme no cartão.
+        declared = str(recommendation.get("content_type", "")).strip().lower()
+        if declared.startswith("anime"):
+            recommendation["content_type"] = "anime"
+        elif declared.startswith(("seri", "séri")):
+            recommendation["content_type"] = "serie"
+        else:
+            recommendation["content_type"] = "filme"
     return payload
 
 

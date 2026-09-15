@@ -354,3 +354,149 @@ No cartão (resultado e histórico, nas duas páginas), o canto passou a ter dua
 De ponta a ponta contra o servidor local, com o motor simulado apenas no transporte HTTP (validação, normalização e coleta de pôster rodando de verdade): com "Netflix" marcado, as três indicações saíram com serviço — "Max (HBO)" e "Apple TV+" normalizados do que o motor respondeu, e "Netflix" completado na que veio vazia; com duas plataformas marcadas, a indicação sem resposta do motor ficou vazia mesmo. Com a primeira resposta do motor chegando cortada, `/api/recommend` respondeu **200** com as três indicações e gastou **um** crédito.
 
 Em Chromium (Playwright), percorrendo as oito perguntas até o Top 3 e também reabrindo a busca pelo histórico: os três cartões mostram o serviço no canto ("MAX (HBO)", "APPLE TV+ (ALUGUEL)", "NETFLIX") com "disponibilidade a confirmar" logo abaixo, e a frase "Onde assistir a confirmar" não aparece mais em nenhum deles.
+
+## Rodada 14 — landing que só atualizava com F5, Anime no questionário e auditoria de segurança
+
+### Diagnóstico — por que a alteração do admin não aparecia
+
+O backend nunca foi o culpado: gravar e ler o conteúdo da landing é imediato,
+sem cache de servidor, e `GET /api/landing/posters` sempre respondeu
+`Cache-Control: no-store`. O problema inteiro estava no ciclo de vida do
+script `public/landing-content.js`, que lia a rota **uma vez só**, no
+carregamento, e engolia em silêncio qualquer falha:
+
+1. **Falha de leitura sem nova tentativa.** Partida a frio da função,
+   rede instável, resposta não-JSON — o `.catch()` não fazia nada e a página
+   ficava com o conteúdo do layout até um novo carregamento. É a explicação
+   direta do "às vezes precisa dar F5".
+2. **Indisponibilidade tratada como "nada publicado".** Quando o
+   armazenamento falha, a rota devolve `200` com `unavailable: true` e nenhum
+   espaço. O script olhava só o tamanho de `slots`, concluía que o
+   administrador não tinha publicado nada e ainda desistia de armar o
+   observador de DOM — pelo resto da visita.
+3. **Uma leitura por carregamento.** Aba já aberta, volta pelo botão
+   "voltar", celular que retoma a aba do plano de fundo: nada disso relia a
+   rota, então o conteúdo continuava o do momento em que a página abriu.
+
+4. **O script não executava em parte dos carregamentos** — a causa raiz, que
+   só apareceu rodando a página em um navegador de verdade. Medindo 14
+   recarregamentos seguidos com Chromium, **4 falhavam**, e em todos eles
+   `/landing-content.js` nunca chegava a ser pedido. O motivo está no
+   desempacotador do pacote gerado no Claude Web Design: depois de montar o
+   template ele revive os `<script>` um a um, com
+   `old.replaceWith(novoScript)`. Quando o runtime de design já redesenhou o
+   corpo da página, o nó `old` não tem mais pai e `replaceWith` **não faz
+   nada** — o script novo nunca entra no documento, nunca executa, e o `await`
+   pelo `onload` dele trava o laço. O último script do template é exatamente o
+   que aplica o conteúdo administrável. Recarregar "resolvia" porque a corrida
+   dava outro resultado — que é, letra por letra, o sintoma relatado.
+
+### Correções aplicadas
+
+- `public/index.html` passou a carregar `landing-content.js` **também** pelo
+  `<head>` do documento original, fora do template, com `defer`. Essa cópia
+  não depende do laço de revivência do desempacotador. O script ganhou trava
+  contra execução dupla (`window.__pipocaLandingContent`), de modo que as duas
+  cópias convivem e a primeira a rodar assume. Medição depois da correção:
+  **0 falhas em 14 recarregamentos**.
+- O observador de DOM passou a vigiar o `document` em vez do
+  `document.documentElement`: o pacote troca o elemento `<html>` inteiro
+  (`documentElement.replaceWith`), o que deixava órfão o observador antigo.
+  Ele também é armado no início, e não só depois da primeira resposta — a
+  cópia do `<head>` roda antes de a página existir.
+- `public/landing-content.js` repete a leitura com espera crescente
+  (1,5 s, 4 s, 10 s) quando ela falha **ou** volta `unavailable`, e relê
+  quando a aba fica visível, recebe foco ou é restaurada do histórico
+  (`pageshow`). A releitura espontânea tem piso de 15 s, para alternar de aba
+  não virar enxurrada. **Não há recarga de página em lugar nenhum**: o que se
+  atualiza são os dados. O observador de DOM passou a ser armado uma vez só e
+  independentemente de já haver conteúdo publicado.
+- O script agora guarda o texto original do layout antes da primeira troca,
+  então o *Restaurar* do painel também vale na aba que já estava aberta.
+- `vercel.json` passou a mandar `Cache-Control: public, max-age=0,
+  must-revalidate` nos estáticos, para um novo deploy do pacote ou do script
+  ser pego já na primeira visita.
+
+### Anime como categoria de verdade
+
+A opção entrou de ponta a ponta, não como cartão decorativo:
+
+- **Questionário** (`public/app.html` e `public/index.html`, dentro do
+  template do pacote): as opções passaram a ser `Filme`, `Série`, `Anime` e
+  `Mesclar (filmes, séries e animes)`, exibidas como 🎬/📺/🍥/🔀. O ícone é
+  só rótulo — o valor enviado continua sendo o texto oficial da opção.
+- **Validação** (`recommender.clean_filters`): `Anime` e a nova redação da
+  mescla entraram em `OFFICIAL_FILTER_OPTIONS`. A redação antiga
+  (`Mesclar (filmes e séries)`) continua aceita, porque um navegador com o
+  pacote anterior em cache ainda a envia.
+- **Prompt**: `build_content_type_section` descreve Anime como animação
+  japonesa — filme ou série, ONAs e OVAs —, proíbe animação ocidental e
+  live-action, e mantém a regra da mescla que já existia (pelo menos um filme
+  e pelo menos uma série), abrindo a vaga restante para um anime **quando ele
+  for a melhor opção**, nunca por cota.
+- **Schema e normalização**: `content_type` aceita `anime` no enum, e
+  `validate_recommendation_payload` normaliza `"ANIME"`, `"Série"` e vazio
+  para os três valores canônicos. De quebra, a normalização passou a aceitar a
+  grafia acentuada: `"Série"` não casava com `"seri"` e virava filme no cartão.
+- **Coleta de pôster** (`metadata.py`): anime é categoria, não formato, então
+  `seasons` decide se a busca vai ao catálogo de TV ou ao de filmes do iTunes,
+  e a Wikipedia passa a procurar "série de anime"/"filme de anime"
+  (`anime television series`/`anime film`) em vez de "série de televisão".
+- **Cartão** (`metaLine`, `linkRow`, `demoResult`): rótulo "Anime",
+  temporadas quando houver, duração por episódio nas séries e busca de
+  avaliações com o termo "anime".
+
+### Auditoria de segurança
+
+Corrigido:
+
+- **Webhook de pagamento forjável (crítico).** Sem `ASAAS_WEBHOOK_TOKEN`,
+  `webhook_token_is_valid` aceitava qualquer notificação. Como o identificador
+  da assinatura volta ao cliente na resposta do checkout, um POST forjado em
+  `/api/billing/webhook` liberava plano pago sem pagamento. Agora, sem token,
+  a plataforma confirma na Asaas se a assinatura **gravada na conta** tem
+  fatura paga antes de liberar — e recusa (`401`/`503`) quando não dá para
+  confirmar.
+- **E-mail do administrador exposto.** `GET /api/landing/posters` é pública e
+  devolvia `updated_by` em cada espaço salvo. O painel passou a ler por
+  `GET /api/admin/landing` (admin, 403 para os demais) e a rota pública devolve
+  só o que a página exibe.
+- **Infraestrutura no diagnóstico público.** `/api/health` publicava a prévia
+  da string de conexão com host, usuário e base. Ficou só o **nome** da
+  variável encontrada; a prévia completa segue no painel autenticado.
+- **Sem freio nas rotas sensíveis.** O limite por IP existia apenas no
+  servidor local. Passou para `router.py`, valendo também na Vercel, em login,
+  cadastro e recomendação.
+- **Cabeçalhos de segurança ausentes.** Adicionados em `vercel.json` e
+  espelhados em `server.py`. A CSP ficou restrita a
+  `frame-ancestors`/`base-uri`/`object-src`/`form-action`: uma `script-src`
+  estrita quebraria os pacotes do Claude Web Design.
+- **Título de marcação em várias linhas.** O texto é do cliente e volta ao
+  motor no bloco de histórico do prompt; em várias linhas podia imitar uma
+  instrução nova. Agora é colapsado em uma linha só, na gravação e na
+  montagem do prompt.
+- **Faixas internas fora da lista de SSRF.** `_is_public_host` usava uma lista
+  de prefixos escrita à mão. Passou a usar `ipaddress.is_global`, que cobre
+  também `169.254.169.254` (metadados de nuvem) e `100.64.0.0/10`, e recusa
+  IP escrito em decimal (`2130706433`).
+
+Verificado e já adequado: autorização de todas as rotas administrativas (403
+para cliente, anônimo e sessão com papel forjado), escopo por conta em
+marcações, histórico e créditos (IDOR não reproduzido), consultas Postgres
+parametrizadas, ausência de `innerHTML`/`dangerouslySetInnerHTML` com conteúdo
+dinâmico, upload restrito a data URL de imagem com MIME e tamanho conferidos,
+CORS fechado por omissão, cookie `HttpOnly`/`SameSite=Lax`/`Secure` em
+produção, senha com PBKDF2-SHA256 de 260 000 iterações, e nenhum segredo no
+código, no front-end ou no histórico do Git.
+
+### Validação
+
+- `python3 -m unittest test_app`: 166 testes, tudo verde.
+- `pip-audit -r requirements.txt`: nenhuma vulnerabilidade conhecida.
+- Navegador real (Chromium/Playwright) contra o servidor local: os oito
+  cenários da landing (visitante novo, troca de imagem, troca de texto, aba já
+  aberta, aba anônima, outro navegador, refresh, sair e voltar) e o
+  *Restaurar*; as quatro opções da primeira pergunta aparecem como
+  🎬 Filme / 📺 Série / 🍥 Anime / 🔀 Mescla.
+- Sonda de autorização cobrindo IDOR, rotas administrativas, manipulação de
+  créditos e webhook forjado.

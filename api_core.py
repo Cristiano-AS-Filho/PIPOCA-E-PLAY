@@ -81,7 +81,14 @@ def _text(body, *keys, default=""):
 
 
 def health():
-    """Somente indicadores booleanos: nenhum segredo é exposto."""
+    """Diagnóstico público do deploy.
+
+    A senha da conexão nunca esteve aqui, mas a prévia da DSN trazia host,
+    usuário e nome da base — infraestrutura que não precisa ser pública para
+    responder "por que o cadastro falhou". Ela continua inteira no painel
+    administrativo (``/api/admin/status``); aqui fica só o **nome** da variável
+    de ambiente encontrada, que é o dado que resolve o diagnóstico.
+    """
     storage = storage_diagnostics(probe=True)
     payload = {
         "ok": bool(storage["persistent"]) and storage.get("healthy") is not False,
@@ -94,7 +101,6 @@ def health():
             "error": storage["error"],
             "setup_hint": storage["setup_hint"],
             "postgres_source_env_var": storage.get("postgres_source_env_var"),
-            "postgres_dsn_preview": storage.get("postgres_dsn_preview"),
         },
         "admin_credentials_configured": root_admin_configured(),
         "admin_panel": "/admin",
@@ -321,6 +327,24 @@ def _clean_landing_flag(value) -> bool:
     return bool(value)
 
 
+# Campos de auditoria do conteúdo da landing: quando foi salvo e por qual
+# administrador. Servem ao painel e não têm nenhuma função na página pública —
+# o e-mail do administrador sair na rota aberta só entregaria a quem tentasse
+# adivinhar o login de /admin. A rota pública devolve apenas o que é exibido.
+LANDING_PRIVATE_FIELDS = ("updated_by", "updated_at")
+
+
+def _public_landing_entries(entries) -> dict:
+    """Copia os registros salvos sem os campos de auditoria."""
+    if not isinstance(entries, dict):
+        return {}
+    return {
+        key: {field: value for field, value in item.items() if field not in LANDING_PRIVATE_FIELDS}
+        for key, item in entries.items()
+        if isinstance(item, dict)
+    }
+
+
 def landing_posters():
     """Rota pública lida pela landing. Uma falha aqui nunca derruba a página."""
     payload = {
@@ -330,13 +354,42 @@ def landing_posters():
     try:
         # Uma leitura só: pôsteres e depoimentos moram no mesmo documento.
         content = landing_content()
-        payload["slots"] = content["slots"]
-        payload["testimonials"] = content["testimonials"]
+        payload["slots"] = _public_landing_entries(content["slots"])
+        payload["testimonials"] = _public_landing_entries(content["testimonials"])
+        payload["updated_at"] = content.get("updated_at", "")
     except StorageError:
         payload["slots"] = {}
         payload["testimonials"] = {}
+        # ``unavailable`` distingue "não há nada publicado" de "não deu para
+        # ler agora": a landing repete a leitura em vez de assumir que o
+        # administrador não publicou nada (ver public/landing-content.js).
         payload["unavailable"] = True
     return HTTPStatus.OK, payload, None
+
+
+def admin_landing_overview(session):
+    """Mesmo conteúdo da rota pública, com os campos de auditoria, para o painel."""
+    if not session or session.get("role") != "admin":
+        return FORBIDDEN_ADMIN
+    try:
+        content = landing_content()
+    except StorageError as error:
+        return (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {"error": str(error), "storage": storage_diagnostics()},
+            None,
+        )
+    return (
+        HTTPStatus.OK,
+        {
+            "catalog": landing.catalog(),
+            "testimonials_catalog": landing.testimonials(),
+            "slots": content["slots"],
+            "testimonials": content["testimonials"],
+            "updated_at": content.get("updated_at", ""),
+        },
+        None,
+    )
 
 
 def admin_landing_save(session, body):
@@ -648,9 +701,28 @@ def billing_status(session):
         return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(storage_error)}, None
 
 
+def _asaas_confirms_the_payment(user) -> bool:
+    """Pergunta à Asaas se a assinatura **gravada nesta conta** tem fatura paga.
+
+    Usada quando o webhook chega sem token combinado. Nesse caso o corpo da
+    notificação não prova nada — qualquer um pode postar um "PAYMENT_CONFIRMED"
+    na rota, e o próprio cliente conhece o identificador da sua assinatura,
+    devolvido pelo checkout. A pergunta é feita sobre a assinatura salva na
+    conta, nunca sobre o identificador que veio no corpo, de modo que apontar
+    para a assinatura de outra pessoa também não leva a lugar nenhum.
+    """
+    reference = user.get("billing", {}) if isinstance(user.get("billing"), dict) else {}
+    subscription_id = str(reference.get("asaas_subscription_id", ""))
+    if not subscription_id or not billing.is_configured():
+        return False
+    paid, _ = billing.subscription_is_paid(subscription_id)
+    return paid
+
+
 def billing_webhook(body, token_header):
     """Recebe as notificações da Asaas e libera (ou suspende) o acesso."""
-    if not billing.webhook_token_is_valid(token_header or ""):
+    trusted = billing.webhook_token_is_configured()
+    if trusted and not billing.webhook_token_is_valid(token_header or ""):
         return HTTPStatus.UNAUTHORIZED, {"error": "Token do webhook inválido."}, None
     if not isinstance(body, dict) or not body.get("event"):
         return HTTPStatus.BAD_REQUEST, {"error": "Evento inválido."}, None
@@ -667,6 +739,15 @@ def billing_webhook(body, token_header):
         user_id = str(user.get("id", ""))
         reference = user.get("billing", {}) if isinstance(user.get("billing"), dict) else {}
         if event["grants_access"]:
+            if not trusted and not _asaas_confirms_the_payment(user):
+                # Sem token não dá para acreditar no corpo, e a Asaas não
+                # confirma o pagamento: nada é liberado. O 401 faz uma
+                # notificação legítima ser reenviada mais tarde.
+                return (
+                    HTTPStatus.UNAUTHORIZED,
+                    {"error": "Pagamento não confirmado pela Asaas.", "code": "payment_unconfirmed"},
+                    None,
+                )
             activate_subscription(user_id, reference.get("plan", ""), event["payment_id"], event["event"])
             return HTTPStatus.OK, {"received": True, "matched": True, "access": "granted"}, None
         if event["suspends_access"]:
@@ -676,6 +757,10 @@ def billing_webhook(body, token_header):
         return HTTPStatus.OK, {"received": True, "matched": True, "access": "unchanged"}, None
     except (LookupError, ValueError) as error:
         return HTTPStatus.OK, {"received": True, "matched": False, "detail": str(error)}, None
+    except billing.BillingError as error:
+        # A conferência na Asaas falhou: 503 faz o evento voltar mais tarde,
+        # em vez de liberar acesso sem confirmação.
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None
     except StorageError as error:
         # 503 faz a Asaas reenviar o evento mais tarde, sem perder o pagamento.
         return HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)}, None

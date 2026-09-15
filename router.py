@@ -12,10 +12,82 @@ e devolve ``(status, payload, headers)``.
 
 from __future__ import annotations
 
+import time
+from collections import defaultdict, deque
 from http import HTTPStatus
 
 import api_core
 from auth import is_secure_request, public_user, read_session
+
+
+# ---------------------------------------------------------------------------
+# Freio por origem nas rotas que dão para abusar
+# ---------------------------------------------------------------------------
+#
+# A Vercel isola cada invocação, mas mantém o processo quente entre chamadas
+# seguidas — que é justamente o padrão de quem varre senhas, cria cadastros em
+# série ou dispara buscas para queimar o motor. O freio é, portanto, uma
+# barreira de rajada e não uma cota exata: corta o abuso vindo de uma origem só,
+# sem depender de banco nem de estado compartilhado entre regiões. Os tetos
+# ficam muito acima do uso normal (um login, um cadastro, uma busca por vez),
+# então ninguém legítimo esbarra neles.
+#
+# ``(tentativas, janela em segundos)`` por rota.
+RATE_LIMITS = {
+    "/api/auth/login": (10, 60),
+    "/api/auth/register": (5, 300),
+    "/api/recommend": (12, 60),
+}
+
+# Teto de origens lembradas ao mesmo tempo, para o processo quente não crescer
+# sem limite sob uma varredura que troca de IP a cada requisição.
+MAX_TRACKED_CLIENTS = 2048
+
+_ATTEMPTS: dict[tuple[str, str], deque] = defaultdict(deque)
+
+TOO_MANY_REQUESTS = (
+    HTTPStatus.TOO_MANY_REQUESTS,
+    {"error": "Muitas tentativas seguidas. Aguarde um minuto e tente de novo.", "code": "rate_limited"},
+    None,
+)
+
+
+def reset_rate_limits() -> None:
+    """Zera o contador. Usado pelos testes, que repetem login e cadastro."""
+    _ATTEMPTS.clear()
+
+
+def _client_ip(headers) -> str:
+    """Origem da requisição. Na Vercel vem em ``X-Forwarded-For``."""
+    for name in ("X-Forwarded-For", "x-forwarded-for", "X-Real-IP", "x-real-ip"):
+        value = headers.get(name)
+        if value:
+            return str(value).split(",", 1)[0].strip()[:64]
+    return "desconhecido"
+
+
+def _forget_expired(now: float) -> None:
+    for key in [key for key, hits in _ATTEMPTS.items() if not hits or now - hits[-1] > 900]:
+        _ATTEMPTS.pop(key, None)
+
+
+def rate_limited(path: str, headers) -> bool:
+    """Registra a tentativa e diz se esta origem já passou do teto da rota."""
+    limit = RATE_LIMITS.get(path)
+    if not limit:
+        return False
+    allowed, window = limit
+    now = time.monotonic()
+    if len(_ATTEMPTS) > MAX_TRACKED_CLIENTS:
+        _forget_expired(now)
+    hits = _ATTEMPTS[(path, _client_ip(headers))]
+    while hits and now - hits[0] > window:
+        hits.popleft()
+    if len(hits) >= allowed:
+        return True
+    hits.append(now)
+    return False
+
 
 def _not_found(path=""):
     """Devolve o caminho recebido: se alguma reescrita alterar a rota em
@@ -49,6 +121,10 @@ def handle(method, path, query=None, body=None, headers=None):
     if not path.startswith("/api"):
         return _not_found(path)
 
+    # O freio vale para o mesmo conjunto de rotas no servidor local e na Vercel.
+    if method in {"POST", "PUT"} and rate_limited(path, headers):
+        return TOO_MANY_REQUESTS
+
     # -- diagnóstico e catálogo público -------------------------------------
     if path == "/api/health":
         return api_core.health() if method == "GET" else METHOD_NOT_ALLOWED
@@ -79,6 +155,10 @@ def handle(method, path, query=None, body=None, headers=None):
             return api_core.admin_action(_session(headers), body)
         return METHOD_NOT_ALLOWED
     if path == "/api/admin/landing":
+        if method == "GET":
+            # O painel lê por aqui (e não pela rota pública) porque só esta
+            # devolve quem salvou e quando — dado que não pertence à landing.
+            return api_core.admin_landing_overview(_session(headers))
         if method in {"POST", "PUT"}:
             return api_core.admin_landing_save(_session(headers), body)
         return METHOD_NOT_ALLOWED

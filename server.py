@@ -6,8 +6,6 @@ A chave OpenAI nunca é enviada para o navegador: somente este processo a lê.
 
 import json
 import os
-import time
-from collections import defaultdict, deque
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,8 +15,6 @@ import router
 
 ROOT = Path(__file__).parent
 PUBLIC = ROOT / "public"
-REQUESTS_BY_IP = defaultdict(deque)
-MAX_REQUESTS_PER_MINUTE = 12
 
 
 def load_env_file():
@@ -51,9 +47,29 @@ class AppHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(PUBLIC), **kwargs)
 
+    # Os mesmos cabeçalhos que o ``vercel.json`` aplica em produção, para que um
+    # problema de política apareça já no desenvolvimento local. A CSP fica
+    # deliberadamente restrita a frame-ancestors/base-uri/object-src/form-action:
+    # as páginas são pacotes do Claude Web Design, com script embutido e recursos
+    # em blob:/data:, e uma script-src estrita as quebraria.
+    SECURITY_HEADERS = (
+        ("X-Content-Type-Options", "nosniff"),
+        ("Referrer-Policy", "strict-origin-when-cross-origin"),
+        ("X-Frame-Options", "SAMEORIGIN"),
+        (
+            "Content-Security-Policy",
+            "frame-ancestors 'self'; base-uri 'self'; object-src 'none'; form-action 'self'",
+        ),
+        (
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=()",
+        ),
+        ("Cross-Origin-Opener-Policy", "same-origin-allow-popups"),
+    )
+
     def end_headers(self):
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        for key, value in self.SECURITY_HEADERS:
+            self.send_header(key, value)
         super().end_headers()
 
     def send_json(self, status, payload, headers=None):
@@ -89,17 +105,17 @@ class AppHandler(SimpleHTTPRequestHandler):
         if target.path.startswith("/api"):
             self.send_result(router.handle("GET", target.path, parse_qs(target.query), {}, self.headers))
             return
-        if target.path in {"/admin", "/admin/"}:
-            self.path = "/admin.html"
+        # Mesmo efeito do ``cleanUrls`` do vercel.json: em produção /admin e /app
+        # resolvem para os arquivos .html, e o servidor local precisa concordar.
+        clean = target.path.rstrip("/") or "/"
+        if clean in {"/admin", "/app"}:
+            self.path = clean + ".html"
         super().do_GET()
 
     def do_POST(self):
         target = urlparse(self.path)
         if not target.path.startswith("/api"):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Rota não encontrada."})
-            return
-        # O limite por IP é do servidor local; na Vercel cada invocação é isolada.
-        if target.path.rstrip("/") == "/api/recommend" and self.rate_limited():
             return
         self.send_result(
             router.handle("POST", target.path, parse_qs(target.query), self.request_json_or_empty(64_000), self.headers)
@@ -113,17 +129,6 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.send_result(
             router.handle("DELETE", target.path, parse_qs(target.query), self.request_json_or_empty(64_000), self.headers)
         )
-
-    def rate_limited(self):
-        now = time.monotonic()
-        requests = REQUESTS_BY_IP[self.client_address[0]]
-        while requests and now - requests[0] > 60:
-            requests.popleft()
-        if len(requests) >= MAX_REQUESTS_PER_MINUTE:
-            self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Aguarde um minuto antes de tentar novamente."})
-            return True
-        requests.append(now)
-        return False
 
     def log_message(self, fmt, *args):
         print(f"[{self.log_date_time_string()}] {args[0]}")
