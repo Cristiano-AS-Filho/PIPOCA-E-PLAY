@@ -500,3 +500,65 @@ código, no front-end ou no histórico do Git.
   🎬 Filme / 📺 Série / 🍥 Anime / 🔀 Mescla.
 - Sonda de autorização cobrindo IDOR, rotas administrativas, manipulação de
   créditos e webhook forjado.
+
+## Rodada 15 — a espera da busca: balde caminhando e frases que trocam
+
+### Diagnóstico
+
+Entre a última pergunta e o Top 3 o cliente esperava alguns segundos diante de
+uma tela que dizia sempre a mesma coisa: um arco girando e o texto fixo
+**"CORTANDO O CATÁLOGO"**. Duas fraquezas. A primeira é de leitura: sem nada
+mudando além do giro, não há como saber se a busca avançou ou travou, e a
+espera parece maior do que é. A segunda é de marca: o produto vende tempo que
+rende e conversa em tom leve, mas o único momento em que o cliente fica parado
+olhando para a tela era justamente o mais sem graça de todos.
+
+### Correções aplicadas
+
+As duas telas de espera — o cartão de busca do `/app` e o celular da seção de
+demonstração da landing — passaram a mostrar a mesma cena.
+
+**Balde de pipoca caminhando (`public/app.html`, `public/index.html`).** Feito
+só com CSS, sem imagem, sem SVG e sem biblioteca: o balde é um trapézio
+listrado em vermelho e creme (`clip-path` + `repeating-linear-gradient`), a
+pipoca são três grumos que pulam fora de compasso, as pernas são dois palitos
+que se revezam e o chão é uma linha tracejada que corre para trás — é ela que
+dá a leitura de caminhada, já que o balde anda no lugar. A cena inteira é
+medida em `em`, então o tamanho sai do `font-size` do elemento raiz: 20px no
+cartão do app, 12px dentro do celular da landing. O ícone de arco girando e a
+animação `ppSpin` saíram junto, por terem ficado sem uso.
+
+**Frases que trocam (`public/app.html`, `public/index.html`).** `LOADING_LINES`
+tem doze frases no tom da casa ("Roteirista trabalhando…", "Calma, estamos
+evitando que você escolha uma bomba.", "Analisando suas escolhas… sem
+julgamentos. Talvez.", "Quase lá… sua indecisão está com os minutos
+contados."). `startLoadingLines` sorteia por onde a sequência começa — duas
+buscas seguidas não abrem iguais — e troca a cada `LOADING_LINE_MS` (2,6s). O
+relógio se desliga na primeira batida fora da fase `loading`, então nenhuma das
+saídas da busca (achou, falhou, voltou) precisa lembrar de pará-lo;
+`componentWillUnmount` também o encerra. A entrada da frase recomeça a cada
+troca porque `loadingLineAnim` alterna entre `ppLineA` e `ppLineB`: são duas
+animações iguais de propósito, e trocar o **nome** reinicia a animação sem
+remontar o elemento.
+
+**Acessibilidade.** O bloco é `role="status"`/`aria-live="polite"`, a cena é
+`aria-hidden` e o que o leitor de tela ouve é uma linha fixa
+("Procurando as três melhores opções para hoje."), não uma piada nova a cada
+2,6 segundos. A regra global de `prefers-reduced-motion` já existente congela o
+balde para quem pede menos movimento; as frases continuam trocando, porque são
+texto e não animação.
+
+### Validação
+
+- `python3 -m unittest test_app`: 166 testes, tudo verde (nenhum toca as
+  páginas; a mudança é de front-end).
+- Navegador real (Chromium/Playwright) contra o `public/` servido estático, com
+  o `setTimeout` da demonstração esticado para a tela de espera ficar no ar:
+  no `/app`, percorrendo as oito perguntas, a cena renderiza 140×120 px com
+  `ppWalk`, `ppStep` e `ppFloor` correndo, e a frase troca sozinha
+  ("Quase lá… sua indecisão está com os minutos contados." →
+  "Passando o catálogo inteiro na peneira fina."), com o nome da animação
+  alternando entre `ppLineA` e `ppLineB`. Na landing, a mesma cena dentro do
+  celular, com a frase trocando de "Calma, estamos evitando que você escolha
+  uma bomba." para "Analisando suas escolhas… sem julgamentos. Talvez." — sem
+  nenhum erro de página nas duas telas.
